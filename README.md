@@ -147,10 +147,15 @@ pytest --cov=engine --cov-report=term-missing   # tests + coverage
 Coverage is enforced with a floor of **90%** (see `[tool.coverage.report]` in
 `pyproject.toml`); the suite currently sits at ~94%.
 
-### Continuous integration — build solidification
+### Continuous integration — the complete build/render/test pipeline
 
-CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) measures the build on
-every push/PR:
+**GitHub Actions is the authoritative environment for all building, rendering,
+and testing.** Local dev machines may lack the CPU features (AVX) or resources to
+run the real inference or rendering paths soundly, so CI covers every need and is
+the source of truth. Local commands below are for quick pre-push sanity only.
+
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on every
+push/PR (and on demand via **workflow_dispatch**):
 
 - **`test`** (Python 3.11 & 3.12): ruff lint, ruff format check, mypy, and
   pytest **with branch coverage** (fails under the 90% floor). Publishes a
@@ -167,8 +172,15 @@ every push/PR:
   wheel into a clean virtualenv, and smoke-tests the packaged CLI
   (`inference-engine version` / `migrate`) so the distributable is verified — not
   just the source tree. Uploads the distributions as artifacts.
+- **`ci-success`**: a single aggregator gate that passes only when **all** of the
+  above jobs succeed (failing if any failed or was skipped). Use it as the one
+  required status check for branch protection.
 
-Build the distributables locally the same way:
+Future build/render/test needs are added here as jobs (e.g. real-SDK contract
+tests against a live model, the React/Vite dashboard build + screenshots, Docker
+image build, load tests) rather than run locally.
+
+Build the distributables locally the same way (quick sanity only):
 
 ```bash
 python -m build            # -> dist/*.whl, dist/*.tar.gz

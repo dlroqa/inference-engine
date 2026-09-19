@@ -178,3 +178,25 @@ jobs:
           name: dist
           path: dist/*
           retention-days: 2
+
+  ci-success:
+    # Single gate for the whole pipeline (build + render + test). Branch
+    # protection can require just this check. Fails if any needed job failed
+    # or was skipped, so the machine's local limits never mask a real failure.
+    name: CI passed (build + render + test)
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [test, integration-llama, build]
+    steps:
+      - name: Verify all jobs succeeded
+        run: |
+          echo "test:              ${{ needs.test.result }}"
+          echo "integration-llama: ${{ needs.integration-llama.result }}"
+          echo "build:             ${{ needs.build.result }}"
+          if [ "${{ needs.test.result }}" != "success" ] \
+             || [ "${{ needs.integration-llama.result }}" != "success" ] \
+             || [ "${{ needs.build.result }}" != "success" ]; then
+            echo "::error::one or more CI jobs did not succeed"
+            exit 1
+          fi
+          echo "All CI jobs succeeded." >> "$GITHUB_STEP_SUMMARY"
