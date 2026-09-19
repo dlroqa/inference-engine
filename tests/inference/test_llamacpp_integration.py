@@ -37,8 +37,9 @@ def test_load_generate_unload_real_model() -> None:
         caps = backend.capabilities()
         assert caps.context_length == 512
 
+        # A strong base-continuation prompt so even a tiny model emits tokens.
         stream = backend.generate(
-            GenerationRequest(prompt="Q: 2+2=?\nA:", max_tokens=8, temperature=0.0)
+            GenerationRequest(prompt="The capital of France is", max_tokens=16, temperature=0.0)
         )
         chunks = [c async for c in stream]
         assert chunks  # produced at least one token
