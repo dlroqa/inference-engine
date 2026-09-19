@@ -95,3 +95,27 @@ def test_explicit_paths_not_overridden(tmp_path: Path) -> None:
     db = tmp_path / "custom.db"
     settings = Settings(data_dir=tmp_path, db_path=db)
     assert settings.db_path == db
+
+
+def test_missing_explicit_config_file_fails(tmp_path: Path) -> None:
+    missing = tmp_path / "does_not_exist.toml"
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(cli_overrides={"data_dir": tmp_path}, config_file=missing)
+    assert "not found" in str(excinfo.value)
+
+
+def test_missing_env_config_file_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    missing = tmp_path / "nope.toml"
+    monkeypatch.setenv("IE_CONFIG_FILE", str(missing))
+    with pytest.raises(ConfigError):
+        load_config(cli_overrides={"data_dir": tmp_path})
+
+
+def test_missing_default_config_is_not_an_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No explicit file requested: absence of the default location is fine.
+    monkeypatch.setattr("engine.config.default_config_file", lambda: tmp_path / "absent.toml")
+    settings = load_config(cli_overrides={"data_dir": tmp_path})
+    assert settings.config_file is None
+    assert settings.port == 8000

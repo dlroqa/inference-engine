@@ -100,19 +100,6 @@ class Settings(BaseSettings):
         return tuple(sources)
 
 
-def _resolve_config_file(config_file: Path | None) -> Path | None:
-    """Resolve which TOML config file to read, if any.
-
-    Priority: explicit ``config_file`` argument (from a CLI flag) > default
-    per-user location. The ``IE_CONFIG_FILE`` environment variable is also
-    honoured by the caller in :func:`load_config`.
-    """
-    if config_file is not None:
-        return Path(config_file).expanduser()
-    default = default_config_file()
-    return default if default.is_file() else None
-
-
 def load_config(
     cli_overrides: dict[str, Any] | None = None,
     config_file: Path | None = None,
@@ -123,17 +110,33 @@ def load_config(
     flags); ``None`` values are ignored so unset flags do not clobber lower
     layers. Raises :class:`ConfigError` with a readable message on invalid
     configuration.
+
+    An *explicitly* requested config file (via the ``config_file`` argument or
+    the ``IE_CONFIG_FILE`` environment variable) that does not exist is a fatal
+    error — misconfiguration is surfaced now, not at runtime. Only the default
+    per-user config location is allowed to be absent.
     """
     import os
 
     overrides = {k: v for k, v in (cli_overrides or {}).items() if v is not None}
 
     env_config_file = os.environ.get("IE_CONFIG_FILE")
-    chosen = config_file
-    if chosen is None and env_config_file:
-        chosen = Path(env_config_file).expanduser()
+    explicit = config_file
+    if explicit is None and env_config_file:
+        explicit = Path(env_config_file)
 
-    resolved_toml = _resolve_config_file(chosen)
+    resolved_toml: Path | None
+    if explicit is not None:
+        resolved_toml = Path(explicit).expanduser()
+        if not resolved_toml.is_file():
+            raise ConfigError(
+                f"Config file not found: {resolved_toml}\n"
+                "The path was requested explicitly (via --config or IE_CONFIG_FILE)."
+            )
+    else:
+        default = default_config_file()
+        resolved_toml = default if default.is_file() else None
+
     token = _toml_path_var.set(resolved_toml)
     try:
         settings = Settings(**overrides)

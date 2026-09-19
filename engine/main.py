@@ -17,7 +17,7 @@ from engine.api import health
 from engine.config import Settings, load_config
 from engine.logging_setup import configure_logging, get_logger
 from engine.store.db import connect
-from engine.store.migrations import apply_migrations
+from engine.store.migrations import apply_migrations, migrations_at_head
 
 # The active settings for the running app. Set by ``create_app`` so request
 # handlers (e.g. readiness) can access configuration without a DI framework.
@@ -59,6 +59,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         conn = connect(settings.db_path)  # type: ignore[arg-type]
         try:
             applied = apply_migrations(conn)
+            # Cache head status so the readiness probe need not recompute it.
+            app.state.migrations_ready = migrations_at_head(conn)
         finally:
             conn.close()
         log.info("migrations_applied", extra={"newly_applied": applied})

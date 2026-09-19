@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -73,6 +74,40 @@ def test_settings_table_usable(tmp_path: Path) -> None:
             conn.execute("INSERT INTO settings (key, value) VALUES (?, ?);", ("k", "v"))
         row = conn.execute("SELECT value FROM settings WHERE key=?;", ("k",)).fetchone()
         assert row[0] == "v"
+    finally:
+        conn.close()
+
+
+def test_failed_migration_is_atomic(tmp_path: Path) -> None:
+    """A migration that fails partway must leave nothing applied or recorded."""
+    migs = tmp_path / "migs"
+    migs.mkdir()
+    # First statement succeeds; second is invalid SQL -> whole migration must roll back.
+    (migs / "0001_broken.sql").write_text(
+        "CREATE TABLE good (id INTEGER);\nCREATE TABLE bad (;\n", encoding="utf-8"
+    )
+    conn = connect(tmp_path / "atomic.db")
+    try:
+        with pytest.raises(sqlite3.Error):
+            apply_migrations(conn, migs)
+        # Neither the table from the first statement nor the bookkeeping row persist.
+        assert not _table_exists(conn, "good")
+        assert applied_versions(conn) == set()
+        assert not migrations_at_head(conn, migs)
+    finally:
+        conn.close()
+
+
+def test_migration_with_transaction_control_rejected(tmp_path: Path) -> None:
+    migs = tmp_path / "migs"
+    migs.mkdir()
+    (migs / "0001_txn.sql").write_text(
+        "BEGIN;\nCREATE TABLE t (id INTEGER);\nCOMMIT;\n", encoding="utf-8"
+    )
+    conn = connect(tmp_path / "txn.db")
+    try:
+        with pytest.raises(ValueError):
+            apply_migrations(conn, migs)
     finally:
         conn.close()
 

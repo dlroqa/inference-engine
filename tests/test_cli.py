@@ -37,3 +37,18 @@ def test_invalid_config_exit_code(tmp_path: Path, capsys: pytest.CaptureFixture[
     rc = main(["config", "--data-dir", str(tmp_path), "--port", "70000"])
     assert rc == 2
     assert "port" in capsys.readouterr().err
+
+
+def test_serve_invokes_uvicorn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import uvicorn
+
+    calls: dict[str, object] = {}
+
+    def fake_run(app: object, **kwargs: object) -> None:
+        calls["host"] = kwargs.get("host")
+        calls["port"] = kwargs.get("port")
+
+    monkeypatch.setattr(uvicorn, "run", fake_run)
+    rc = main(["serve", "--data-dir", str(tmp_path), "--host", "127.0.0.1", "--port", "8099"])
+    assert rc == 0
+    assert calls == {"host": "127.0.0.1", "port": 8099}

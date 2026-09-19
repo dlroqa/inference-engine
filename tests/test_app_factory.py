@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi import FastAPI
 
 from engine.config import Settings
@@ -17,6 +18,14 @@ def test_create_app_returns_fastapi(tmp_settings: Settings) -> None:
 def test_create_app_sets_active_settings(tmp_settings: Settings) -> None:
     create_app(tmp_settings)
     assert get_settings() is tmp_settings
+
+
+def test_get_settings_raises_when_uninitialized(monkeypatch: pytest.MonkeyPatch) -> None:
+    import engine.main as main_module
+
+    monkeypatch.setattr(main_module, "_active_settings", None)
+    with pytest.raises(RuntimeError):
+        main_module.get_settings()
 
 
 def test_health_routes_registered(tmp_settings: Settings) -> None:

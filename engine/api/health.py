@@ -10,13 +10,12 @@ This keeps the exit criterion honest: no endpoint implies inference is available
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from engine import __version__
 from engine.config import Settings
-from engine.store.db import connect
-from engine.store.migrations import migrations_at_head
+from engine.store.db import connect_readonly
 
 router = APIRouter(tags=["health"])
 
@@ -31,30 +30,36 @@ def healthz() -> dict[str, object]:
 
 
 @router.get("/readyz")
-def readyz(response: Response) -> Response:
+def readyz(request: Request) -> JSONResponse:
     """Readiness of foundational dependencies.
 
     Returns 200 when the database is reachable and migrations are applied; 503
     otherwise. Always reports ``inference.available = false`` so callers never
     mistake the foundation for a working inference service.
-    """
-    from engine.main import get_settings
 
-    settings: Settings = get_settings()
+    Reads settings and the startup-computed migration status from the request's
+    application state, and uses a lightweight read-only connection so frequent
+    probes stay cheap.
+    """
+    settings: Settings = request.app.state.settings
+    migrations_ready: bool = getattr(request.app.state, "migrations_ready", False)
+
     checks: dict[str, str] = {}
     ready = True
 
     try:
-        conn = connect(settings.db_path)  # type: ignore[arg-type]
+        conn = connect_readonly(settings.db_path)  # type: ignore[arg-type]
         try:
+            conn.execute("SELECT 1;").fetchone()
             checks["database"] = "ok"
-            checks["migrations"] = "applied" if migrations_at_head(conn) else "pending"
-            if checks["migrations"] != "applied":
-                ready = False
         finally:
             conn.close()
-    except Exception as exc:  # pragma: no cover - defensive
+    except Exception as exc:
         checks["database"] = f"error: {exc.__class__.__name__}"
+        ready = False
+
+    checks["migrations"] = "applied" if migrations_ready else "pending"
+    if not migrations_ready:
         ready = False
 
     body: dict[str, object] = {

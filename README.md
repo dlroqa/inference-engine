@@ -89,14 +89,34 @@ curl -s http://127.0.0.1:8000/readyz
 ## Test & checks
 
 ```bash
-ruff check .            # lint
-ruff format --check .   # formatting
-mypy                    # type check
-pytest                  # tests
+ruff check .                                   # lint
+ruff format --check .                           # formatting
+mypy                                            # type check
+pytest --cov=engine --cov-report=term-missing   # tests + coverage
 ```
 
-CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs all four on
-Python 3.11 and 3.12.
+Coverage is enforced with a floor of **90%** (see `[tool.coverage.report]` in
+`pyproject.toml`); the suite currently sits at ~98%.
+
+### Continuous integration — build solidification
+
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) measures the build on
+every push/PR:
+
+- **`test`** (Python 3.11 & 3.12): ruff lint, ruff format check, mypy, and
+  pytest **with branch coverage** (fails under the 90% floor). Publishes a
+  coverage table to the run summary and uploads `coverage.xml` + a JUnit report
+  as artifacts.
+- **`build`**: builds the sdist + wheel with `python -m build`, installs the
+  wheel into a clean virtualenv, and smoke-tests the packaged CLI
+  (`inference-engine version` / `migrate`) so the distributable is verified — not
+  just the source tree. Uploads the distributions as artifacts.
+
+Build the distributables locally the same way:
+
+```bash
+python -m build            # -> dist/*.whl, dist/*.tar.gz
+```
 
 ## Data & storage
 
