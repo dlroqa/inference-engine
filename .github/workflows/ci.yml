@@ -55,6 +55,7 @@ jobs:
 
       - name: Upload reports
         if: always()
+        continue-on-error: true # never fail the job if artifact storage quota is full
         uses: actions/upload-artifact@v4
         with:
           name: reports-py${{ matrix.python-version }}
@@ -62,6 +63,7 @@ jobs:
             coverage.xml
             pytest-report.xml
           if-no-files-found: ignore
+          retention-days: 2
 
   integration-llama:
     name: llama.cpp integration (real GGUF, AVX)
@@ -132,10 +134,12 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload generation proof
+        continue-on-error: true # summary above carries the proof if storage is full
         uses: actions/upload-artifact@v4
         with:
           name: real-generation
           path: artifacts/*
+          retention-days: 2
 
   build:
     name: Build & validate package
@@ -168,7 +172,9 @@ jobs:
           test -f /tmp/ie-data/inference_engine.db
 
       - name: Upload distributions
+        continue-on-error: true # never fail the build if artifact storage quota is full
         uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/*
+          retention-days: 2
