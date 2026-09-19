@@ -67,6 +67,15 @@ class Settings(BaseSettings):
     # Observability.
     log_level: LogLevel = "INFO"
 
+    # Local inference runtime (Block 1). A single explicitly configured GGUF
+    # model. Multiple models, downloads, and GPU auto-tuning are later blocks;
+    # n_gpu_layers is a manual knob (0 = CPU-only default).
+    model_path: Path | None = None
+    model_id: str = "local-model"
+    n_ctx: int = Field(default=4096, ge=8, le=1_048_576)
+    n_threads: int | None = Field(default=None, ge=1)
+    n_gpu_layers: int = Field(default=0, ge=0)
+
     # Storage paths (all overridable, resolved to safe per-user locations).
     data_dir: Path = Field(default_factory=default_data_dir)
     db_path: Path | None = None

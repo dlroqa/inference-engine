@@ -1,0 +1,135 @@
+"""Internal, provider- and transport-agnostic generation types.
+
+These types are the stable seam between the API edge (HTTP, OpenAI/Anthropic
+dialects — later blocks) and the inference workers. Nothing here depends on
+FastAPI or any provider SDK: the same ``GenerationRequest`` and token stream are
+used whether the caller is a CLI command, a unit test, or a future HTTP router.
+"""
+
+from __future__ import annotations
+
+import enum
+from collections.abc import Generator
+from dataclasses import dataclass, field
+
+from pydantic import BaseModel, Field
+
+
+class BackendState(enum.StrEnum):
+    """Explicit lifecycle state of an inference backend."""
+
+    UNLOADED = "unloaded"
+    LOADING = "loading"
+    READY = "ready"
+    GENERATING = "generating"
+    FAILED = "failed"
+
+
+class FinishReason(enum.StrEnum):
+    """Why a generation ended."""
+
+    STOP = "stop"  # natural end / stop sequence / EOS
+    LENGTH = "length"  # hit the max-token cap
+    CANCELLED = "cancelled"  # client/consumer aborted
+    ERROR = "error"  # backend failure mid-generation
+
+
+# A token producer is a generator that yields token text and may ``return`` a
+# FinishReason to indicate how it ended (defaults to STOP).
+TokenGenerator = Generator[str, None, "FinishReason | None"]
+
+
+class GenerationRequest(BaseModel):
+    """A validated, normalized request for token generation.
+
+    Block 1 supports a single prompt string and a deliberately minimal sampling
+    set. Message-array translation (OpenAI/Anthropic) is Block 2; the full
+    sampler surface is Block 8.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    prompt: str
+    request_id: str = ""
+    max_tokens: int | None = Field(default=256, ge=1, le=32768)
+    temperature: float = Field(default=0.8, ge=0.0, le=2.0)
+    top_p: float = Field(default=0.95, ge=0.0, le=1.0)
+    top_k: int = Field(default=40, ge=0)
+    seed: int | None = None
+    stop: list[str] = Field(default_factory=list)
+
+
+@dataclass(slots=True)
+class GenerationChunk:
+    """One streamed token/text delta, in order."""
+
+    text: str
+    index: int
+
+
+@dataclass(slots=True)
+class GenerationTimings:
+    """Basic timings recorded to validate behavior (not a benchmark suite)."""
+
+    started_at: float
+    first_token_at: float | None = None
+    finished_at: float | None = None
+
+    @property
+    def ttft_ms(self) -> float | None:
+        if self.first_token_at is None:
+            return None
+        return (self.first_token_at - self.started_at) * 1000.0
+
+    @property
+    def total_ms(self) -> float | None:
+        if self.finished_at is None:
+            return None
+        return (self.finished_at - self.started_at) * 1000.0
+
+
+@dataclass(slots=True)
+class GenerationResult:
+    """Terminal result of a generation."""
+
+    request_id: str
+    text: str
+    finish_reason: FinishReason
+    prompt_tokens: int
+    completion_tokens: int
+    timings: GenerationTimings
+
+
+@dataclass(slots=True)
+class Capabilities:
+    """What a loaded backend can do. Honest and minimal for Block 1."""
+
+    backend: str
+    model_id: str
+    context_length: int
+    streaming: bool = True
+    max_output_tokens: int | None = None
+    extra: dict[str, object] = field(default_factory=dict)
+
+
+# --- Error taxonomy -------------------------------------------------------
+
+
+class BackendError(Exception):
+    """Base class for inference backend errors."""
+
+
+class ModelLoadError(BackendError):
+    """A model failed to load; the backend is left recoverable (unloaded)."""
+
+
+class BackendNotReadyError(BackendError):
+    """A generation was requested while no model is ready."""
+
+
+class BackendBusyError(BackendError):
+    """A generation was requested while another is already in progress."""
+
+
+class GenerationFailedError(BackendError):
+    """A generation failed after it had started streaming."""

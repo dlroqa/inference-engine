@@ -39,6 +39,34 @@ def test_invalid_config_exit_code(tmp_path: Path, capsys: pytest.CaptureFixture[
     assert "port" in capsys.readouterr().err
 
 
+def test_generate_streams_and_reports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import engine.inference as inference
+    from tests.support.fake_backend import FakeBackend
+
+    monkeypatch.setattr(inference, "build_backend", lambda settings: FakeBackend(tokens=["2", "2"]))
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    rc = main(
+        [
+            "generate",
+            "--data-dir",
+            str(tmp_path),
+            "--model-path",
+            str(model),
+            "--prompt",
+            "hi there",
+            "--max-tokens",
+            "4",
+        ]
+    )
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "22" in captured.out  # streamed tokens
+    assert '"finish_reason": "stop"' in captured.err  # result summary
+
+
 def test_serve_invokes_uvicorn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import uvicorn
 

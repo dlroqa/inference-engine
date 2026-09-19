@@ -47,6 +47,16 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("migrate", parents=[common], help="Apply database migrations and exit.")
     sub.add_parser("config", parents=[common], help="Print resolved configuration and exit.")
     sub.add_parser("version", help="Print the version and exit.")
+
+    gen = sub.add_parser(
+        "generate",
+        parents=[common],
+        help="Load the configured GGUF model and stream a completion.",
+    )
+    gen.add_argument("--model-path", type=Path, default=None, help="Path to a GGUF model file.")
+    gen.add_argument("--prompt", required=True, help="Prompt text to generate from.")
+    gen.add_argument("--max-tokens", type=int, default=256, help="Maximum tokens to generate.")
+    gen.add_argument("--temperature", type=float, default=0.8, help="Sampling temperature.")
     return parser
 
 
@@ -57,6 +67,7 @@ def _settings_from_args(args: argparse.Namespace) -> Settings:
         "log_level": getattr(args, "log_level", None),
         "data_dir": getattr(args, "data_dir", None),
         "db_path": getattr(args, "db_path", None),
+        "model_path": getattr(args, "model_path", None),
     }
     return load_config(cli_overrides=overrides, config_file=getattr(args, "config", None))
 
@@ -89,6 +100,54 @@ def _cmd_config(settings: Settings) -> int:
     return 0
 
 
+def _cmd_generate(settings: Settings, args: argparse.Namespace) -> int:
+    import asyncio
+
+    from engine.inference import GenerationRequest, build_backend
+    from engine.inference.types import BackendError
+
+    async def run() -> int:
+        backend = build_backend(settings)
+        await backend.load()
+        try:
+            request = GenerationRequest(
+                prompt=args.prompt,
+                max_tokens=args.max_tokens,
+                temperature=args.temperature,
+            )
+            stream = backend.generate(request)
+            try:
+                async for chunk in stream:
+                    sys.stdout.write(chunk.text)
+                    sys.stdout.flush()
+            finally:
+                await stream.aclose()
+            sys.stdout.write("\n")
+            result = stream.result
+            assert result is not None
+            print(
+                json.dumps(
+                    {
+                        "finish_reason": result.finish_reason.value,
+                        "prompt_tokens": result.prompt_tokens,
+                        "completion_tokens": result.completion_tokens,
+                        "ttft_ms": round(result.timings.ttft_ms or 0.0, 1),
+                        "total_ms": round(result.timings.total_ms or 0.0, 1),
+                    }
+                ),
+                file=sys.stderr,
+            )
+        finally:
+            await backend.unload()
+        return 0
+
+    try:
+        return asyncio.run(run())
+    except BackendError as exc:
+        print(f"Generation error: {exc}", file=sys.stderr)
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -109,6 +168,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_migrate(settings)
     if args.command == "config":
         return _cmd_config(settings)
+    if args.command == "generate":
+        return _cmd_generate(settings, args)
     parser.error(f"unknown command: {args.command}")
     return 2  # pragma: no cover
 

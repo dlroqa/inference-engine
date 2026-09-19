@@ -19,6 +19,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Local llama.cpp inference backend (Block 1). Optional so the core stays
+# zero-build; installs a native package.
+llama = ["llama-cpp-python>=0.2.90"]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",

@@ -6,11 +6,16 @@ ordered **vertical slices** (Blocks 0–12) per
 Each block must be deployable, testable, documented, and useful before the next
 begins.
 
-> **Current status: Block 0 — Foundation.**
-> This is the application skeleton only. It starts, validates configuration,
-> persists schema state (SQLite/WAL + migrations), logs structured JSON, and
-> exposes health endpoints. **There is no inference, authentication, dashboard,
-> remote binding, or model management yet** — those arrive in later blocks.
+> **Current status: Block 1 — Local inference runtime.**
+> On top of the Block 0 foundation, the engine now has a stable **internal
+> generation contract** (`GenerationRequest` → async token stream →
+> `GenerationResult`) and a local **llama.cpp** backend that serves one
+> explicitly configured GGUF model. Blocking model work runs in a worker thread
+> and streams tokens without blocking the event loop; load/unload state and
+> cancellation are explicit. It is exercised via the `inference-engine generate`
+> CLI and the internal API — **there is no HTTP inference API yet** (that is
+> Block 2), and no authentication, dashboard, model downloads, multiple models,
+> or GPU auto-tuning.
 
 ---
 
@@ -68,6 +73,50 @@ inference-engine migrate
 inference-engine serve --host 127.0.0.1 --port 8000
 ```
 
+## Local inference (Block 1)
+
+Install the optional llama.cpp backend (a native package) and point at a GGUF
+model:
+
+```bash
+pip install -e ".[llama]"        # or: pip install "inference-engine[llama]"
+
+inference-engine generate \
+  --model-path /path/to/model.gguf \
+  --prompt "The capital of France is" \
+  --max-tokens 32
+```
+
+Tokens stream to stdout; a JSON result summary (finish reason, token counts,
+TTFT/total ms) is printed to stderr. The model can also be set via
+`IE_MODEL_PATH` or `model_path` in the config file.
+
+**Internal generation API** (transport- and provider-agnostic — the seam future
+HTTP dialects translate to):
+
+```python
+from engine.inference import GenerationRequest, build_backend
+from engine.config import load_config
+
+backend = build_backend(load_config())
+await backend.load()
+stream = backend.generate(GenerationRequest(prompt="Hello", max_tokens=32))
+async for chunk in stream:
+    print(chunk.text, end="")
+result = stream.result  # GenerationResult: text, token counts, timings
+await backend.unload()
+```
+
+Backend state is explicit (`unloaded → loading → ready → generating →
+failed`), one model and one generation at a time. Closing a stream
+(`await stream.aclose()`) cancels generation and releases the worker.
+
+**Documented Block 1 limitations:** single resident model; generations are
+serialized (a second concurrent request raises `BackendBusyError`); no
+downloads, routing, GPU auto-tuning, batching, or HTTP inference API yet.
+`llama-cpp-python` prebuilt wheels require AVX2; on CPUs without it, build from
+source with AVX disabled.
+
 ### Health endpoints
 
 | Endpoint    | Meaning                                                                 |
@@ -96,7 +145,7 @@ pytest --cov=engine --cov-report=term-missing   # tests + coverage
 ```
 
 Coverage is enforced with a floor of **90%** (see `[tool.coverage.report]` in
-`pyproject.toml`); the suite currently sits at ~98%.
+`pyproject.toml`); the suite currently sits at ~94%.
 
 ### Continuous integration — build solidification
 
@@ -107,6 +156,10 @@ every push/PR:
   pytest **with branch coverage** (fails under the 90% floor). Publishes a
   coverage table to the run summary and uploads `coverage.xml` + a JUnit report
   as artifacts.
+- **`integration-llama`**: installs the real `llama-cpp-python` CPU backend,
+  downloads (and caches) a tiny GGUF model, and runs the gated integration test
+  plus a real `generate` CLI smoke against it — verifying the actual llama.cpp
+  path end-to-end on a runner with AVX2.
 - **`build`**: builds the sdist + wheel with `python -m build`, installs the
   wheel into a clean virtualenv, and smoke-tests the packaged CLI
   (`inference-engine version` / `migrate`) so the distributable is verified — not

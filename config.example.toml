@@ -24,3 +24,12 @@ log_level = "INFO"
 # data_dir = "/var/lib/inference-engine"
 # db_path  = "/var/lib/inference-engine/inference_engine.db"
 # log_dir  = "/var/lib/inference-engine/logs"
+
+# --- Local inference runtime (Block 1) ---
+# One explicitly configured GGUF model, served via llama.cpp. Requires the
+# 'llama' extra: pip install "inference-engine[llama]"
+# model_path   = "/path/to/model.gguf"   # required to load a model
+# model_id     = "local-model"           # identity surfaced to callers
+# n_ctx        = 4096                     # context window
+# n_threads    =                          # CPU threads (unset = library default)
+# n_gpu_layers = 0                        # layers offloaded to GPU (0 = CPU only)
