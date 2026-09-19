@@ -1,0 +1,26 @@
+# Example Inference Engine configuration (Block 0 foundation).
+#
+# Copy to a location of your choice and pass it with:
+#     inference-engine serve --config ./config.toml
+# or point at it with the IE_CONFIG_FILE environment variable.
+#
+# Precedence (highest wins):
+#     CLI flags  >  IE_* env vars  >  this file  >  built-in defaults
+#
+# Every key below is optional; unset keys use their defaults.
+
+# Bind host. Loopback-only by default. Remote/LAN binding and TLS are a later
+# block, so binding to a public interface is intentionally not configurable yet.
+host = "127.0.0.1"
+
+# Bind port (1-65535).
+port = 8000
+
+# Logging level: CRITICAL | ERROR | WARNING | INFO | DEBUG
+log_level = "INFO"
+
+# Base data directory. If unset, an OS-appropriate per-user location is used.
+# db_path and log_dir default to subpaths of this directory when not set.
+# data_dir = "/var/lib/inference-engine"
+# db_path  = "/var/lib/inference-engine/inference_engine.db"
+# log_dir  = "/var/lib/inference-engine/logs"
