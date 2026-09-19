@@ -4,6 +4,7 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  workflow_dispatch: # allow manual runs (e.g. AVX/real-model verification on demand)
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -63,11 +64,22 @@ jobs:
           if-no-files-found: ignore
 
   integration-llama:
-    name: llama.cpp integration (real GGUF)
+    name: llama.cpp integration (real GGUF, AVX)
     runs-on: ubuntu-latest
     needs: test
+    env:
+      # SmolLM2-135M-Instruct-Q4_K_M.gguf — pinned for supply-chain integrity.
+      MODEL_URL: "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q4_K_M.gguf"
+      MODEL_SHA256: "2e8040ceae7815abe0dcb3540b9995eaa1fa0d2ca9e797d0a635ae4433c68c2d"
     steps:
       - uses: actions/checkout@v4
+
+      - name: Report runner CPU features (must include avx2)
+        run: |
+          echo "### Runner CPU (integration-llama)" >> "$GITHUB_STEP_SUMMARY"
+          FLAGS=$(grep -m1 -oE '(avx512f|avx2|avx|fma|f16c|sse4_2)' /proc/cpuinfo | sort -u | tr '\n' ' ')
+          echo "CPU flags: $FLAGS" | tee -a "$GITHUB_STEP_SUMMARY"
+          grep -q avx2 /proc/cpuinfo || { echo "::error::runner lacks AVX2"; exit 1; }
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -86,26 +98,44 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/models/tiny.gguf
-          key: gguf-smollm2-135m-q4km-v1
+          key: gguf-smollm2-135m-q4km-${{ env.MODEL_SHA256 }}
 
       - name: Download tiny GGUF model
         if: steps.gguf-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p ~/models
-          curl -sL -o ~/models/tiny.gguf \
-            "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q4_K_M.gguf"
+          curl -sL -o ~/models/tiny.gguf "$MODEL_URL"
+
+      - name: Verify model checksum
+        run: |
+          echo "${MODEL_SHA256}  $HOME/models/tiny.gguf" | sha256sum -c -
 
       - name: Run gated integration test
         run: |
           IE_TEST_GGUF="$HOME/models/tiny.gguf" \
             pytest tests/inference/test_llamacpp_integration.py -v
 
-      - name: Smoke-test the generate CLI against the real model
+      - name: Render a real completion (proof artifact)
         run: |
+          mkdir -p artifacts
           inference-engine generate \
             --model-path "$HOME/models/tiny.gguf" \
             --prompt "The capital of France is" \
-            --max-tokens 16
+            --max-tokens 24 \
+            > artifacts/generation.txt 2> artifacts/generation.result.json
+          {
+            echo "### Real llama.cpp generation"
+            echo '```'
+            cat artifacts/generation.txt
+            echo '```'
+            echo "Result: \`$(cat artifacts/generation.result.json)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload generation proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-generation
+          path: artifacts/*
 
   build:
     name: Build & validate package

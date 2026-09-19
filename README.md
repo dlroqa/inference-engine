@@ -156,10 +156,13 @@ every push/PR:
   pytest **with branch coverage** (fails under the 90% floor). Publishes a
   coverage table to the run summary and uploads `coverage.xml` + a JUnit report
   as artifacts.
-- **`integration-llama`**: installs the real `llama-cpp-python` CPU backend,
-  downloads (and caches) a tiny GGUF model, and runs the gated integration test
-  plus a real `generate` CLI smoke against it — verifying the actual llama.cpp
-  path end-to-end on a runner with AVX2.
+- **`integration-llama`** (the AVX/real-inference environment): asserts the
+  runner has **AVX2**, installs the real `llama-cpp-python` CPU backend,
+  downloads + **checksum-verifies** a cached tiny GGUF, runs the gated
+  integration test, and **renders a real completion** (uploaded as the
+  `real-generation` artifact and shown in the run summary). This is the canonical
+  place the llama.cpp path is exercised, since local dev CPUs may lack AVX. It
+  also runs on demand via **workflow_dispatch**.
 - **`build`**: builds the sdist + wheel with `python -m build`, installs the
   wheel into a clean virtualenv, and smoke-tests the packaged CLI
   (`inference-engine version` / `migrate`) so the distributable is verified — not
