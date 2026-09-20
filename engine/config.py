@@ -85,6 +85,14 @@ class Settings(BaseSettings):
     # Observability.
     log_level: LogLevel = "INFO"
 
+    # Operability core (Block 4). Telemetry sampler interval and the bounded
+    # buffers behind the event bus / recent-log mirror. 0 disables the sampler.
+    metrics_interval_s: float = Field(default=1.0, ge=0.0, le=60.0)
+    event_history_size: int = Field(default=200, ge=0, le=10_000)
+    event_subscriber_queue: int = Field(default=500, ge=1, le=100_000)
+    log_ring_size: int = Field(default=500, ge=0, le=100_000)
+    log_events_max_rows: int = Field(default=2000, ge=0, le=1_000_000)
+
     # Local inference runtime (Block 1). A single explicitly configured GGUF
     # model. Multiple models, downloads, and GPU auto-tuning are later blocks;
     # n_gpu_layers is a manual knob (0 = CPU-only default).

@@ -8,6 +8,8 @@ internal ``GenerationRequest``/token-stream contract.
 
 from __future__ import annotations
 
+import logging
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -17,6 +19,8 @@ from engine import __version__
 from engine.api import health
 from engine.api.errors import error_response, register_exception_handlers
 from engine.api.openai_router import router as openai_router
+from engine.api.ops_router import router as ops_router
+from engine.api.ws_router import router as ws_router
 from engine.auth.keys import KeyStore
 from engine.config import Settings, load_config
 from engine.gateway import Gateway
@@ -27,6 +31,10 @@ from engine.logging_setup import configure_logging, get_logger
 from engine.quota.store import UsageStore
 from engine.store.db import connect
 from engine.store.migrations import apply_migrations, migrations_at_head
+from engine.telemetry.counters import Counters
+from engine.telemetry.events import EventBus
+from engine.telemetry.logbuffer import LogCollector
+from engine.telemetry.service import Telemetry
 
 # The active settings for the running app. Set by ``create_app`` so request
 # handlers (e.g. readiness) can access configuration without a DI framework.
@@ -59,6 +67,26 @@ def create_app(
     configure_logging(settings.log_level)
     log = get_logger("engine.startup")
 
+    # Operability core (Block 4): event bus, counters, telemetry service, and a
+    # bounded structured-log mirror installed on the root logger.
+    event_bus = EventBus(
+        history=settings.event_history_size,
+        subscriber_queue=settings.event_subscriber_queue,
+    )
+    counters = Counters()
+    telemetry = Telemetry(
+        bus=event_bus,
+        counters=counters,
+        data_dir=settings.data_dir,
+        sample_interval_s=settings.metrics_interval_s,
+    )
+    log_collector = LogCollector(
+        settings.db_path,
+        ring_size=settings.log_ring_size,
+        max_rows=settings.log_events_max_rows,
+    )
+    logging.getLogger().addHandler(log_collector)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         log.info(
@@ -90,9 +118,15 @@ def create_app(
                 app.state.backend = None
                 log.warning("model_load_failed", extra={"error": str(exc)})
 
+        # Start the metrics sampler once the loop is running (skip if disabled).
+        if settings.metrics_interval_s > 0:
+            telemetry.start(lambda: getattr(app.state, "backend", None))
+
         try:
             yield
         finally:
+            await telemetry.stop()
+            logging.getLogger().removeHandler(log_collector)
             active: InferenceBackend | None = getattr(app.state, "backend", None)
             if active is not None and not injected_backend:
                 await active.unload()
@@ -101,7 +135,7 @@ def create_app(
     app = FastAPI(
         title="Inference Engine",
         version=__version__,
-        summary="Local GGUF inference with an OpenAI-compatible API (Blocks 0–2).",
+        summary="Local GGUF inference with an OpenAI-compatible API + operability (Blocks 0–4).",
         lifespan=lifespan,
     )
     app.state.settings = settings
@@ -111,6 +145,19 @@ def create_app(
         KeyStore(settings.db_path),  # type: ignore[arg-type]
         UsageStore(settings.db_path),  # type: ignore[arg-type]
     )
+    app.state.event_bus = event_bus
+    app.state.counters = counters
+    app.state.telemetry = telemetry
+    app.state.log_collector = log_collector
+
+    @app.middleware("http")
+    async def _assign_request_id(request: Request, call_next) -> Response:  # type: ignore[no-untyped-def]
+        # A correlation id available to error handlers even for requests that fail
+        # validation before the endpoint runs. The OpenAI edge overrides this with
+        # its ``chatcmpl-`` id once it starts serving.
+        incoming = request.headers.get("x-request-id")
+        request.state.request_id = incoming or f"req-{uuid.uuid4().hex}"
+        return await call_next(request)
 
     @app.middleware("http")
     async def _limit_body_size(request: Request, call_next) -> Response:  # type: ignore[no-untyped-def]
@@ -129,4 +176,6 @@ def create_app(
     register_exception_handlers(app)
     app.include_router(health.router)
     app.include_router(openai_router)
+    app.include_router(ops_router)
+    app.include_router(ws_router)
     return app

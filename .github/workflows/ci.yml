@@ -189,6 +189,10 @@ jobs:
           done
           echo "healthz: $(curl -sf http://127.0.0.1:8137/healthz)"
           echo "readyz:  $(curl -sf http://127.0.0.1:8137/readyz)"
+          # Operability REST surface (loopback = allowed): metrics snapshot must
+          # be valid JSON and honestly report energy as measured-or-unavailable.
+          METRICS=$(curl -sf http://127.0.0.1:8137/metrics)
+          echo "metrics energy: $(echo "$METRICS" | python -c 'import sys,json; print(json.load(sys.stdin)["energy"]["state"])')"
           kill "$SRV" 2>/dev/null || true
 
       - name: Upload distributions
