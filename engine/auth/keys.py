@@ -122,6 +122,20 @@ class KeyStore:
         finally:
             conn.close()
 
+    def delete(self, key_id: str) -> bool:
+        """Permanently remove a key row. Returns True if a row was deleted.
+
+        Attribution rows in ``usage_events``/``log_events`` keep the key id as a
+        plain string, so historical accounting is unaffected by the removal.
+        """
+        conn = connect(self._db_path)
+        try:
+            with conn:
+                cur = conn.execute("DELETE FROM api_keys WHERE id = ?;", (key_id,))
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
     def get(self, key_id: str) -> KeyRecord | None:
         conn = connect(self._db_path)
         try:

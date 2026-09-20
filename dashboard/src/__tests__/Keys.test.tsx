@@ -41,13 +41,24 @@ describe("Keys view", () => {
     expect(screen.getByText(/shown only once/i)).toBeInTheDocument();
   });
 
-  it("revokes a key", async () => {
+  it("revokes an active key", async () => {
     vi.spyOn(api, "listKeys").mockResolvedValue({ keys: [key()] });
     const revoke = vi.spyOn(api, "revokeKey").mockResolvedValue({ revoked: true, id: "k1" });
     render(<Keys />);
     await screen.findByText("sk-ie-ab12…");
     await userEvent.click(screen.getByRole("button", { name: /Revoke key sk-ie-ab12/ }));
     await waitFor(() => expect(revoke).toHaveBeenCalledWith("k1"));
+  });
+
+  it("deletes a revoked key (no revoke action shown)", async () => {
+    vi.spyOn(api, "listKeys").mockResolvedValue({ keys: [key({ revoked: true })] });
+    const del = vi.spyOn(api, "deleteKey").mockResolvedValue({ deleted: true, id: "k1" });
+    render(<Keys />);
+    await screen.findByText("sk-ie-ab12…");
+    expect(screen.getByText("revoked")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Revoke key/ })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /Delete key sk-ie-ab12/ }));
+    await waitFor(() => expect(del).toHaveBeenCalledWith("k1"));
   });
 
   it("shows an error state when the list fails", async () => {

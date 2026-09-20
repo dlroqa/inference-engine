@@ -98,6 +98,26 @@ def test_keys_create_list_revoke_lifecycle(admin_client: TestClient) -> None:
     assert admin_client.delete(f"/admin/keys/{key_id}").status_code == 404
 
 
+def test_purge_deletes_a_revoked_key(admin_client: TestClient) -> None:
+    created = admin_client.post("/admin/keys", json={"label": "temp"}).json()
+    key_id = created["id"]
+
+    # Cannot purge an active key -> 409 (must revoke first).
+    conflict = admin_client.delete(f"/admin/keys/{key_id}?purge=true")
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "key_not_revoked"
+
+    # Revoke, then purge -> the key disappears from the list entirely.
+    assert admin_client.delete(f"/admin/keys/{key_id}").status_code == 200
+    purged = admin_client.delete(f"/admin/keys/{key_id}?purge=true")
+    assert purged.status_code == 200 and purged.json()["deleted"] is True
+    ids = {k["id"] for k in admin_client.get("/admin/keys").json()["keys"]}
+    assert key_id not in ids
+
+    # Purging a non-existent key -> 404.
+    assert admin_client.delete(f"/admin/keys/{key_id}?purge=true").status_code == 404
+
+
 def test_created_key_authenticates_then_fails_after_revoke(tmp_settings: Settings) -> None:
     app = create_app(tmp_settings, backend=_loaded_fake())
     with TestClient(app, client=REMOTE) as c:

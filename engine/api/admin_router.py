@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
 from engine.api.deps import require_operator
@@ -167,9 +167,36 @@ def create_key(request: Request, body: KeyCreate) -> dict[str, Any]:
 
 
 @router.delete("/keys/{key_id}")
-def revoke_key(request: Request, key_id: str) -> dict[str, Any]:
+def revoke_or_delete_key(
+    request: Request,
+    key_id: str,
+    purge: bool = Query(default=False, description="Permanently delete an already-revoked key."),
+) -> dict[str, Any]:
     require_operator(request)
     store: KeyStore = request.app.state.gateway.keys
+
+    if purge:
+        # Permanent removal is only allowed for already-revoked keys, so an active
+        # key is never deleted out from under callers without first being revoked.
+        record = store.get(key_id)
+        if record is None:
+            raise OpenAIError(
+                f"key {key_id!r} not found",
+                status_code=404,
+                type="invalid_request_error",
+                code="key_not_found",
+            )
+        if not record.revoked:
+            raise OpenAIError(
+                "revoke the key before deleting it",
+                status_code=409,
+                type="invalid_request_error",
+                code="key_not_revoked",
+            )
+        store.delete(key_id)
+        _log.info("key_deleted", extra={"key_id": key_id})
+        return {"deleted": True, "id": key_id}
+
     revoked = store.revoke(key_id)
     if not revoked:
         raise OpenAIError(
