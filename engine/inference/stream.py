@@ -116,6 +116,13 @@ class QueueGenerationStream(GenerationStream):
             error = exc
             finish = FinishReason.ERROR
         self._offer(_Terminal(finish=finish, error=error))
+        # The worker is now finished. Release the backend from the loop thread so
+        # state resets even if the consumer was cancelled (client disconnect) and
+        # never awaits the terminal or aclose().
+        try:
+            self._loop.call_soon_threadsafe(self._fire_on_done)
+        except RuntimeError:
+            pass
 
     def _offer(self, item: _Token | _Terminal) -> None:
         try:

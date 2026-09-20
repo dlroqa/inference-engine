@@ -31,6 +31,16 @@ class _FakeLlama:
             last = i == len(pieces) - 1
             yield {"choices": [{"text": text, "finish_reason": "length" if last else None}]}
 
+    def create_chat_completion(self, **kwargs: object):  # type: ignore[no-untyped-def]
+        pieces = ["Hi", " there"]
+        # First chunk mimics the role-only delta OpenAI emits.
+        yield {"choices": [{"delta": {"role": "assistant"}, "finish_reason": None}]}
+        for i, text in enumerate(pieces):
+            last = i == len(pieces) - 1
+            yield {
+                "choices": [{"delta": {"content": text}, "finish_reason": "stop" if last else None}]
+            }
+
 
 @pytest.fixture
 def fake_llama(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -61,6 +71,23 @@ def test_load_generate_unload_with_fake(tmp_path: Path, fake_llama: None) -> Non
 
         await backend.unload()
         assert backend.state == BackendState.UNLOADED
+
+    asyncio.run(body())
+
+
+def test_chat_generate_with_fake(tmp_path: Path, fake_llama: None) -> None:
+    from engine.inference.types import Message
+
+    async def body() -> None:
+        backend = LlamaCppBackend(model_path=_model_file(tmp_path), n_ctx=256)
+        await backend.load()
+        req = GenerationRequest(messages=[Message(role="user", content="hi there")], max_tokens=8)
+        result = await backend.generate(req).collect()
+        assert result.text == "Hi there"  # role-only delta is skipped
+        assert result.completion_tokens == 2
+        assert result.prompt_tokens == 2  # estimate over "hi there"
+        assert result.finish_reason == FinishReason.STOP
+        await backend.unload()
 
     asyncio.run(body())
 

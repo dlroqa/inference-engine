@@ -15,12 +15,14 @@ from fastapi.responses import JSONResponse
 
 from engine import __version__
 from engine.config import Settings
+from engine.inference.base import InferenceBackend
+from engine.inference.types import BackendState
 from engine.store.db import connect_readonly
 
 router = APIRouter(tags=["health"])
 
-# Honest, documented note surfaced on readiness while no runtime exists.
-INFERENCE_NOTE = "inference runtime not implemented in this build (Block 0 foundation)"
+# Honest, documented note surfaced on readiness when no model is loaded.
+INFERENCE_NOTE = "no model loaded; configure model_path and load a model to serve /v1"
 
 
 @router.get("/healthz")
@@ -62,10 +64,24 @@ def readyz(request: Request) -> JSONResponse:
     if not migrations_ready:
         ready = False
 
+    # Inference availability is reported separately from service readiness: the
+    # service can be ready (DB + migrations) without a model loaded.
+    backend: InferenceBackend | None = getattr(request.app.state, "backend", None)
+    model_loaded = backend is not None and backend.state in (
+        BackendState.READY,
+        BackendState.GENERATING,
+    )
+    inference: dict[str, object] = {"available": model_loaded}
+    if backend is not None and model_loaded:
+        inference["model_id"] = backend.capabilities().model_id
+        inference["state"] = backend.state.value
+    else:
+        inference["reason"] = INFERENCE_NOTE
+
     body: dict[str, object] = {
         "status": "ready" if ready else "not_ready",
         "version": __version__,
         "checks": checks,
-        "inference": {"available": False, "reason": INFERENCE_NOTE},
+        "inference": inference,
     }
     return JSONResponse(status_code=200 if ready else 503, content=body)
