@@ -171,6 +171,18 @@ jobs:
           /tmp/verify/bin/inference-engine migrate --data-dir /tmp/ie-data
           test -f /tmp/ie-data/inference_engine.db
 
+      - name: Smoke-test the running server (health endpoints)
+        run: |
+          /tmp/verify/bin/inference-engine serve --data-dir /tmp/ie-serve --port 8137 &
+          SRV=$!
+          for _ in $(seq 1 40); do
+            curl -sf http://127.0.0.1:8137/healthz >/dev/null 2>&1 && break
+            sleep 0.25
+          done
+          echo "healthz: $(curl -sf http://127.0.0.1:8137/healthz)"
+          echo "readyz:  $(curl -sf http://127.0.0.1:8137/readyz)"
+          kill "$SRV" 2>/dev/null || true
+
       - name: Upload distributions
         continue-on-error: true # never fail the build if artifact storage quota is full
         uses: actions/upload-artifact@v4
