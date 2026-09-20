@@ -39,6 +39,15 @@ export function Keys(): JSX.Element {
     }
   };
 
+  const remove = async (id: string) => {
+    try {
+      await api.deleteKey(id);
+      reload();
+    } catch (err) {
+      setFormError(err instanceof ApiError ? err.message : String(err));
+    }
+  };
+
   const copy = async () => {
     if (!created) return;
     try {
@@ -142,13 +151,21 @@ export function Keys(): JSX.Element {
                         )}
                       </td>
                       <td style={{ textAlign: "right" }}>
-                        {!k.revoked && (
+                        {k.revoked ? (
+                          <button
+                            className="btn danger"
+                            onClick={() => remove(k.id)}
+                            aria-label={`Delete key ${k.prefix}`}
+                          >
+                            <Icon name="trash" size={16} /> Delete
+                          </button>
+                        ) : (
                           <button
                             className="btn danger"
                             onClick={() => revoke(k.id)}
                             aria-label={`Revoke key ${k.prefix}`}
                           >
-                            <Icon name="trash" size={16} /> Revoke
+                            <Icon name="stop" size={16} /> Revoke
                           </button>
                         )}
                       </td>

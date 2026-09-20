@@ -1,27 +1,42 @@
-"""OpenAI-compatible request/response schemas (deliberately supported subset).
+"""OpenAI-compatible request/response schemas.
 
-Only the fields the engine actually honors are modeled. ``extra="forbid"`` makes
-any unsupported field a clear validation error rather than a silent no-op, per the
-Block 2 contract. See ``docs/compatibility.md`` for the published matrix.
+Compatibility philosophy (revised after real-client testing): to be genuinely
+**drop-in**, the request model *ignores* unknown and unsupported-but-benign
+optional fields (e.g. ``reasoning_effort``, ``frequency_penalty``, ``user``,
+``stream_options``) rather than rejecting them — that is how mature
+OpenAI-compatible servers behave, and rejecting them breaks real SDK/agent
+clients that always send newer params.
+
+What is still rejected are the features that would produce **silently wrong**
+output if ignored — because the caller's contract depends on them:
+``tools``/``functions`` (expects tool calls), ``response_format`` json modes
+(expects valid JSON), and ``n > 1`` (expects multiple choices). Those get a clear
+``400`` pointing at the block where they land. See ``docs/compatibility.md``.
 """
 
 from __future__ import annotations
 
 import time
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 
 class ChatMessage(BaseModel):
-    model_config = {"extra": "forbid"}
+    # Ignore extra message fields (e.g. OpenAI's ``name``) for drop-in tolerance.
+    model_config = {"extra": "ignore"}
 
+    # Roles are restricted to the supported set; ``tool``/``function`` roles imply
+    # tool-calling we do not support yet, so they are rejected (not silently run).
     role: Literal["system", "user", "assistant"]
     content: str
 
 
 class ChatCompletionRequest(BaseModel):
-    model_config = {"extra": "forbid"}
+    # Unknown/benign optional fields are ignored (drop-in compatibility). The
+    # contract-changing fields below are modeled explicitly so they can be
+    # rejected clearly rather than silently dropped.
+    model_config = {"extra": "ignore"}
 
     model: str
     messages: list[ChatMessage] = Field(min_length=1)
@@ -35,11 +50,34 @@ class ChatCompletionRequest(BaseModel):
     seed: int | None = None
     n: int = Field(default=1, ge=1)
 
+    # Modeled only to reject them honestly (ignoring these would mislead callers).
+    tools: list[Any] | None = None
+    functions: list[Any] | None = None
+    response_format: dict[str, Any] | None = None
+
     @field_validator("n")
     @classmethod
     def _only_single_choice(cls, v: int) -> int:
         if v != 1:
-            raise ValueError("only n=1 is supported")
+            raise ValueError("only n=1 is supported (multiple choices are not implemented)")
+        return v
+
+    @field_validator("tools", "functions")
+    @classmethod
+    def _reject_tools(cls, v: list[Any] | None) -> list[Any] | None:
+        if v:
+            raise ValueError("tool/function calling is not supported yet (planned: Block 12)")
+        return v
+
+    @field_validator("response_format")
+    @classmethod
+    def _reject_json_formats(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        # ``{"type": "text"}`` is the OpenAI default and is fine (we produce text);
+        # JSON modes require structured-output support we do not have yet.
+        if v is not None and v.get("type") not in (None, "text"):
+            raise ValueError(
+                "structured output (response_format json) is not supported yet (planned: Block 8)"
+            )
         return v
 
     @field_validator("stop")

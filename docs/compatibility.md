@@ -1,12 +1,17 @@
 # OpenAI API compatibility matrix
 
-The engine exposes a **deliberately supported subset** of the OpenAI API. An
-official `openai` SDK client pointed at `<base_url>/v1` works without custom
-protocol code for the surface below. Anything not listed is **not** silently
-accepted — unsupported request fields are rejected with a clear
-`400 invalid_request_error`.
+The engine exposes a **supported subset** of the OpenAI API and aims to be
+**drop-in**: an official `openai` SDK client (or an agent harness) pointed at
+`<base_url>/v1` works without custom protocol code for the surface below.
 
-_Status as of Block 2._
+**Unknown and unsupported-but-benign optional fields are accepted and ignored**
+(e.g. `reasoning_effort`, `frequency_penalty`, `user`, `stream_options`,
+`logit_bias`, and an extra `name` on a message) so newer clients keep working.
+Only fields whose behavior the caller *depends on* — and which we cannot yet
+honor — are rejected with a clear `400`, because silently ignoring them would
+return wrong output: `tools`/`functions`, JSON `response_format`, and `n > 1`.
+
+_Status as of Block 5 (revised compatibility policy after real-client testing)._
 
 ## Endpoints
 
@@ -31,13 +36,12 @@ _Status as of Block 2._
 | `top_p` | ✅ Supported | 0.0–1.0 |
 | `stop` | ✅ Supported | String or array of strings |
 | `seed` | ✅ Supported | Best-effort determinism (backend-dependent) |
-| `n` | ⚠️ Partial | Only `n=1`; other values → `400` |
-| `tools` / `functions` / `tool_choice` | ❌ Rejected | Block 12 (function calling / MCP) |
-| `response_format` / `json_schema` | ❌ Rejected | Structured output is Block 8 |
-| `logprobs` / `top_logprobs` | ❌ Rejected | Not implemented |
-| `logit_bias` | ❌ Rejected | Block 8 |
-| `frequency_penalty` / `presence_penalty` | ❌ Rejected | Sampler surface is Block 8 |
-| `user`, `metadata`, `stream_options`, other | ❌ Rejected | Unknown fields → `400 invalid_request_error` |
+| `n` | ⚠️ Partial | Only `n=1`; other values → `400` (would need multiple choices) |
+| `response_format: {"type":"text"}` | ✅ Accepted | The OpenAI default; we produce text |
+| `tools` / `functions` | ❌ Rejected | `400` — function calling is Block 12 (ignoring would drop the caller's tool calls) |
+| `response_format` json / `json_schema` | ❌ Rejected | `400` — structured output is Block 8 (ignoring would return non-JSON) |
+| `reasoning_effort`, `frequency_penalty`, `presence_penalty`, `logit_bias`, `logprobs`, `top_logprobs` | ⚠️ Ignored | Accepted for drop-in compatibility; **no effect yet** (samplers land in Block 8) |
+| `user`, `metadata`, `stream_options`, `tool_choice`, other unknown fields | ⚠️ Ignored | Accepted and ignored for drop-in compatibility |
 
 Multimodal `content` (arrays of parts / images) is not supported; `content` must
 be a string.
@@ -65,7 +69,7 @@ OpenAI error envelope: `{"error": {"message", "type", "param", "code"}}`.
 
 | Condition | Status | `type` / `code` |
 |---|---|---|
-| Unsupported / unknown field, bad value | `400` | `invalid_request_error` |
+| Bad value, or a rejected feature (`tools`, json `response_format`, `n>1`) | `400` | `invalid_request_error` |
 | Unknown model | `404` | `model_not_found` |
 | No model loaded | `503` | `model_not_loaded` |
 | Model busy (a generation in progress) | `503` | `model_busy` |

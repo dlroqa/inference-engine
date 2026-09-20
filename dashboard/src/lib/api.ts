@@ -182,6 +182,8 @@ export const api = {
   createKey: (label: string | null) =>
     request<CreatedKey>("/admin/keys", { method: "POST", body: JSON.stringify({ label }) }),
   revokeKey: (id: string) => request<{ revoked: boolean; id: string }>(`/admin/keys/${id}`, { method: "DELETE" }),
+  deleteKey: (id: string) =>
+    request<{ deleted: boolean; id: string }>(`/admin/keys/${id}?purge=true`, { method: "DELETE" }),
 };
 
 export function wsUrl(path: string): string {

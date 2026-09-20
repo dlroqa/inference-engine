@@ -21,18 +21,64 @@ def _assert_openai_error(resp, status: int) -> dict:  # type: ignore[no-untyped-
     return err
 
 
-def test_unsupported_parameter_rejected(client: TestClient) -> None:
-    # frequency_penalty is not in the supported subset -> extra=forbid rejects it.
+def test_unknown_and_benign_params_are_accepted(client: TestClient) -> None:
+    # Drop-in compatibility: unknown/benign optional params (reasoning_effort,
+    # frequency_penalty, user, stream_options, an extra message field) are ignored,
+    # not rejected, so real OpenAI-compatible clients work unchanged.
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": MODEL_ID,
+            "messages": [{"role": "user", "content": "hi", "name": "bob"}],
+            "reasoning_effort": "low",
+            "frequency_penalty": 0.5,
+            "presence_penalty": 0.2,
+            "user": "u123",
+            "stream_options": {"include_usage": True},
+            "logit_bias": {"123": -100},
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["object"] == "chat.completion"
+
+
+def test_response_format_text_is_accepted(client: TestClient) -> None:
+    # The OpenAI default response_format is {"type": "text"} — we produce text.
     resp = client.post(
         "/v1/chat/completions",
         json={
             "model": MODEL_ID,
             "messages": [{"role": "user", "content": "hi"}],
-            "frequency_penalty": 0.5,
+            "response_format": {"type": "text"},
+        },
+    )
+    assert resp.status_code == 200
+
+
+def test_tools_are_rejected_clearly(client: TestClient) -> None:
+    # Silently ignoring tools would mislead a caller expecting tool calls.
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": MODEL_ID,
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"type": "function", "function": {"name": "f", "parameters": {}}}],
         },
     )
     err = _assert_openai_error(resp, 400)
     assert err["type"] == "invalid_request_error"
+
+
+def test_json_response_format_is_rejected_clearly(client: TestClient) -> None:
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": MODEL_ID,
+            "messages": [{"role": "user", "content": "hi"}],
+            "response_format": {"type": "json_object"},
+        },
+    )
+    _assert_openai_error(resp, 400)
 
 
 def test_n_greater_than_one_rejected(client: TestClient) -> None:

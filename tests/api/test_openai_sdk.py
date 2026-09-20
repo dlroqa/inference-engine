@@ -60,7 +60,21 @@ def test_sdk_lists_models(base_url: str) -> None:
     assert MODEL_ID in ids
 
 
-def test_sdk_unsupported_param_errors(base_url: str) -> None:
+def test_sdk_benign_params_are_accepted(base_url: str) -> None:
+    # Drop-in tolerance: the real SDK sending an optional sampler param we do not
+    # yet apply must NOT error (it is accepted and ignored).
+    client = _client(base_url)
+    resp = client.chat.completions.create(
+        model=MODEL_ID,
+        messages=[{"role": "user", "content": "hi"}],
+        frequency_penalty=0.5,
+        user="u123",
+    )
+    assert resp.choices[0].message.content is not None
+
+
+def test_sdk_rejects_contract_changing_features(base_url: str) -> None:
+    # Features we cannot honor and must not silently drop still raise clearly.
     from openai import BadRequestError
 
     client = _client(base_url)
@@ -68,5 +82,5 @@ def test_sdk_unsupported_param_errors(base_url: str) -> None:
         client.chat.completions.create(
             model=MODEL_ID,
             messages=[{"role": "user", "content": "hi"}],
-            frequency_penalty=0.5,
+            response_format={"type": "json_object"},
         )
