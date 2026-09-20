@@ -1,0 +1,182 @@
+"""Admin API for the operator dashboard (Block 5).
+
+A small, typed control surface the dashboard consumes:
+
+- ``GET  /admin/overview``      — health + readiness + model + current metrics.
+- ``POST /admin/model/load``    — load the configured model (safe/idempotent).
+- ``POST /admin/model/unload``  — unload the current model (safe/idempotent).
+- ``GET  /admin/keys``          — list API keys (no secrets).
+- ``POST /admin/keys``          — create a key (token returned **once**).
+- ``DELETE /admin/keys/{id}``   — revoke a key.
+
+Every endpoint is behind :func:`require_operator` (loopback dev use or a valid
+API key). Model control acts on the single configured GGUF model (Block 1); a
+full model catalog is a later block.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from fastapi import APIRouter, Request
+from pydantic import BaseModel, Field
+
+from engine.api.deps import require_operator
+from engine.api.errors import OpenAIError
+from engine.auth.keys import KeyStore
+from engine.inference.base import InferenceBackend
+from engine.inference.factory import build_backend
+from engine.inference.types import BackendError, BackendState
+from engine.logging_setup import get_logger
+from engine.store.db import connect_readonly
+from engine.store.migrations import migrations_at_head
+from engine.telemetry.service import Telemetry
+
+router = APIRouter(prefix="/admin", tags=["admin"])
+_log = get_logger("engine.admin")
+
+_LOADED = (BackendState.READY, BackendState.GENERATING)
+
+
+def _model_panel(request: Request, backend: InferenceBackend | None) -> dict[str, Any]:
+    settings = request.app.state.settings
+    loaded = backend is not None and backend.state in _LOADED
+    return {
+        "configured_id": settings.model_id,
+        "configured": settings.model_path is not None,
+        "state": backend.state.value if backend is not None else BackendState.UNLOADED.value,
+        "loaded": loaded,
+        "model_id": backend.capabilities().model_id if loaded and backend is not None else None,
+    }
+
+
+@router.get("/overview")
+def overview(request: Request) -> dict[str, Any]:
+    require_operator(request)
+    settings = request.app.state.settings
+    telemetry: Telemetry = request.app.state.telemetry
+    backend: InferenceBackend | None = getattr(request.app.state, "backend", None)
+
+    checks: dict[str, str] = {}
+    ready = True
+    try:
+        conn = connect_readonly(settings.db_path)
+        try:
+            conn.execute("SELECT 1;").fetchone()
+            checks["database"] = "ok"
+            checks["migrations"] = "applied" if migrations_at_head(conn) else "pending"
+            ready = checks["migrations"] == "applied"
+        finally:
+            conn.close()
+    except Exception as exc:  # pragma: no cover - db unreachable is rare in tests
+        checks["database"] = f"error: {exc.__class__.__name__}"
+        ready = False
+
+    return {
+        "version": request.app.version,
+        "ready": ready,
+        "checks": checks,
+        "model": _model_panel(request, backend),
+        "metrics": telemetry.build_snapshot(backend),
+    }
+
+
+@router.post("/model/load")
+async def model_load(request: Request) -> dict[str, Any]:
+    require_operator(request)
+    settings = request.app.state.settings
+    backend: InferenceBackend | None = getattr(request.app.state, "backend", None)
+
+    if backend is not None and backend.state in _LOADED:
+        return {"result": "already_loaded", "model": _model_panel(request, backend)}
+
+    if settings.model_path is None:
+        raise OpenAIError(
+            "no model is configured; set model_path before loading",
+            status_code=400,
+            type="invalid_request_error",
+            code="model_not_configured",
+        )
+
+    if backend is None:
+        backend = build_backend(settings)
+        request.app.state.backend = backend
+    try:
+        await backend.load()
+    except BackendError as exc:
+        _log.warning("model_load_failed", extra={"detail": str(exc)})
+        raise OpenAIError(
+            f"model failed to load: {exc}",
+            status_code=503,
+            type="service_unavailable",
+            code="model_load_failed",
+        ) from exc
+    _log.info("model_loaded", extra={"model": settings.model_id})
+    return {"result": "loaded", "model": _model_panel(request, backend)}
+
+
+@router.post("/model/unload")
+async def model_unload(request: Request) -> dict[str, Any]:
+    require_operator(request)
+    backend: InferenceBackend | None = getattr(request.app.state, "backend", None)
+    if backend is None or backend.state not in _LOADED:
+        return {"result": "already_unloaded", "model": _model_panel(request, backend)}
+    await backend.unload()
+    _log.info("model_unloaded")
+    return {"result": "unloaded", "model": _model_panel(request, backend)}
+
+
+class KeyCreate(BaseModel):
+    model_config = {"extra": "forbid"}
+    label: str | None = Field(default=None, max_length=200)
+
+
+@router.get("/keys")
+def list_keys(request: Request) -> dict[str, Any]:
+    require_operator(request)
+    store: KeyStore = request.app.state.gateway.keys
+    return {
+        "keys": [
+            {
+                "id": r.id,
+                "prefix": r.prefix,
+                "label": r.label,
+                "created_at": r.created_at,
+                "last_used_at": r.last_used_at,
+                "revoked": r.revoked,
+            }
+            for r in store.list()
+        ]
+    }
+
+
+@router.post("/keys")
+def create_key(request: Request, body: KeyCreate) -> dict[str, Any]:
+    require_operator(request)
+    store: KeyStore = request.app.state.gateway.keys
+    record, token = store.create(label=body.label)
+    _log.info("key_created", extra={"key_id": record.id})
+    # The token is returned exactly once; it is never stored or shown again.
+    return {
+        "id": record.id,
+        "prefix": record.prefix,
+        "label": record.label,
+        "created_at": record.created_at,
+        "token": token,
+    }
+
+
+@router.delete("/keys/{key_id}")
+def revoke_key(request: Request, key_id: str) -> dict[str, Any]:
+    require_operator(request)
+    store: KeyStore = request.app.state.gateway.keys
+    revoked = store.revoke(key_id)
+    if not revoked:
+        raise OpenAIError(
+            f"key {key_id!r} not found or already revoked",
+            status_code=404,
+            type="invalid_request_error",
+            code="key_not_found",
+        )
+    _log.info("key_revoked", extra={"key_id": key_id})
+    return {"revoked": True, "id": key_id}

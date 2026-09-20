@@ -247,6 +247,54 @@ curl -s http://127.0.0.1:8000/metrics | jq .energy
   `x-request-id` correlation header. A failed request writes a structured
   `log_events` row (category + stage + stacktrace, correlated by request id).
 
+## Operator dashboard (Block 5)
+
+A small React/Vite single-page app — the local operator UI — is served by the
+engine at **`/dashboard`** (the root path redirects there). Four views, all driven
+by the typed admin API and the Block 4 WebSocket feeds:
+
+- **Overview** — health, loaded model + state, uptime, request/token counters,
+  animated CPU/RAM/disk meters, energy state, and the live inference feed. The
+  metrics stream reconnects automatically and falls back to REST polling of
+  `/metrics`; the connection state is always shown.
+- **Models** — the configured model identity with safe **load / unload** actions.
+- **Logs** — recent request/log events filtered by level and free-text (request
+  id, model, error category), with per-row category and stage.
+- **API keys** — create (with a label), copy the new secret **once**, and revoke.
+
+**Access:** the SPA is served to anyone who can reach the route, but every data
+endpoint it calls is gated (loopback dev use or a valid operator API key), so the
+UI is useless without authorization when the engine is network-bound — access
+control never relies on the obscurity of the route. When a call returns `401`, the
+dashboard prompts for an operator key (sent as a Bearer token and, for WebSockets,
+an `?api_key=` parameter).
+
+The admin API (all operator-gated):
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /admin/overview` | Health, readiness, configured model, and current metrics. |
+| `POST /admin/model/load` · `POST /admin/model/unload` | Safe, idempotent model control. |
+| `GET /admin/keys` · `POST /admin/keys` · `DELETE /admin/keys/{id}` | Key management (token shown once). |
+
+Build the dashboard into `engine/static` (bundled into the wheel by CI):
+
+```bash
+cd dashboard
+npm ci
+npm run test:run   # vitest component tests (loading/disconnected/error/populated)
+npm run build      # outputs to ../engine/static, served at /dashboard
+# dev with hot reload against a local engine on :8000:
+npm run dev
+```
+
+A control-plane smoke test drives the whole operator flow (model load → generation
+→ metric update → log inspection → key revoke) against a running engine:
+
+```bash
+python scripts/dashboard_smoke.py --base-url http://127.0.0.1:8000 [--api-key sk-ie-…]
+```
+
 ## Test & checks
 
 ```bash
@@ -280,13 +328,17 @@ push/PR (and on demand via **workflow_dispatch**):
   `real-generation` artifact and shown in the run summary). This is the canonical
   place the llama.cpp path is exercised, since local dev CPUs may lack AVX. It
   also runs on demand via **workflow_dispatch**.
-- **`build`**: builds the sdist + wheel with `python -m build`, installs the
-  wheel into a clean virtualenv, and smoke-tests the packaged CLI
-  (`inference-engine version` / `migrate`) so the distributable is verified — not
-  just the source tree. Uploads the distributions as artifacts.
+- **`dashboard`**: installs the SPA deps, type-checks, runs the **vitest**
+  component tests, and builds the dashboard into `engine/static` — the React/Vite
+  build/test environment (Block 5).
+- **`build`**: builds the operator dashboard, then the sdist + wheel with
+  `python -m build` (so the wheel bundles the SPA), installs the wheel into a clean
+  virtualenv, and smoke-tests the packaged CLI (`version` / `migrate`), the running
+  server's health + `/metrics` + served `/dashboard`, and the dashboard
+  control-plane smoke. The distributable is verified, not just the source tree.
 - **`ci-success`**: a single aggregator gate that passes only when **all** of the
-  above jobs succeed (failing if any failed or was skipped). Use it as the one
-  required status check for branch protection.
+  above jobs succeed (`test`, `dashboard`, `integration-llama`, `build`; failing if
+  any failed or was skipped). Use it as the one required status check.
 
 Future build/render/test needs are added here as jobs (e.g. real-SDK contract
 tests against a live model, the React/Vite dashboard build + screenshots, Docker
@@ -321,14 +373,19 @@ engine/
 │   ├── openai_router.py# /v1/chat/completions, /v1/models (+ telemetry hooks)
 │   ├── ws_router.py    # /ws/metrics, /ws/feed
 │   ├── ops_router.py   # /metrics, /logs, /diagnostics
+│   ├── admin_router.py # /admin/overview, /admin/model/*, /admin/keys
+│   ├── deps.py         # operator access gate (loopback or valid key)
 │   └── errors.py       # OpenAI error envelope + structured error logging
 ├── inference/          # internal generation contract + llama.cpp backend
 ├── auth/ · quota/      # API keys · compute-unit quota
 ├── telemetry/          # event bus, counters, resources, power, logs, diagnostics
+├── static/             # built operator dashboard SPA (build artifact, served at /dashboard)
 └── store/
     ├── db.py           # SQLite (WAL) connection
     ├── migrations.py   # migration runner
     └── migrations/     # NNNN_*.sql migration files
+dashboard/              # React/Vite operator UI source (builds into engine/static)
+scripts/                # CI smokes (real-model SDK, dashboard control-plane)
 tests/                  # pytest suite
 ```
 

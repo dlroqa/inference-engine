@@ -65,6 +65,38 @@ jobs:
           if-no-files-found: ignore
           retention-days: 2
 
+  dashboard:
+    name: Operator dashboard (build + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Install dashboard deps
+        working-directory: dashboard
+        run: npm ci
+
+      - name: Type-check
+        working-directory: dashboard
+        run: npm run typecheck
+
+      - name: Component tests (vitest)
+        working-directory: dashboard
+        run: npm run test:run
+
+      - name: Build SPA into engine/static
+        working-directory: dashboard
+        run: npm run build
+
+      - name: Verify build output
+        run: test -f engine/static/index.html
+
   integration-llama:
     name: llama.cpp integration (real GGUF, AVX)
     runs-on: ubuntu-latest
@@ -149,6 +181,18 @@ jobs:
           trap 'kill $SRV 2>/dev/null || true' EXIT
           IE_MODEL_ID=tiny python scripts/real_model_sdk_smoke.py
 
+      - name: Dashboard control-plane smoke (real model load/gen/logs/keys)
+        run: |
+          IE_MODEL_PATH="$HOME/models/tiny.gguf" IE_MODEL_ID=tiny \
+            inference-engine serve --port 8124 --data-dir /tmp/ie-serve-dash &
+          SRV=$!
+          trap 'kill $SRV 2>/dev/null || true' EXIT
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8124/healthz >/dev/null 2>&1 && break
+            sleep 0.5
+          done
+          python scripts/dashboard_smoke.py --base-url http://127.0.0.1:8124
+
   build:
     name: Build & validate package
     runs-on: ubuntu-latest
@@ -161,6 +205,20 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Build the operator dashboard into engine/static
+        working-directory: dashboard
+        run: |
+          npm ci
+          npm run build
+          test -f ../engine/static/index.html
 
       - name: Build sdist and wheel
         run: |
@@ -193,6 +251,10 @@ jobs:
           # be valid JSON and honestly report energy as measured-or-unavailable.
           METRICS=$(curl -sf http://127.0.0.1:8137/metrics)
           echo "metrics energy: $(echo "$METRICS" | python -c 'import sys,json; print(json.load(sys.stdin)["energy"]["state"])')"
+          # The bundled dashboard SPA is served from the installed wheel.
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8137/dashboard/)" = "200"
+          # Control-plane smoke (no model configured -> generation skipped).
+          python scripts/dashboard_smoke.py --base-url http://127.0.0.1:8137 --skip-generation
           kill "$SRV" 2>/dev/null || true
 
       - name: Upload distributions
@@ -210,14 +272,16 @@ jobs:
     name: CI passed (build + render + test)
     runs-on: ubuntu-latest
     if: always()
-    needs: [test, integration-llama, build]
+    needs: [test, dashboard, integration-llama, build]
     steps:
       - name: Verify all jobs succeeded
         run: |
           echo "test:              ${{ needs.test.result }}"
+          echo "dashboard:         ${{ needs.dashboard.result }}"
           echo "integration-llama: ${{ needs.integration-llama.result }}"
           echo "build:             ${{ needs.build.result }}"
           if [ "${{ needs.test.result }}" != "success" ] \
+             || [ "${{ needs.dashboard.result }}" != "success" ] \
              || [ "${{ needs.integration-llama.result }}" != "success" ] \
              || [ "${{ needs.build.result }}" != "success" ]; then
             echo "::error::one or more CI jobs did not succeed"

@@ -41,7 +41,9 @@ inference-engine = "engine.cli:main"
 include = ["engine*"]
 
 [tool.setuptools.package-data]
-engine = ["store/migrations/*.sql"]
+# The built operator dashboard SPA (engine/static) is produced by the dashboard
+# build and bundled into the wheel; it is absent in a source checkout.
+engine = ["store/migrations/*.sql", "static/*", "static/assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
