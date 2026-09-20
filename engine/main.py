@@ -12,11 +12,15 @@ import logging
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from engine import __version__
 from engine.api import health
+from engine.api.admin_router import router as admin_router
 from engine.api.errors import error_response, register_exception_handlers
 from engine.api.openai_router import router as openai_router
 from engine.api.ops_router import router as ops_router
@@ -135,7 +139,7 @@ def create_app(
     app = FastAPI(
         title="Inference Engine",
         version=__version__,
-        summary="Local GGUF inference with an OpenAI-compatible API + operability (Blocks 0–4).",
+        summary="Local GGUF inference: OpenAI API, operability, operator UI (Blocks 0–5).",
         lifespan=lifespan,
     )
     app.state.settings = settings
@@ -178,4 +182,25 @@ def create_app(
     app.include_router(openai_router)
     app.include_router(ops_router)
     app.include_router(ws_router)
+    app.include_router(admin_router)
+    _mount_dashboard(app)
     return app
+
+
+def _mount_dashboard(app: FastAPI) -> None:
+    """Serve the built operator dashboard SPA from ``engine/static`` if present.
+
+    The SPA is a build artifact (not committed); when it has not been built the
+    engine still runs headless and the API is unaffected. Access control lives on
+    the data endpoints (all operator surfaces are gated), so the static shell is
+    served without relying on route obscurity: it is useless without a valid key
+    when the server is network-bound.
+    """
+    static_dir = Path(__file__).parent / "static"
+    if not (static_dir / "index.html").is_file():
+        return
+    app.mount("/dashboard", StaticFiles(directory=static_dir, html=True), name="dashboard")
+
+    @app.get("/", include_in_schema=False)
+    def _root() -> RedirectResponse:
+        return RedirectResponse(url="/dashboard/")

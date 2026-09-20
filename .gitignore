@@ -24,3 +24,9 @@ pytest-report.xml
 *.db-wal
 *.db-shm
 data/
+
+# Built operator dashboard SPA (build artifact; CI builds it into the wheel)
+engine/static/
+
+# Node
+node_modules/

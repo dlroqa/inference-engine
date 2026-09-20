@@ -1,0 +1,192 @@
+// Typed client for the engine's operator + admin API. All calls are same-origin
+// (the SPA is served by the engine); an optional API key is sent as a Bearer
+// token so the dashboard also works when the engine is network-bound.
+
+const KEY_STORAGE = "ie.operator.apiKey";
+
+export function getApiKey(): string | null {
+  try {
+    return localStorage.getItem(KEY_STORAGE);
+  } catch {
+    return null;
+  }
+}
+
+export function setApiKey(key: string | null): void {
+  try {
+    if (key) localStorage.setItem(KEY_STORAGE, key);
+    else localStorage.removeItem(KEY_STORAGE);
+  } catch {
+    /* storage unavailable (private mode) — the key simply isn't persisted */
+  }
+}
+
+export class ApiError extends Error {
+  status: number;
+  code?: string;
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+
+function authHeaders(extra?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = { ...extra };
+  const key = getApiKey();
+  if (key) headers["Authorization"] = `Bearer ${key}`;
+  return headers;
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const base: Record<string, string> = {};
+  if (init?.body) base["Content-Type"] = "application/json";
+  let resp: Response;
+  try {
+    resp = await fetch(path, { ...init, headers: authHeaders(base) });
+  } catch (e) {
+    throw new ApiError(`network error: ${(e as Error).message}`, 0);
+  }
+  if (!resp.ok) {
+    let message = `request failed (${resp.status})`;
+    let code: string | undefined;
+    try {
+      const body = await resp.json();
+      message = body?.error?.message ?? message;
+      code = body?.error?.code ?? undefined;
+    } catch {
+      /* non-JSON error body */
+    }
+    throw new ApiError(message, resp.status, code);
+  }
+  if (resp.status === 204) return undefined as T;
+  return (await resp.json()) as T;
+}
+
+// --- Types (mirror the backend contracts) ---
+
+export interface EnergyPanel {
+  state: "measured" | "unavailable";
+  watts: number | null;
+  j_per_token: number | null;
+  tokens_per_joule: number | null;
+  source: string | null;
+  reason?: string | null;
+}
+
+export interface MetricsSnapshot {
+  ts: number;
+  uptime_s: number;
+  counters: {
+    requests_total: number;
+    requests_active: number;
+    requests_errors: number;
+    prompt_tokens_total: number;
+    completion_tokens_total: number;
+    requests_per_min: number;
+  };
+  throughput: { completion_tokens_per_s: number | null };
+  resources: {
+    available: boolean;
+    reason?: string | null;
+    cpu_percent: number | null;
+    memory: { total: number | null; used: number | null; available: number | null; percent: number | null };
+    process_rss: number | null;
+    disk: { path: string; total: number | null; used: number | null; free: number | null; percent: number | null };
+  };
+  gpu: { available: boolean; reason?: string };
+  energy: EnergyPanel;
+  backend: { state: string; model_id: string | null; available: boolean };
+}
+
+export interface ModelPanel {
+  configured_id: string;
+  configured: boolean;
+  state: string;
+  loaded: boolean;
+  model_id: string | null;
+}
+
+export interface Overview {
+  version: string;
+  ready: boolean;
+  checks: Record<string, string>;
+  model: ModelPanel;
+  metrics: MetricsSnapshot;
+}
+
+export interface LogEvent {
+  ts: number;
+  level: string;
+  logger: string | null;
+  event: string;
+  request_id: string | null;
+  route: string | null;
+  model: string | null;
+  key_id: string | null;
+  category: string | null;
+  stage: string | null;
+  detail: string | null;
+  stacktrace: string | null;
+}
+
+export interface KeyRow {
+  id: string;
+  prefix: string;
+  label: string | null;
+  created_at: string;
+  last_used_at: string | null;
+  revoked: boolean;
+}
+
+export interface CreatedKey {
+  id: string;
+  prefix: string;
+  label: string | null;
+  created_at: string;
+  token: string;
+}
+
+export interface FeedEvent {
+  type: string;
+  ts: number;
+  request_id?: string;
+  endpoint?: string;
+  model?: string | null;
+  key_id?: string;
+  tokens?: number;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  finish_reason?: string;
+  ttft_ms?: number | null;
+  total_ms?: number | null;
+  category?: string;
+}
+
+// --- Endpoints ---
+
+export const api = {
+  overview: () => request<Overview>("/admin/overview"),
+  metrics: () => request<MetricsSnapshot>("/metrics"),
+  logs: (params: { limit?: number; level?: string; request_id?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (params.limit) q.set("limit", String(params.limit));
+    if (params.level) q.set("level", params.level);
+    if (params.request_id) q.set("request_id", params.request_id);
+    const qs = q.toString();
+    return request<{ events: LogEvent[] }>(`/logs${qs ? `?${qs}` : ""}`);
+  },
+  loadModel: () => request<{ result: string; model: ModelPanel }>("/admin/model/load", { method: "POST" }),
+  unloadModel: () => request<{ result: string; model: ModelPanel }>("/admin/model/unload", { method: "POST" }),
+  listKeys: () => request<{ keys: KeyRow[] }>("/admin/keys"),
+  createKey: (label: string | null) =>
+    request<CreatedKey>("/admin/keys", { method: "POST", body: JSON.stringify({ label }) }),
+  revokeKey: (id: string) => request<{ revoked: boolean; id: string }>(`/admin/keys/${id}`, { method: "DELETE" }),
+};
+
+export function wsUrl(path: string): string {
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const key = getApiKey();
+  const q = key ? `?api_key=${encodeURIComponent(key)}` : "";
+  return `${proto}//${window.location.host}${path}${q}`;
+}

@@ -17,8 +17,7 @@ from typing import Any
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
-from engine.api.errors import OpenAIError
-from engine.gateway import Gateway, extract_token
+from engine.api.deps import require_operator
 from engine.telemetry import diagnostics
 from engine.telemetry.logbuffer import LogCollector, read_log_events
 from engine.telemetry.service import Telemetry
@@ -26,21 +25,9 @@ from engine.telemetry.service import Telemetry
 router = APIRouter(tags=["operability"])
 
 
-def _require_operator(request: Request) -> None:
-    gateway: Gateway = request.app.state.gateway
-    host = request.client.host if request.client else None
-    if not gateway.operator_allowed(client_host=host, token=extract_token(request)):
-        raise OpenAIError(
-            "operator access required",
-            status_code=401,
-            type="invalid_request_error",
-            code="operator_access_required",
-        )
-
-
 @router.get("/metrics")
 def metrics(request: Request) -> dict[str, Any]:
-    _require_operator(request)
+    require_operator(request)
     telemetry: Telemetry = request.app.state.telemetry
     backend = getattr(request.app.state, "backend", None)
     return telemetry.build_snapshot(backend)
@@ -53,7 +40,7 @@ def logs(
     level: str | None = Query(default=None),
     request_id: str | None = Query(default=None),
 ) -> JSONResponse:
-    _require_operator(request)
+    require_operator(request)
     settings = request.app.state.settings
     rows = read_log_events(settings.db_path, limit=limit, level=level, request_id=request_id)
     return JSONResponse(content={"events": rows})
@@ -61,7 +48,7 @@ def logs(
 
 @router.get("/diagnostics")
 def diagnostics_bundle(request: Request) -> JSONResponse:
-    _require_operator(request)
+    require_operator(request)
     telemetry: Telemetry = request.app.state.telemetry
     collector: LogCollector | None = getattr(request.app.state, "log_collector", None)
     backend = getattr(request.app.state, "backend", None)
