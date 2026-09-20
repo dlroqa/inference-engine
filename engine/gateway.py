@@ -23,6 +23,7 @@ from engine.quota.compute import ComputeModel, estimate_prompt_tokens
 from engine.quota.store import UsageStore, WindowUsage
 
 LOCAL_KEY_ID = "local"  # unauthenticated loopback attribution
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
 
 def extract_token(request: Request) -> str | None:
@@ -33,6 +34,10 @@ def extract_token(request: Request) -> str | None:
     if x_api_key:
         return x_api_key.strip()
     return None
+
+
+def is_loopback_client(host: str | None) -> bool:
+    return host in _LOOPBACK_HOSTS
 
 
 class Limiter:
@@ -167,6 +172,19 @@ class Gateway:
                 code="missing_api_key",
             )
         return LOCAL_KEY_ID
+
+    def operator_allowed(self, *, client_host: str | None, token: str | None) -> bool:
+        """Whether an operator surface (metrics/feed/diagnostics) may be accessed.
+
+        Allowed for loopback clients (local development) or for any request that
+        presents a currently-valid API key (authenticated operator use). This is
+        the Block 4 gate; operator RBAC/SSO is a later block.
+        """
+        if is_loopback_client(client_host):
+            return True
+        if token:
+            return self.keys.verify(token) is not None
+        return False
 
     def _quota_headers(self, u5h: WindowUsage, uweek: WindowUsage) -> dict[str, str]:
         headers: dict[str, str] = {}

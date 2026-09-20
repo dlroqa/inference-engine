@@ -207,6 +207,46 @@ curl -s http://127.0.0.1:8000/readyz
 #  "inference":{"available":true,"model_id":"my-model","state":"ready"}}
 ```
 
+## Operability (Block 4)
+
+The engine exposes enough evidence to understand health, load, and individual
+request failures — without leaking prompts, responses, or secrets. Full metric
+definitions and limitations are in [docs/operability.md](docs/operability.md).
+
+**Live streams** (WebSocket) and their REST fallbacks:
+
+| Surface | Purpose |
+|---|---|
+| `WS /ws/metrics` | Periodic resource + counter snapshots (an immediate snapshot is sent on connect). |
+| `WS /ws/feed` | Inference live feed: request start / progress / end / error, with a bounded ring buffer replayed to late joiners. |
+| `GET /metrics` | The current snapshot as JSON (fallback for the streams). |
+| `GET /logs` | Recent structured log events (filter by `level`, `request_id`). |
+| `GET /diagnostics` | A redacted support bundle (config + hardware + metrics + recent logs). |
+
+All five are gated to **loopback development use or an authenticated operator**
+(a valid API key via `Authorization: Bearer …`, `x-api-key:`, or `?api_key=` on
+the WebSocket). Example:
+
+```bash
+curl -s http://127.0.0.1:8000/metrics | jq .energy
+# measured only where a validated power probe (Linux RAPL) exists, else:
+# {"state":"unavailable","watts":null,"j_per_token":null,"tokens_per_joule":null,...}
+```
+
+- **Request telemetry:** total/active/error request counts, prompt/completion
+  tokens, requests-per-minute, per-request TTFT and total latency (on feed
+  `request.end`), and backend state.
+- **Process telemetry:** CPU %, memory, disk (of the data dir), process RSS, and
+  uptime (via `psutil`). GPU is reported as an explicit **unavailable** state —
+  no tested GPU probe ships yet.
+- **Energy:** energy-per-token is **measured** only where a validated power probe
+  (Intel/AMD **RAPL** on Linux) is readable; otherwise the state is
+  **unavailable**. TDP-derived estimates are never presented as measured energy.
+- **Error taxonomy:** every failure is classified as `validation` / `auth` /
+  `limit` / `model` / `backend` / `cancellation` / `internal`, and errors carry an
+  `x-request-id` correlation header. A failed request writes a structured
+  `log_events` row (category + stage + stacktrace, correlated by request id).
+
 ## Test & checks
 
 ```bash
@@ -267,15 +307,24 @@ python -m build            # -> dist/*.whl, dist/*.tar.gz
   on startup. (A heavier Alembic/Postgres path is planned for later blocks.)
 - All storage/config/log paths are overridable via config.
 
-## Project layout (Block 0)
+## Project layout
 
 ```
 engine/
-├── main.py             # FastAPI app factory + lifespan (logging, migrations)
+├── main.py             # FastAPI app factory + lifespan (logging, migrations, sampler)
 ├── config.py           # layered pydantic-settings configuration
-├── cli.py              # `inference-engine` CLI (serve/migrate/config/version)
+├── cli.py              # `inference-engine` CLI (serve/migrate/config/generate/keys)
+├── gateway.py          # auth, limits, quota, attribution, operator gate
 ├── logging_setup.py    # structured JSON logging
-├── api/health.py       # /healthz, /readyz
+├── api/
+│   ├── health.py       # /healthz, /readyz
+│   ├── openai_router.py# /v1/chat/completions, /v1/models (+ telemetry hooks)
+│   ├── ws_router.py    # /ws/metrics, /ws/feed
+│   ├── ops_router.py   # /metrics, /logs, /diagnostics
+│   └── errors.py       # OpenAI error envelope + structured error logging
+├── inference/          # internal generation contract + llama.cpp backend
+├── auth/ · quota/      # API keys · compute-unit quota
+├── telemetry/          # event bus, counters, resources, power, logs, diagnostics
 └── store/
     ├── db.py           # SQLite (WAL) connection
     ├── migrations.py   # migration runner

@@ -1,4 +1,4 @@
-# Example Inference Engine configuration (Block 0 foundation).
+# Example Inference Engine configuration (Blocks 0–4).
 #
 # Copy to a location of your choice and pass it with:
 #     inference-engine serve --config ./config.toml
@@ -50,3 +50,14 @@ log_level = "INFO"
 # quota_weekly_cu   = 5000000    # weekly fixed cap
 # cu_prompt_weight     = 1.0
 # cu_completion_weight = 1.0
+
+# --- Operability core (Block 4) ---
+# Telemetry sampler interval, in seconds (0 disables the background sampler).
+# metrics_interval_s = 1.0
+# Bounded event-bus history (recent events replayed to late WebSocket joiners)
+# and per-subscriber queue depth (a slow client drops its oldest events).
+# event_history_size     = 200
+# event_subscriber_queue = 500
+# Bounded recent-log ring (in-memory tail) and the log_events table row cap.
+# log_ring_size       = 500
+# log_events_max_rows = 2000
