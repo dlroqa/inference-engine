@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { Meter, Badge, categoryTone, stateTone } from "../components/widgets";
+import { Meter, categoryTone, stateTone } from "../components/widgets";
 import { ConnBadge, AsyncBoundary } from "../components/Panel";
 
 describe("Meter", () => {
