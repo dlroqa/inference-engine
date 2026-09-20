@@ -67,6 +67,23 @@ def test_generate_streams_and_reports(
     assert '"finish_reason": "stop"' in captured.err  # result summary
 
 
+def test_keys_create_list_revoke(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    dd = ["--data-dir", str(tmp_path)]
+    assert main(["keys", "create", "--label", "ci", *dd]) == 0
+    created = json.loads(capsys.readouterr().out)
+    assert created["token"].startswith("sk-ie-")
+    key_id = created["id"]
+
+    assert main(["keys", "list", *dd]) == 0
+    listed = json.loads(capsys.readouterr().out)
+    assert any(r["id"] == key_id and r["label"] == "ci" for r in listed)
+
+    assert main(["keys", "revoke", key_id, *dd]) == 0
+    assert json.loads(capsys.readouterr().out)["revoked"] is True
+    # Revoking again reports no live key and exits non-zero.
+    assert main(["keys", "revoke", key_id, *dd]) == 1
+
+
 def test_serve_invokes_uvicorn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import uvicorn
 
