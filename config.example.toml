@@ -33,3 +33,20 @@ log_level = "INFO"
 # n_ctx        = 4096                     # context window
 # n_threads    =                          # CPU threads (unset = library default)
 # n_gpu_layers = 0                        # layers offloaded to GPU (0 = CPU only)
+
+# --- Secure gateway (Block 3) ---
+# Network binding beyond loopback must be opted into explicitly.
+# allow_network_bind  = false   # set true to bind a non-loopback host
+# allow_insecure_bind = false   # set true to allow a network bind with auth off
+# require_auth         =        # unset = auto (required when not loopback)
+
+# Per-key request limits (0 = unlimited).
+# max_request_bytes      = 2000000
+# rate_limit_per_min     = 120
+# max_concurrent_per_key = 8
+
+# Compute-unit (CU) quota (0 = unlimited). CU = prompt*w_in + completion*w_out.
+# quota_5h_cu       = 1000000    # 5-hour rolling window
+# quota_weekly_cu   = 5000000    # weekly fixed cap
+# cu_prompt_weight     = 1.0
+# cu_completion_weight = 1.0

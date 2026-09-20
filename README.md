@@ -6,17 +6,15 @@ ordered **vertical slices** (Blocks 0–12) per
 Each block must be deployable, testable, documented, and useful before the next
 begins.
 
-> **Current status: Block 2 — OpenAI-compatible HTTP API.**
-> On top of the internal generation contract (Block 1) and llama.cpp backend, the
-> engine now serves a **deliberately supported subset of the OpenAI API**:
-> `POST /v1/chat/completions` (streaming SSE + non-streaming) and
-> `GET /v1/models`. Requests are validated, unsupported fields are rejected with
-> clear OpenAI-shaped errors, every response carries an `x-request-id`, and a
-> disconnected streaming client cancels the underlying generation. The official
-> `openai` Python SDK works against it unchanged. See the published
-> [compatibility matrix](docs/compatibility.md). **Not yet:** authentication,
-> rate/quota limits (Block 3), Anthropic `/v1/messages` (Block 8), embeddings,
-> tools/function-calling, dashboard, or model downloads.
+> **Current status: Block 3 — Secure local gateway + quota foundation.**
+> The OpenAI-compatible API (Block 2) is now guarded: **API keys** (hashed at
+> rest, issued once, revocable), **request-size / rate / concurrency limits**, and
+> a **compute-unit quota** (5-hour rolling window + weekly fixed cap) with
+> `X-RateLimit-*` headers. The server binds to **loopback by default**; binding to
+> a network interface requires an explicit opt-in and (by default) authentication.
+> Every inference request is attributed to a key id + request id in an audit log,
+> with no secrets recorded. **Not yet:** organizations, billing/payment providers
+> (Block 11), Anthropic `/v1/messages` (Block 8), dashboard, or model downloads.
 
 ---
 
@@ -148,8 +146,48 @@ for chunk in client.chat.completions.create(
 ```
 
 Supported surface and error contract are documented in the
-[compatibility matrix](docs/compatibility.md). Authentication and quotas arrive
-in Block 3; until then the API key is accepted but not verified.
+[compatibility matrix](docs/compatibility.md).
+
+### Authentication, limits & quota (Block 3)
+
+Create API keys with the CLI (the token is shown **once**):
+
+```bash
+inference-engine keys create --label my-app   # prints the token; save it
+inference-engine keys list                     # ids/prefixes/labels — no secrets
+inference-engine keys revoke <key-id>
+```
+
+Send the key as `Authorization: Bearer sk-ie-…` (or `x-api-key:`). Whether keys
+are **required** depends on the bind:
+
+- **Loopback (default):** auth is optional (dev convenience); any/no key is
+  treated as `local`.
+- **Network bind:** auth is required by default (see below).
+
+Each authenticated request is subject to per-key limits (config, `0` = unlimited):
+request body size (`max_request_bytes`), requests/minute (`rate_limit_per_min`),
+concurrency (`max_concurrent_per_key`), and a **compute-unit (CU) quota** — a
+5-hour rolling window (`quota_5h_cu`) and a weekly fixed cap (`quota_weekly_cu`),
+where `CU = prompt_tokens·w_in + completion_tokens·w_out`. Responses carry
+`X-RateLimit-*-CU-5h` / `-Week` headers; exceeding a limit returns `429` with
+`Retry-After`. Over-limit is fail-closed.
+
+### Network binding & TLS
+
+The server binds to `127.0.0.1` by default. To bind to a LAN/public interface you
+must **explicitly opt in** and address transport security yourself:
+
+```bash
+IE_ALLOW_NETWORK_BIND=true \
+  inference-engine serve --host 0.0.0.0 --port 8000
+```
+
+Binding non-loopback **requires authentication** unless you also set
+`IE_ALLOW_INSECURE_BIND=true` (not recommended). The engine does **not** terminate
+TLS itself — run it behind a reverse proxy (nginx/Caddy/Traefik) or a private
+network (e.g. Tailscale/VPC) that provides TLS. Refusing to start with a clear
+error is intentional when these choices are not made explicitly.
 
 ### Health endpoints
 

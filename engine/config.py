@@ -59,10 +59,28 @@ class Settings(BaseSettings):
         validate_default=True,
     )
 
-    # Network. Loopback-only by default; explicit LAN/public binding and TLS are
-    # deferred to Block 3, so no remote-binding surface exists yet.
+    # Network. Loopback-only by default. Binding to a non-loopback interface
+    # requires an explicit opt-in (allow_network_bind) and, unless
+    # allow_insecure_bind is set, authentication.
     host: str = "127.0.0.1"
     port: int = Field(default=8000, ge=1, le=65535)
+    allow_network_bind: bool = False
+    allow_insecure_bind: bool = False
+
+    # Auth (Block 3). None = auto: required when not loopback-bound.
+    require_auth: bool | None = None
+
+    # Request limits (0 = unlimited). Applied per authenticated key.
+    max_request_bytes: int = Field(default=2_000_000, ge=0)
+    rate_limit_per_min: int = Field(default=120, ge=0)
+    max_concurrent_per_key: int = Field(default=8, ge=0)
+
+    # Compute-unit quota (Block 3). 0 = unlimited. 5-hour rolling window and a
+    # weekly fixed cap; CU = prompt_tokens*w_in + completion_tokens*w_out.
+    quota_5h_cu: float = Field(default=1_000_000.0, ge=0)
+    quota_weekly_cu: float = Field(default=5_000_000.0, ge=0)
+    cu_prompt_weight: float = Field(default=1.0, ge=0)
+    cu_completion_weight: float = Field(default=1.0, ge=0)
 
     # Observability.
     log_level: LogLevel = "INFO"
@@ -91,6 +109,36 @@ class Settings(BaseSettings):
         if self.log_dir is None:
             self.log_dir = self.data_dir / "logs"
         return self
+
+    @model_validator(mode="after")
+    def _validate_binding(self) -> Settings:
+        if not self.is_loopback_host():
+            if not self.allow_network_bind:
+                raise ValueError(
+                    f"refusing to bind to non-loopback host {self.host!r} without an "
+                    "explicit choice; set allow_network_bind=true (IE_ALLOW_NETWORK_BIND) "
+                    "and review the TLS/reverse-proxy guidance in the README"
+                )
+            if not self.effective_require_auth() and not self.allow_insecure_bind:
+                raise ValueError(
+                    f"refusing to bind to non-loopback host {self.host!r} with auth "
+                    "disabled; enable require_auth or set allow_insecure_bind=true to "
+                    "acknowledge the risk"
+                )
+        return self
+
+    def is_loopback_host(self) -> bool:
+        return self.host in {"127.0.0.1", "::1", "localhost"}
+
+    def effective_require_auth(self) -> bool:
+        """Whether inference endpoints require an API key.
+
+        Explicit ``require_auth`` wins; otherwise auth is required whenever the
+        server is not strictly loopback-bound.
+        """
+        if self.require_auth is not None:
+            return self.require_auth
+        return not self.is_loopback_host()
 
     @classmethod
     def settings_customise_sources(

@@ -11,17 +11,20 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 
 from engine import __version__
 from engine.api import health
-from engine.api.errors import register_exception_handlers
+from engine.api.errors import error_response, register_exception_handlers
 from engine.api.openai_router import router as openai_router
+from engine.auth.keys import KeyStore
 from engine.config import Settings, load_config
+from engine.gateway import Gateway
 from engine.inference.base import InferenceBackend
 from engine.inference.factory import build_backend
 from engine.inference.types import BackendError
 from engine.logging_setup import configure_logging, get_logger
+from engine.quota.store import UsageStore
 from engine.store.db import connect
 from engine.store.migrations import apply_migrations, migrations_at_head
 
@@ -103,6 +106,26 @@ def create_app(
     )
     app.state.settings = settings
     app.state.backend = backend
+    app.state.gateway = Gateway(
+        settings,
+        KeyStore(settings.db_path),  # type: ignore[arg-type]
+        UsageStore(settings.db_path),  # type: ignore[arg-type]
+    )
+
+    @app.middleware("http")
+    async def _limit_body_size(request: Request, call_next) -> Response:  # type: ignore[no-untyped-def]
+        max_bytes = settings.max_request_bytes
+        if max_bytes > 0:
+            length = request.headers.get("content-length")
+            if length and length.isdigit() and int(length) > max_bytes:
+                return error_response(
+                    "request body too large",
+                    status_code=413,
+                    type="invalid_request_error",
+                    code="payload_too_large",
+                )
+        return await call_next(request)
+
     register_exception_handlers(app)
     app.include_router(health.router)
     app.include_router(openai_router)

@@ -57,6 +57,14 @@ def _build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--prompt", required=True, help="Prompt text to generate from.")
     gen.add_argument("--max-tokens", type=int, default=256, help="Maximum tokens to generate.")
     gen.add_argument("--temperature", type=float, default=0.8, help="Sampling temperature.")
+
+    keys = sub.add_parser("keys", help="Manage API keys.")
+    keys_sub = keys.add_subparsers(dest="keys_command", required=True)
+    kc = keys_sub.add_parser("create", parents=[common], help="Create an API key (shown once).")
+    kc.add_argument("--label", default=None, help="Human-readable label for the key.")
+    keys_sub.add_parser("list", parents=[common], help="List API keys (no secrets).")
+    kr = keys_sub.add_parser("revoke", parents=[common], help="Revoke an API key by id.")
+    kr.add_argument("key_id", help="The key id to revoke.")
     return parser
 
 
@@ -98,6 +106,53 @@ def _cmd_migrate(settings: Settings) -> int:
 def _cmd_config(settings: Settings) -> int:
     print(settings.model_dump_json(indent=2))
     return 0
+
+
+def _ensure_migrated(settings: Settings) -> None:
+    from engine.store.db import connect
+    from engine.store.migrations import apply_migrations
+
+    conn = connect(settings.db_path)  # type: ignore[arg-type]
+    try:
+        apply_migrations(conn)
+    finally:
+        conn.close()
+
+
+def _cmd_keys(settings: Settings, args: argparse.Namespace) -> int:
+    from engine.auth.keys import KeyStore
+
+    _ensure_migrated(settings)
+    store = KeyStore(settings.db_path)  # type: ignore[arg-type]
+
+    if args.keys_command == "create":
+        record, token = store.create(label=args.label)
+        print(
+            json.dumps(
+                {"id": record.id, "prefix": record.prefix, "label": record.label, "token": token}
+            )
+        )
+        print("Save this token now; it will not be shown again.", file=sys.stderr)
+        return 0
+    if args.keys_command == "list":
+        rows = [
+            {
+                "id": r.id,
+                "prefix": r.prefix,
+                "label": r.label,
+                "created_at": r.created_at,
+                "last_used_at": r.last_used_at,
+                "revoked": r.revoked,
+            }
+            for r in store.list()
+        ]
+        print(json.dumps(rows, indent=2))
+        return 0
+    if args.keys_command == "revoke":
+        ok = store.revoke(args.key_id)
+        print(json.dumps({"revoked": ok, "id": args.key_id}))
+        return 0 if ok else 1
+    return 2  # pragma: no cover
 
 
 def _cmd_generate(settings: Settings, args: argparse.Namespace) -> int:
@@ -170,6 +225,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_config(settings)
     if args.command == "generate":
         return _cmd_generate(settings, args)
+    if args.command == "keys":
+        return _cmd_keys(settings, args)
     parser.error(f"unknown command: {args.command}")
     return 2  # pragma: no cover
 

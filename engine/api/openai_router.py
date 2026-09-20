@@ -27,6 +27,7 @@ from engine.api.schemas.openai import (
     ResponseMessage,
     Usage,
 )
+from engine.gateway import ApiAccess, Gateway
 from engine.inference.base import GenerationStream, InferenceBackend
 from engine.inference.types import (
     BackendState,
@@ -78,6 +79,17 @@ async def chat_completions(request: Request, body: ChatCompletionRequest) -> Res
             code="model_not_found",
         )
 
+    # Authenticate + rate/concurrency + quota pre-check (raises OpenAIError on
+    # rejection). Attribution + CU debit happen at finalize.
+    gateway: Gateway = request.app.state.gateway
+    prompt_text = "\n".join(m.content for m in body.messages)
+    access = gateway.authorize(
+        request,
+        prompt_text=prompt_text,
+        max_tokens=body.effective_max_tokens() or 256,
+        endpoint="/v1/chat/completions",
+    )
+
     request_id = f"chatcmpl-{uuid.uuid4().hex}"
     gen_request = GenerationRequest(
         messages=[Message(role=m.role, content=m.content) for m in body.messages],
@@ -89,18 +101,35 @@ async def chat_completions(request: Request, body: ChatCompletionRequest) -> Res
         seed=body.seed,
     )
 
-    # generate() may raise BackendBusy/NotReady synchronously — surfaced as a
-    # proper HTTP error before any streaming response begins.
-    stream = backend.generate(gen_request)
+    try:
+        # generate() may raise BackendBusy/NotReady synchronously — surfaced as a
+        # proper HTTP error before any streaming response begins.
+        stream = backend.generate(gen_request)
+    except BaseException:
+        access.abort()
+        raise
+
+    base_headers = {"x-request-id": request_id, **access.headers}
 
     if body.stream:
         return StreamingResponse(
-            _sse(stream, request_id, model_id),
+            _sse(stream, request_id, model_id, access),
             media_type="text/event-stream",
-            headers={"x-request-id": request_id, "cache-control": "no-cache"},
+            headers={**base_headers, "cache-control": "no-cache"},
         )
 
-    result = await stream.collect()
+    try:
+        result = await stream.collect()
+    except BaseException:
+        access.abort()
+        raise
+    access.finalize(
+        request_id=request_id,
+        model=model_id,
+        prompt_tokens=result.prompt_tokens,
+        completion_tokens=result.completion_tokens,
+        status=200,
+    )
     completion = ChatCompletion(
         id=request_id,
         model=model_id,
@@ -116,10 +145,12 @@ async def chat_completions(request: Request, body: ChatCompletionRequest) -> Res
             total_tokens=result.prompt_tokens + result.completion_tokens,
         ),
     )
-    return JSONResponse(content=completion.model_dump(), headers={"x-request-id": request_id})
+    return JSONResponse(content=completion.model_dump(), headers=base_headers)
 
 
-async def _sse(stream: GenerationStream, request_id: str, model_id: str) -> AsyncIterator[str]:
+async def _sse(
+    stream: GenerationStream, request_id: str, model_id: str, access: ApiAccess
+) -> AsyncIterator[str]:
     def chunk(delta: Delta, finish: str | None = None) -> str:
         payload = ChatCompletionChunk(
             id=request_id,
@@ -141,3 +172,12 @@ async def _sse(stream: GenerationStream, request_id: str, model_id: str) -> Asyn
         # Client disconnect (generator closed) or normal completion both land
         # here; aclose cancels the worker and releases it.
         await stream.aclose()
+        result = stream.result
+        # Record usage (possibly partial on disconnect) and free the slot.
+        access.finalize(
+            request_id=request_id,
+            model=model_id,
+            prompt_tokens=result.prompt_tokens if result else 0,
+            completion_tokens=result.completion_tokens if result else 0,
+            status=200,
+        )

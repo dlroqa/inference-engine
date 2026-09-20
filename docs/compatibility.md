@@ -71,5 +71,13 @@ OpenAI error envelope: `{"error": {"message", "type", "param", "code"}}`.
 | Model busy (a generation in progress) | `503` | `model_busy` |
 | Generation failed | `500` | `server_error` |
 
-Authentication and rate/quota limits are **not** part of this block — they are
-added in Block 3.
+### Authentication & limits (Block 3)
+
+- Send an API key as `Authorization: Bearer sk-ie-…` or `x-api-key:`. Required
+  when the server is network-bound; optional on loopback.
+- `401 invalid_request_error` (`code` `missing_api_key` / `invalid_api_key`) for
+  auth failures; `413 payload_too_large`; `429 rate_limit_error`
+  (`rate_limit_exceeded`, `concurrency_limit_exceeded`, `quota_exceeded`) with a
+  `Retry-After` header.
+- Responses include `X-RateLimit-{Limit,Remaining,Reset}-CU-5h` and `…-CU-Week`
+  when a quota is configured.

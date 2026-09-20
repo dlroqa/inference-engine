@@ -30,6 +30,7 @@ class OpenAIError(Exception):
         type: str = "invalid_request_error",
         param: str | None = None,
         code: str | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__(message)
         self.message = message
@@ -37,6 +38,7 @@ class OpenAIError(Exception):
         self.type = type
         self.param = param
         self.code = code
+        self.headers = headers
 
 
 def error_response(
@@ -46,10 +48,12 @@ def error_response(
     type: str = "invalid_request_error",
     param: str | None = None,
     code: str | None = None,
+    headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
         content={"error": {"message": message, "type": type, "param": param, "code": code}},
+        headers=headers,
     )
 
 
@@ -62,6 +66,7 @@ def register_exception_handlers(app: FastAPI) -> None:
             type=exc.type,
             param=exc.param,
             code=exc.code,
+            headers=exc.headers,
         )
 
     @app.exception_handler(RequestValidationError)
