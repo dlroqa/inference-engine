@@ -24,6 +24,7 @@ from engine.inference.types import (
     GenerationFailedError,
     GenerationRequest,
     GenerationResult,
+    Message,
     ModelLoadError,
 )
 
@@ -40,6 +41,7 @@ __all__ = [
     "GenerationResult",
     "GenerationStream",
     "InferenceBackend",
+    "Message",
     "ModelLoadError",
     "ThreadedBackend",
     "build_backend",

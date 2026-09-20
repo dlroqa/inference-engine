@@ -55,7 +55,7 @@ class FakeBackend(ThreadedBackend):
         return Capabilities(backend=self.name, model_id=self._model_id, context_length=self._n_ctx)
 
     def _count_prompt_tokens(self, request: GenerationRequest) -> int:
-        return len(request.prompt.split())
+        return len(request.prompt_text().split())
 
     def _token_producer(
         self, request: GenerationRequest, cancel: threading.Event

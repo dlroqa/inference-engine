@@ -11,8 +11,9 @@ from __future__ import annotations
 import enum
 from collections.abc import Generator
 from dataclasses import dataclass, field
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class BackendState(enum.StrEnum):
@@ -39,17 +40,29 @@ class FinishReason(enum.StrEnum):
 TokenGenerator = Generator[str, None, "FinishReason | None"]
 
 
+class Message(BaseModel):
+    """One chat message. Generic (not provider-specific)."""
+
+    model_config = {"extra": "forbid"}
+
+    role: Literal["system", "user", "assistant"]
+    content: str
+
+
 class GenerationRequest(BaseModel):
     """A validated, normalized request for token generation.
 
-    Block 1 supports a single prompt string and a deliberately minimal sampling
-    set. Message-array translation (OpenAI/Anthropic) is Block 2; the full
-    sampler surface is Block 8.
+    Carries **either** a raw ``prompt`` (completion style) **or** ``messages``
+    (chat style); exactly one must be provided. Provider dialects (OpenAI now,
+    Anthropic in Block 8) translate onto this single internal request at the API
+    edge. The sampler set is deliberately minimal here; the full surface is
+    Block 8.
     """
 
     model_config = {"extra": "forbid"}
 
-    prompt: str
+    prompt: str | None = None
+    messages: list[Message] | None = None
     request_id: str = ""
     max_tokens: int | None = Field(default=256, ge=1, le=32768)
     temperature: float = Field(default=0.8, ge=0.0, le=2.0)
@@ -57,6 +70,24 @@ class GenerationRequest(BaseModel):
     top_k: int = Field(default=40, ge=0)
     seed: int | None = None
     stop: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _exactly_one_input(self) -> GenerationRequest:
+        has_prompt = self.prompt is not None
+        has_messages = bool(self.messages)
+        if has_prompt == has_messages:
+            raise ValueError("provide exactly one of 'prompt' or 'messages'")
+        return self
+
+    @property
+    def is_chat(self) -> bool:
+        return self.messages is not None
+
+    def prompt_text(self) -> str:
+        """A plain-text view of the input (used for token-count estimates)."""
+        if self.prompt is not None:
+            return self.prompt
+        return "\n".join(m.content for m in self.messages or [])
 
 
 @dataclass(slots=True)

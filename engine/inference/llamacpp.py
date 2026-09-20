@@ -27,6 +27,12 @@ from engine.inference.types import (
 )
 
 
+def _close(stream: object) -> None:
+    close = getattr(stream, "close", None)
+    if callable(close):
+        close()
+
+
 class LlamaCppBackend(ThreadedBackend):
     """A single-model llama.cpp backend."""
 
@@ -86,12 +92,22 @@ class LlamaCppBackend(ThreadedBackend):
 
     def _count_prompt_tokens(self, request: GenerationRequest) -> int:
         assert self._llm is not None
-        tokens = self._llm.tokenize(request.prompt.encode("utf-8"))
+        # For chat requests this is an estimate over the concatenated message
+        # text (the exact templated token count is internal to llama.cpp).
+        tokens = self._llm.tokenize(request.prompt_text().encode("utf-8"))
         return len(tokens)
 
     # -- generation --------------------------------------------------------
 
     def _token_producer(
+        self, request: GenerationRequest, cancel: threading.Event
+    ) -> TokenGenerator:
+        assert self._llm is not None
+        if request.is_chat:
+            return self._chat_producer(request, cancel)
+        return self._completion_producer(request, cancel)
+
+    def _completion_producer(
         self, request: GenerationRequest, cancel: threading.Event
     ) -> TokenGenerator:
         assert self._llm is not None
@@ -118,7 +134,34 @@ class LlamaCppBackend(ThreadedBackend):
                 if choice.get("finish_reason") == "length":
                     finish = FinishReason.LENGTH
         finally:
-            close = getattr(stream, "close", None)
-            if callable(close):
-                close()
+            _close(stream)
+        return finish
+
+    def _chat_producer(self, request: GenerationRequest, cancel: threading.Event) -> TokenGenerator:
+        assert self._llm is not None
+        assert request.messages is not None
+        stream = self._llm.create_chat_completion(
+            messages=[{"role": m.role, "content": m.content} for m in request.messages],
+            max_tokens=request.max_tokens,
+            temperature=request.temperature,
+            top_p=request.top_p,
+            top_k=request.top_k,
+            seed=request.seed,
+            stop=request.stop or None,
+            stream=True,
+        )
+        finish = FinishReason.STOP
+        try:
+            for item in stream:
+                if cancel.is_set():
+                    finish = FinishReason.CANCELLED
+                    break
+                choice = item["choices"][0]
+                text = choice.get("delta", {}).get("content", "") or ""
+                if text:
+                    yield text
+                if choice.get("finish_reason") == "length":
+                    finish = FinishReason.LENGTH
+        finally:
+            _close(stream)
         return finish

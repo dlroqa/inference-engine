@@ -141,6 +141,14 @@ jobs:
           path: artifacts/*
           retention-days: 2
 
+      - name: OpenAI SDK against the real model (server + SDK)
+        run: |
+          IE_MODEL_PATH="$HOME/models/tiny.gguf" IE_MODEL_ID=tiny \
+            inference-engine serve --port 8123 --data-dir /tmp/ie-serve &
+          SRV=$!
+          trap 'kill $SRV 2>/dev/null || true' EXIT
+          IE_MODEL_ID=tiny python scripts/real_model_sdk_smoke.py
+
   build:
     name: Build & validate package
     runs-on: ubuntu-latest

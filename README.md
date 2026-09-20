@@ -6,16 +6,17 @@ ordered **vertical slices** (Blocks 0–12) per
 Each block must be deployable, testable, documented, and useful before the next
 begins.
 
-> **Current status: Block 1 — Local inference runtime.**
-> On top of the Block 0 foundation, the engine now has a stable **internal
-> generation contract** (`GenerationRequest` → async token stream →
-> `GenerationResult`) and a local **llama.cpp** backend that serves one
-> explicitly configured GGUF model. Blocking model work runs in a worker thread
-> and streams tokens without blocking the event loop; load/unload state and
-> cancellation are explicit. It is exercised via the `inference-engine generate`
-> CLI and the internal API — **there is no HTTP inference API yet** (that is
-> Block 2), and no authentication, dashboard, model downloads, multiple models,
-> or GPU auto-tuning.
+> **Current status: Block 2 — OpenAI-compatible HTTP API.**
+> On top of the internal generation contract (Block 1) and llama.cpp backend, the
+> engine now serves a **deliberately supported subset of the OpenAI API**:
+> `POST /v1/chat/completions` (streaming SSE + non-streaming) and
+> `GET /v1/models`. Requests are validated, unsupported fields are rejected with
+> clear OpenAI-shaped errors, every response carries an `x-request-id`, and a
+> disconnected streaming client cancels the underlying generation. The official
+> `openai` Python SDK works against it unchanged. See the published
+> [compatibility matrix](docs/compatibility.md). **Not yet:** authentication,
+> rate/quota limits (Block 3), Anthropic `/v1/messages` (Block 8), embeddings,
+> tools/function-calling, dashboard, or model downloads.
 
 ---
 
@@ -111,18 +112,51 @@ Backend state is explicit (`unloaded → loading → ready → generating →
 failed`), one model and one generation at a time. Closing a stream
 (`await stream.aclose()`) cancels generation and releases the worker.
 
-**Documented Block 1 limitations:** single resident model; generations are
-serialized (a second concurrent request raises `BackendBusyError`); no
-downloads, routing, GPU auto-tuning, batching, or HTTP inference API yet.
-`llama-cpp-python` prebuilt wheels require AVX2; on CPUs without it, build from
-source with AVX disabled.
+Backend limitations: single resident model; generations are serialized (a second
+concurrent request is rejected as busy); no downloads, routing, GPU auto-tuning,
+or batching yet. `llama-cpp-python` prebuilt wheels require AVX2; on CPUs without
+it, build from source with AVX disabled.
+
+## OpenAI-compatible API (Block 2)
+
+Start the server with a model configured, then point any OpenAI client at it:
+
+```bash
+IE_MODEL_PATH=/path/to/model.gguf IE_MODEL_ID=my-model \
+  inference-engine serve --host 127.0.0.1 --port 8000
+```
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="not-checked-yet")
+
+# non-streaming
+r = client.chat.completions.create(
+    model="my-model",
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+print(r.choices[0].message.content)
+
+# streaming
+for chunk in client.chat.completions.create(
+    model="my-model",
+    messages=[{"role": "user", "content": "Hello!"}],
+    stream=True,
+):
+    print(chunk.choices[0].delta.content or "", end="")
+```
+
+Supported surface and error contract are documented in the
+[compatibility matrix](docs/compatibility.md). Authentication and quotas arrive
+in Block 3; until then the API key is accepted but not verified.
 
 ### Health endpoints
 
 | Endpoint    | Meaning                                                                 |
 |-------------|-------------------------------------------------------------------------|
 | `GET /healthz` | Process **liveness**. `200` with `{"status":"ok", ...}` when running. |
-| `GET /readyz`  | **Readiness** of foundational dependencies (database reachable, migrations applied). Returns `200` when ready, `503` otherwise. It **always reports `inference.available = false`** — inference does not exist in this build. |
+| `GET /readyz`  | **Readiness** of foundational dependencies (database reachable, migrations applied). Returns `200`/`503`. Reports `inference.available` (and the loaded `model_id`) separately — the service can be ready without a model loaded. |
 
 Example:
 
@@ -132,7 +166,7 @@ curl -s http://127.0.0.1:8000/healthz
 
 curl -s http://127.0.0.1:8000/readyz
 # {"status":"ready","version":"0.0.0","checks":{"database":"ok","migrations":"applied"},
-#  "inference":{"available":false,"reason":"inference runtime not implemented in this build (Block 0 foundation)"}}
+#  "inference":{"available":true,"model_id":"my-model","state":"ready"}}
 ```
 
 ## Test & checks
