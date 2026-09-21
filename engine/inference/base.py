@@ -49,6 +49,15 @@ class GenerationStream(abc.ABC):
     def result(self) -> GenerationResult | None:
         """The terminal result, or ``None`` until the stream is exhausted."""
 
+    @property
+    def backpressure_waits(self) -> int:
+        """How many times token production blocked on a full buffer (slow consumer).
+
+        Zero for backends without a bounded token buffer; the queue-backed stream
+        overrides it. Read after the stream is exhausted/closed.
+        """
+        return 0
+
     async def collect(self) -> GenerationResult:
         """Consume the whole stream and return the terminal result.
 

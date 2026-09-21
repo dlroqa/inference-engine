@@ -48,9 +48,14 @@ this is the minimum honest gate.
   },
   "gpu": { "available": false, "reason": "no tested GPU probe in this build" },
   "energy": { "state": "unavailable", "watts": null, "j_per_token": null, "tokens_per_joule": null, "source": null, "reason": … },
-  "backend": { "state": "ready", "model_id": "…", "available": true }
+  "backend": { "state": "ready", "model_id": "…", "available": true },
+  "scheduler": { "in_use": …, "queue_depth": …, "admitted_total": …, "rejected_total": …, … }  // Block 7; null if no scheduler
 }
 ```
+
+The `scheduler` panel (admission control) is defined in full — every field and the
+saturation/backpressure behavior behind it — in
+[docs/concurrency.md](concurrency.md).
 
 ### Definitions & limitations
 

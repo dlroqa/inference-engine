@@ -31,6 +31,25 @@ const snapshot: MetricsSnapshot = {
   gpu: { available: false, reason: "no probe" },
   energy: { state: "unavailable", watts: null, j_per_token: null, tokens_per_joule: null, source: null },
   backend: { state: "ready", model_id: "tiny", available: true },
+  scheduler: {
+    max_concurrency: 1,
+    max_queue_depth: 32,
+    queue_timeout_s: 30,
+    in_use: 1,
+    available: 0,
+    queue_depth: 2,
+    peak_in_use: 1,
+    peak_queue_depth: 3,
+    admitted_total: 10,
+    rejected_total: 1,
+    rejected_queue_full: 1,
+    rejected_timeout: 0,
+    cancelled_total: 0,
+    slow_consumer_total: 0,
+    wait_ms_avg: 40,
+    wait_ms_max: 100,
+    wait_ms_last: 12,
+  },
 };
 
 afterEach(() => vi.clearAllMocks());
@@ -44,6 +63,8 @@ describe("Overview view", () => {
     });
     render(<Overview />);
     expect(screen.getByText("12")).toBeInTheDocument(); // requests total
+    expect(screen.getByText(/2 queued/)).toBeInTheDocument(); // scheduler queue depth
+    expect(screen.getByText(/1 shed/)).toBeInTheDocument(); // scheduler rejections
     expect(screen.getByText(/tiny · ready/)).toBeInTheDocument();
     expect(screen.getByRole("meter", { name: "CPU" })).toHaveAttribute("aria-valuenow", "33");
     expect(screen.getByText("unavailable")).toBeInTheDocument(); // energy state

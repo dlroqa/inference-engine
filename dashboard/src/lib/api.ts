@@ -97,6 +97,27 @@ export interface MetricsSnapshot {
   gpu: { available: boolean; reason?: string };
   energy: EnergyPanel;
   backend: { state: string; model_id: string | null; available: boolean };
+  scheduler: SchedulerPanel | null;
+}
+
+export interface SchedulerPanel {
+  max_concurrency: number;
+  max_queue_depth: number;
+  queue_timeout_s: number;
+  in_use: number;
+  available: number;
+  queue_depth: number;
+  peak_in_use: number;
+  peak_queue_depth: number;
+  admitted_total: number;
+  rejected_total: number;
+  rejected_queue_full: number;
+  rejected_timeout: number;
+  cancelled_total: number;
+  slow_consumer_total: number;
+  wait_ms_avg: number | null;
+  wait_ms_max: number;
+  wait_ms_last: number;
 }
 
 export interface ModelPanel {
@@ -197,6 +218,8 @@ export interface FeedEvent {
   ttft_ms?: number | null;
   total_ms?: number | null;
   category?: string;
+  reason?: string;
+  retry_after_s?: number;
 }
 
 // --- Endpoints ---

@@ -8,6 +8,7 @@ internal stream back into OpenAI shapes. Supported subset only; see
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -30,6 +31,7 @@ from engine.api.schemas.openai import (
 )
 from engine.gateway import ApiAccess, Gateway
 from engine.inference.base import GenerationStream, InferenceBackend
+from engine.inference.scheduler import Scheduler, SchedulerLease, SchedulerSaturated
 from engine.inference.types import (
     BackendState,
     FinishReason,
@@ -94,6 +96,7 @@ async def chat_completions(request: Request, body: ChatCompletionRequest) -> Res
     gateway: Gateway = request.app.state.gateway
     telemetry: Telemetry = request.app.state.telemetry
     counters: Counters = request.app.state.counters
+    scheduler: Scheduler = request.app.state.scheduler
     endpoint = "/v1/chat/completions"
     prompt_text = "\n".join(m.content for m in body.messages)
 
@@ -106,6 +109,27 @@ async def chat_completions(request: Request, body: ChatCompletionRequest) -> Res
         max_tokens=body.effective_max_tokens() or 256,
         endpoint=endpoint,
     )
+
+    # Admission control (Block 7): acquire a concurrency slot, waiting in the
+    # bounded queue if the backend is busy. Saturation is an explicit, retriable
+    # 429 rather than an unbounded wait or a silent memory blow-up.
+    try:
+        lease = await scheduler.admit()
+    except SchedulerSaturated as exc:
+        access.abort()
+        telemetry.request_rejected(
+            request_id=request_id,
+            endpoint=endpoint,
+            reason=exc.reason,
+            retry_after_s=exc.retry_after_s,
+        )
+        raise OpenAIError(
+            "the engine is at capacity; please retry shortly",
+            status_code=429,
+            type="rate_limit_error",
+            code="engine_saturated",
+            headers={"retry-after": str(exc.retry_after_s)},
+        ) from exc
 
     # From here on the request is "started": it must be finished exactly once so
     # the active-request gauge and error counter stay correct.
@@ -129,6 +153,7 @@ async def chat_completions(request: Request, body: ChatCompletionRequest) -> Res
         # proper HTTP error before any streaming response begins.
         stream = backend.generate(gen_request)
     except BaseException as exc:
+        lease.release()
         access.abort()
         counters.request_finished(prompt_tokens=0, completion_tokens=0, error=True)
         telemetry.request_error(
@@ -140,7 +165,17 @@ async def chat_completions(request: Request, body: ChatCompletionRequest) -> Res
 
     if body.stream:
         return StreamingResponse(
-            _sse(stream, request_id, model_id, access, telemetry, counters, endpoint),
+            _sse(
+                stream,
+                request_id,
+                model_id,
+                access,
+                telemetry,
+                counters,
+                scheduler,
+                lease,
+                endpoint,
+            ),
             media_type="text/event-stream",
             headers={**base_headers, "cache-control": "no-cache"},
         )
@@ -148,12 +183,26 @@ async def chat_completions(request: Request, body: ChatCompletionRequest) -> Res
     try:
         result = await stream.collect()
     except BaseException as exc:
-        access.abort()
-        counters.request_finished(prompt_tokens=0, completion_tokens=0, error=True)
-        telemetry.request_error(
-            request_id=request_id, category=classify(exc).value, endpoint=endpoint, model=model_id
-        )
+        # A client disconnect during a non-streaming call surfaces as cancellation;
+        # the aclose await may itself be interrupted, so the (synchronous) capacity
+        # and accounting cleanup runs in an inner ``finally`` that always executes.
+        cancelled = isinstance(exc, asyncio.CancelledError)
+        try:
+            await stream.aclose()
+        finally:
+            lease.release(cancelled=cancelled)
+            access.abort()
+            counters.request_finished(prompt_tokens=0, completion_tokens=0, error=True)
+            telemetry.request_error(
+                request_id=request_id,
+                category=classify(exc).value,
+                endpoint=endpoint,
+                model=model_id,
+            )
         raise
+    if stream.backpressure_waits:
+        scheduler.note_slow_consumer(stream.backpressure_waits)
+    lease.release()
     access.finalize(
         request_id=request_id,
         model=model_id,
@@ -198,6 +247,8 @@ async def _sse(
     access: ApiAccess,
     telemetry: Telemetry,
     counters: Counters,
+    scheduler: Scheduler,
+    lease: SchedulerLease,
     endpoint: str,
 ) -> AsyncIterator[str]:
     def chunk(delta: Delta, finish: str | None = None) -> str:
@@ -238,51 +289,70 @@ async def _sse(
         yield "data: [DONE]\n\n"
     finally:
         # Client disconnect (generator closed) or normal completion both land
-        # here; aclose cancels the worker and releases it.
-        await stream.aclose()
-        result = stream.result
-        prompt_tokens = result.prompt_tokens if result else 0
-        completion_tokens = result.completion_tokens if result else 0
-        # Record usage (possibly partial on disconnect) and free the slot.
-        access.finalize(
-            request_id=request_id,
-            model=model_id,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            status=500 if error is not None else 200,
-        )
-        counters.request_finished(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            error=error is not None,
-        )
-        if error is not None:
-            category = classify(error)
-            telemetry.request_error(
-                request_id=request_id,
-                category=category.value,
-                endpoint=endpoint,
-                model=model_id,
+        # here; aclose cancels the worker and releases it. On a disconnect the
+        # enclosing task is being cancelled, so the ``await`` below can itself be
+        # interrupted — the inner ``finally`` therefore holds only synchronous
+        # cleanup, guaranteeing a disconnect always frees the slot, decrements the
+        # active gauge, and records usage even if the aclose await is cut short.
+        try:
+            await stream.aclose()
+        finally:
+            result = stream.result
+            # Client disconnect is counted as a cancellation so capacity-freeing is
+            # observable. It is distinguished from normal completion (finish STOP,
+            # ``error is None``) and mid-stream failure (``error`` set): a disconnect
+            # leaves ``error`` unset with either a CANCELLED finish or — if the
+            # aclose await was itself interrupted — no terminal result at all. The
+            # slot is released *after* aclose so the backend is READY before the next
+            # queued request runs.
+            cancelled = error is None and (
+                result is None or result.finish_reason == FinishReason.CANCELLED
             )
-            _log.error(
-                "request_error",
-                extra={
-                    "request_id": request_id,
-                    "route": endpoint,
-                    "model": model_id,
-                    "category": category.value,
-                    "stage": "generation",
-                    "detail": "generation failed mid-stream",
-                },
-                exc_info=error,
-            )
-        else:
-            telemetry.request_end(
+            if stream.backpressure_waits:
+                scheduler.note_slow_consumer(stream.backpressure_waits)
+            lease.release(cancelled=cancelled)
+            prompt_tokens = result.prompt_tokens if result else 0
+            completion_tokens = result.completion_tokens if result else 0
+            # Record usage (possibly partial on disconnect) and free the key slot.
+            access.finalize(
                 request_id=request_id,
                 model=model_id,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
-                finish_reason=_finish_reason(result.finish_reason) if result else "stop",
-                ttft_ms=result.timings.ttft_ms if result else None,
-                total_ms=result.timings.total_ms if result else None,
+                status=500 if error is not None else 200,
             )
+            counters.request_finished(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                error=error is not None,
+            )
+            if error is not None:
+                category = classify(error)
+                telemetry.request_error(
+                    request_id=request_id,
+                    category=category.value,
+                    endpoint=endpoint,
+                    model=model_id,
+                )
+                _log.error(
+                    "request_error",
+                    extra={
+                        "request_id": request_id,
+                        "route": endpoint,
+                        "model": model_id,
+                        "category": category.value,
+                        "stage": "generation",
+                        "detail": "generation failed mid-stream",
+                    },
+                    exc_info=error,
+                )
+            else:
+                telemetry.request_end(
+                    request_id=request_id,
+                    model=model_id,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    finish_reason=_finish_reason(result.finish_reason) if result else "stop",
+                    ttft_ms=result.timings.ttft_ms if result else None,
+                    total_ms=result.timings.total_ms if result else None,
+                )
