@@ -1,14 +1,23 @@
 name: CI
 
 on:
+  # Only push to main runs post-merge CI; feature branches are covered by their
+  # pull_request run, so a branch push does not trigger a second, redundant
+  # pipeline (which doubled cost and the exposure to transient install flakes).
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
   workflow_dispatch: # allow manual runs (e.g. AVX/real-model verification on demand)
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
+
+# Make network-bound dependency installs resilient to transient PyPI / wheel-index
+# blips (the native llama.cpp wheel is fetched from a GitHub Pages index).
+env:
+  PIP_RETRIES: "5"
+  PIP_DEFAULT_TIMEOUT: "60"
 
 jobs:
   test:
