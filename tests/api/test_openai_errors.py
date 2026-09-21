@@ -69,13 +69,28 @@ def test_tools_are_rejected_clearly(client: TestClient) -> None:
     assert err["type"] == "invalid_request_error"
 
 
-def test_json_response_format_is_rejected_clearly(client: TestClient) -> None:
+def test_json_response_format_rejected_when_backend_lacks_support(client: TestClient) -> None:
+    # The default fake backend does not support structured output, so a JSON
+    # response_format is rejected clearly (never silently unconstrained text).
     resp = client.post(
         "/v1/chat/completions",
         json={
             "model": MODEL_ID,
             "messages": [{"role": "user", "content": "hi"}],
             "response_format": {"type": "json_object"},
+        },
+    )
+    _assert_openai_error(resp, 400)
+    assert resp.json()["error"]["code"] == "structured_output_unsupported"
+
+
+def test_unknown_response_format_type_rejected(client: TestClient) -> None:
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": MODEL_ID,
+            "messages": [{"role": "user", "content": "hi"}],
+            "response_format": {"type": "yaml"},
         },
     )
     _assert_openai_error(resp, 400)

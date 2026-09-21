@@ -94,6 +94,43 @@ def error_response(
     )
 
 
+class AnthropicError(Exception):
+    """An error the Anthropic edge raises to produce an Anthropic-shaped response.
+
+    Anthropic uses ``{"type": "error", "error": {"type", "message"}}`` with its own
+    ``type`` vocabulary (``invalid_request_error``, ``authentication_error``,
+    ``not_found_error``, ``rate_limit_error``, ``overloaded_error``, ``api_error``).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int,
+        type: str = "invalid_request_error",
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
+        self.type = type
+        self.headers = headers
+
+
+def anthropic_error_response(
+    message: str,
+    *,
+    status_code: int,
+    type: str = "invalid_request_error",
+    headers: dict[str, str] | None = None,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={"type": "error", "error": {"type": type, "message": message}},
+        headers=headers,
+    )
+
+
 def _with_request_id(
     request: Request, headers: dict[str, str] | None = None
 ) -> dict[str, str] | None:
@@ -107,6 +144,22 @@ def _with_request_id(
 
 
 def register_exception_handlers(app: FastAPI) -> None:
+    @app.exception_handler(AnthropicError)
+    async def _handle_anthropic_error(request: Request, exc: AnthropicError) -> JSONResponse:
+        log_request_error(
+            request,
+            category=classify(exc, status_code=exc.status_code),
+            stage="edge",
+            detail=exc.message,
+            status_code=exc.status_code,
+        )
+        return anthropic_error_response(
+            exc.message,
+            status_code=exc.status_code,
+            type=exc.type,
+            headers=_with_request_id(request, exc.headers),
+        )
+
     @app.exception_handler(OpenAIError)
     async def _handle_openai_error(request: Request, exc: OpenAIError) -> JSONResponse:
         log_request_error(
@@ -141,6 +194,14 @@ def register_exception_handlers(app: FastAPI) -> None:
             detail=detail,
             status_code=400,
         )
+        # Return the error in the dialect the caller expects.
+        if request.url.path.startswith("/v1/messages"):
+            return anthropic_error_response(
+                detail,
+                status_code=400,
+                type="invalid_request_error",
+                headers=_with_request_id(request),
+            )
         return error_response(
             detail,
             status_code=400,
@@ -159,6 +220,10 @@ def register_exception_handlers(app: FastAPI) -> None:
             detail=detail,
             status_code=503,
         )
+        if request.url.path.startswith("/v1/messages"):
+            return anthropic_error_response(
+                detail, status_code=503, type="api_error", headers=_with_request_id(request)
+            )
         return error_response(
             detail,
             status_code=503,
@@ -177,6 +242,10 @@ def register_exception_handlers(app: FastAPI) -> None:
             detail=detail,
             status_code=503,
         )
+        if request.url.path.startswith("/v1/messages"):
+            return anthropic_error_response(
+                detail, status_code=503, type="api_error", headers=_with_request_id(request)
+            )
         return error_response(
             detail,
             status_code=503,
@@ -197,6 +266,10 @@ def register_exception_handlers(app: FastAPI) -> None:
             exc=exc,
             with_stack=True,
         )
+        if request.url.path.startswith("/v1/messages"):
+            return anthropic_error_response(
+                detail, status_code=500, type="api_error", headers=_with_request_id(request)
+            )
         return error_response(
             detail,
             status_code=500,

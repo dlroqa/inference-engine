@@ -216,3 +216,7 @@ class QueueGenerationStream(GenerationStream):
         joined), which is when the edge reports it.
         """
         return self._backpressure_waits
+
+    @property
+    def prompt_tokens(self) -> int:
+        return self._prompt_tokens

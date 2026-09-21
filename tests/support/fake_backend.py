@@ -33,6 +33,7 @@ class FakeBackend(ThreadedBackend):
         fail_after: int | None = None,
         model_id: str = "fake-model",
         n_ctx: int = 2048,
+        supports_structured_output: bool = False,
     ) -> None:
         super().__init__()
         self._tokens = tokens if tokens is not None else ["Hello", ",", " ", "world", "!"]
@@ -41,7 +42,10 @@ class FakeBackend(ThreadedBackend):
         self._fail_after = fail_after
         self._model_id = model_id
         self._n_ctx = n_ctx
+        self._supports_structured_output = supports_structured_output
         self.loaded = False
+        #: The most recent GenerationRequest, for asserting edge translation.
+        self.last_request: GenerationRequest | None = None
 
     def _load(self) -> None:
         if self._fail_on_load:
@@ -52,7 +56,12 @@ class FakeBackend(ThreadedBackend):
         self.loaded = False
 
     def _capabilities(self) -> Capabilities:
-        return Capabilities(backend=self.name, model_id=self._model_id, context_length=self._n_ctx)
+        return Capabilities(
+            backend=self.name,
+            model_id=self._model_id,
+            context_length=self._n_ctx,
+            supports_structured_output=self._supports_structured_output,
+        )
 
     def _count_prompt_tokens(self, request: GenerationRequest) -> int:
         return len(request.prompt_text().split())
@@ -60,6 +69,7 @@ class FakeBackend(ThreadedBackend):
     def _token_producer(
         self, request: GenerationRequest, cancel: threading.Event
     ) -> TokenGenerator:
+        self.last_request = request
         emitted = 0
         for tok in self._tokens:
             if cancel.is_set():

@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from engine import __version__
 from engine.api import health
 from engine.api.admin_router import router as admin_router
+from engine.api.anthropic_router import router as anthropic_router
 from engine.api.errors import error_response, register_exception_handlers
 from engine.api.models_router import router as models_router
 from engine.api.openai_router import router as openai_router
@@ -159,7 +160,7 @@ def create_app(
     app = FastAPI(
         title="Inference Engine",
         version=__version__,
-        summary="Local GGUF inference: OpenAI API, dashboard, model lifecycle (Blocks 0–6).",
+        summary="Local GGUF inference: OpenAI + Anthropic APIs, dashboard, model lifecycle (Blocks 0–8).",
         lifespan=lifespan,
     )
     app.state.settings = settings
@@ -203,6 +204,7 @@ def create_app(
     register_exception_handlers(app)
     app.include_router(health.router)
     app.include_router(openai_router)
+    app.include_router(anthropic_router)
     app.include_router(ops_router)
     app.include_router(ws_router)
     app.include_router(admin_router)

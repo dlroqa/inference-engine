@@ -9,9 +9,11 @@ clients that always send newer params.
 
 What is still rejected are the features that would produce **silently wrong**
 output if ignored — because the caller's contract depends on them:
-``tools``/``functions`` (expects tool calls), ``response_format`` json modes
-(expects valid JSON), and ``n > 1`` (expects multiple choices). Those get a clear
-``400`` pointing at the block where they land. See ``docs/compatibility.md``.
+``tools``/``functions`` (expects tool calls) and ``n > 1`` (expects multiple
+choices). ``response_format`` JSON modes (``json_object``/``json_schema``) are now
+honored via constrained decoding when the backend supports it, and rejected with a
+clear ``400`` otherwise (never silently returning unconstrained text). See
+``docs/compatibility.md``.
 """
 
 from __future__ import annotations
@@ -46,6 +48,8 @@ class ChatCompletionRequest(BaseModel):
     max_completion_tokens: int | None = Field(default=None, ge=1, le=32768)
     temperature: float = Field(default=1.0, ge=0.0, le=2.0)
     top_p: float = Field(default=1.0, ge=0.0, le=1.0)
+    frequency_penalty: float = Field(default=0.0, ge=-2.0, le=2.0)
+    presence_penalty: float = Field(default=0.0, ge=-2.0, le=2.0)
     stop: str | list[str] | None = None
     seed: int | None = None
     n: int = Field(default=1, ge=1)
@@ -71,12 +75,14 @@ class ChatCompletionRequest(BaseModel):
 
     @field_validator("response_format")
     @classmethod
-    def _reject_json_formats(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
-        # ``{"type": "text"}`` is the OpenAI default and is fine (we produce text);
-        # JSON modes require structured-output support we do not have yet.
-        if v is not None and v.get("type") not in (None, "text"):
+    def _validate_response_format(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        # Accept the supported types; an unknown type is rejected rather than
+        # silently ignored (the caller depends on the output shape). Whether a JSON
+        # mode can actually be honored is a backend-capability check at the edge.
+        if v is not None and v.get("type") not in (None, "text", "json_object", "json_schema"):
             raise ValueError(
-                "structured output (response_format json) is not supported yet (planned: Block 8)"
+                f"unsupported response_format type {v.get('type')!r} "
+                "(supported: text, json_object, json_schema)"
             )
         return v
 
@@ -92,6 +98,25 @@ class ChatCompletionRequest(BaseModel):
 
     def stop_list(self) -> list[str]:
         return self.stop if isinstance(self.stop, list) else []
+
+    def structured_output(self) -> tuple[str, dict[str, Any] | None]:
+        """Return ``(mode, schema)`` for the requested output constraint.
+
+        ``mode`` is ``"none"``, ``"json_object"``, or ``"json_schema"``; ``schema``
+        is the JSON schema for ``json_schema`` mode (else ``None``).
+        """
+        rf = self.response_format
+        if not rf:
+            return ("none", None)
+        rf_type = rf.get("type")
+        if rf_type in (None, "text"):
+            return ("none", None)
+        if rf_type == "json_object":
+            return ("json_object", None)
+        # json_schema: OpenAI nests the schema under response_format.json_schema.schema
+        nested = rf.get("json_schema") or {}
+        schema = nested.get("schema") if isinstance(nested, dict) else None
+        return ("json_schema", schema)
 
 
 # --- Responses ------------------------------------------------------------
