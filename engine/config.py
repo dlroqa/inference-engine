@@ -102,6 +102,14 @@ class Settings(BaseSettings):
     n_threads: int | None = Field(default=None, ge=1)
     n_gpu_layers: int = Field(default=0, ge=0)
 
+    # Model lifecycle (Block 6). The registry stores GGUF models under models_dir;
+    # downloads are checksum-verified and resumable. hf_endpoint is overridable for
+    # mirrors/enterprise Hugging Face. 0 = unlimited download size.
+    models_dir: Path | None = None
+    hf_endpoint: str = "https://huggingface.co"
+    download_chunk_bytes: int = Field(default=1_048_576, ge=8192)
+    max_model_bytes: int = Field(default=0, ge=0)
+
     # Storage paths (all overridable, resolved to safe per-user locations).
     data_dir: Path = Field(default_factory=default_data_dir)
     db_path: Path | None = None
@@ -116,6 +124,8 @@ class Settings(BaseSettings):
             self.db_path = self.data_dir / "inference_engine.db"
         if self.log_dir is None:
             self.log_dir = self.data_dir / "logs"
+        if self.models_dir is None:
+            self.models_dir = self.data_dir / "models"
         return self
 
     @model_validator(mode="after")

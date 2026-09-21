@@ -22,6 +22,7 @@ from engine import __version__
 from engine.api import health
 from engine.api.admin_router import router as admin_router
 from engine.api.errors import error_response, register_exception_handlers
+from engine.api.models_router import router as models_router
 from engine.api.openai_router import router as openai_router
 from engine.api.ops_router import router as ops_router
 from engine.api.ws_router import router as ws_router
@@ -32,6 +33,8 @@ from engine.inference.base import InferenceBackend
 from engine.inference.factory import build_backend
 from engine.inference.types import BackendError
 from engine.logging_setup import configure_logging, get_logger
+from engine.models.registry import ModelRegistry
+from engine.models.service import ModelService
 from engine.quota.store import UsageStore
 from engine.store.db import connect
 from engine.store.migrations import apply_migrations, migrations_at_head
@@ -91,6 +94,10 @@ def create_app(
     )
     logging.getLogger().addHandler(log_collector)
 
+    # Model lifecycle (Block 6): registry + orchestration service.
+    model_registry = ModelRegistry(settings.db_path)  # type: ignore[arg-type]
+    model_service = ModelService(settings, model_registry)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         log.info(
@@ -111,7 +118,10 @@ def create_app(
             conn.close()
         log.info("migrations_applied", extra={"newly_applied": applied})
 
-        # Build + load the configured model unless a backend was injected.
+        # Register the configured model in the registry (Block 6) so it appears in
+        # the dashboard, then build + load it unless a backend was injected.
+        if settings.model_path is not None:
+            model_service.register_configured(settings.model_path, settings.model_id)
         if not injected_backend and settings.model_path is not None:
             try:
                 built = build_backend(settings)
@@ -130,6 +140,7 @@ def create_app(
             yield
         finally:
             await telemetry.stop()
+            await model_service.shutdown()
             logging.getLogger().removeHandler(log_collector)
             active: InferenceBackend | None = getattr(app.state, "backend", None)
             if active is not None and not injected_backend:
@@ -139,7 +150,7 @@ def create_app(
     app = FastAPI(
         title="Inference Engine",
         version=__version__,
-        summary="Local GGUF inference: OpenAI API, operability, operator UI (Blocks 0–5).",
+        summary="Local GGUF inference: OpenAI API, dashboard, model lifecycle (Blocks 0–6).",
         lifespan=lifespan,
     )
     app.state.settings = settings
@@ -153,6 +164,8 @@ def create_app(
     app.state.counters = counters
     app.state.telemetry = telemetry
     app.state.log_collector = log_collector
+    app.state.model_registry = model_registry
+    app.state.model_service = model_service
 
     @app.middleware("http")
     async def _assign_request_id(request: Request, call_next) -> Response:  # type: ignore[no-untyped-def]
@@ -183,6 +196,7 @@ def create_app(
     app.include_router(ops_router)
     app.include_router(ws_router)
     app.include_router(admin_router)
+    app.include_router(models_router)
     _mount_dashboard(app)
     return app
 

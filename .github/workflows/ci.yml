@@ -193,6 +193,18 @@ jobs:
           done
           python scripts/dashboard_smoke.py --base-url http://127.0.0.1:8124
 
+      - name: Model lifecycle smoke (import → load → generate → unload → delete)
+        run: |
+          inference-engine serve --port 8125 --data-dir /tmp/ie-serve-ml &
+          SRV=$!
+          trap 'kill $SRV 2>/dev/null || true' EXIT
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8125/healthz >/dev/null 2>&1 && break
+            sleep 0.5
+          done
+          python scripts/model_lifecycle_smoke.py \
+            --base-url http://127.0.0.1:8125 --model-path "$HOME/models/tiny.gguf"
+
   build:
     name: Build & validate package
     runs-on: ubuntu-latest

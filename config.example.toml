@@ -51,6 +51,15 @@ log_level = "INFO"
 # cu_prompt_weight     = 1.0
 # cu_completion_weight = 1.0
 
+# --- Model lifecycle (Block 6) ---
+# Directory where downloaded/imported GGUF models are stored (default: <data_dir>/models).
+# models_dir = "/var/lib/inference-engine/models"
+# Hugging Face endpoint (override for a mirror or enterprise hub).
+# hf_endpoint = "https://huggingface.co"
+# Download streaming chunk size in bytes, and an optional max model size (0 = unlimited).
+# download_chunk_bytes = 1048576
+# max_model_bytes = 0
+
 # --- Operability core (Block 4) ---
 # Telemetry sampler interval, in seconds (0 disables the background sampler).
 # metrics_interval_s = 1.0
