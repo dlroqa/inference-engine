@@ -148,6 +148,46 @@ for chunk in client.chat.completions.create(
 Supported surface and error contract are documented in the
 [compatibility matrix](docs/compatibility.md).
 
+## Anthropic-compatible API (Block 8)
+
+The engine also speaks the **Anthropic Messages** dialect at `POST /v1/messages`,
+so the official `anthropic` SDK works drop-in:
+
+```python
+from anthropic import Anthropic
+
+client = Anthropic(base_url="http://127.0.0.1:8000", api_key="sk-ie-…")
+msg = client.messages.create(
+    model="my-model",  # the loaded model id
+    max_tokens=128,
+    system="You are concise.",
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+print(msg.content[0].text)
+```
+
+Streaming emits the documented Anthropic event sequence (`message_start` →
+`content_block_start` → `content_block_delta*` → `content_block_stop` →
+`message_delta` → `message_stop`). Text content only; tool use and non-text
+content blocks are rejected with a clear `400`. See the
+[compatibility matrix](docs/compatibility.md).
+
+### Sampling & structured output (Block 8)
+
+Both dialects map onto one internal sampler set with a **documented, fixed order**
+(repetition penalties → top_k → top_p → min_p → temperature; Mirostat replaces the
+truncation step when enabled). OpenAI contributes `frequency_penalty` /
+`presence_penalty`; Anthropic contributes `top_k`; `min_p`, `repeat_penalty`, and
+Mirostat are available on the internal contract.
+
+**Structured output** is honored when the loaded backend supports constrained
+decoding (the `llama-cpp-python` backend does): OpenAI `response_format`
+`json_object` / `json_schema` constrain the output, and a GBNF `grammar` is
+supported internally. When the backend cannot constrain output, a JSON
+`response_format` is **rejected** (`400 structured_output_unsupported`) rather than
+silently returned as free text. Schema conformance is verified against a real
+model in CI.
+
 ### Authentication, limits & quota (Block 3)
 
 Create API keys with the CLI (the token is shown **once**):
@@ -434,7 +474,9 @@ engine/
 ├── logging_setup.py    # structured JSON logging
 ├── api/
 │   ├── health.py       # /healthz, /readyz
-│   ├── openai_router.py# /v1/chat/completions, /v1/models (+ telemetry hooks)
+│   ├── openai_router.py# /v1/chat/completions, /v1/models (OpenAI dialect)
+│   ├── anthropic_router.py # /v1/messages (Anthropic dialect)
+│   ├── serving.py     # shared request lifecycle (auth, admission, cleanup)
 │   ├── ws_router.py    # /ws/metrics, /ws/feed
 │   ├── ops_router.py   # /metrics, /logs, /diagnostics
 │   ├── admin_router.py # /admin/overview, /admin/model/*, /admin/keys

@@ -181,6 +181,19 @@ jobs:
           trap 'kill $SRV 2>/dev/null || true' EXIT
           IE_MODEL_ID=tiny python scripts/real_model_sdk_smoke.py
 
+      - name: Anthropic SDK + structured output against the real model
+        run: |
+          IE_MODEL_PATH="$HOME/models/tiny.gguf" IE_MODEL_ID=tiny \
+            inference-engine serve --port 8127 --data-dir /tmp/ie-serve-anthropic &
+          SRV=$!
+          trap 'kill $SRV 2>/dev/null || true' EXIT
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8127/healthz >/dev/null 2>&1 && break
+            sleep 0.5
+          done
+          IE_SMOKE_BASE=http://127.0.0.1:8127 IE_MODEL_ID=tiny python scripts/anthropic_sdk_smoke.py
+          IE_SMOKE_BASE=http://127.0.0.1:8127 IE_MODEL_ID=tiny python scripts/structured_output_smoke.py
+
       - name: Dashboard control-plane smoke (real model load/gen/logs/keys)
         run: |
           IE_MODEL_PATH="$HOME/models/tiny.gguf" IE_MODEL_ID=tiny \

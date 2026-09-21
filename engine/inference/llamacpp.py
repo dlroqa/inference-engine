@@ -33,6 +33,57 @@ def _close(stream: object) -> None:
         close()
 
 
+def _structured_output_supported() -> bool:
+    """Whether the installed llama-cpp-python exposes constrained decoding.
+
+    We only claim structured output when the binding actually provides
+    ``LlamaGrammar`` (GBNF/JSON-schema constraints) — never optimistically.
+    """
+    try:
+        from llama_cpp import LlamaGrammar  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
+def _sampler_kwargs(request: GenerationRequest) -> dict[str, Any]:
+    """Map the internal sampler fields onto llama-cpp-python keyword arguments.
+
+    Only fields the binding accepts are passed; the sampler order is fixed by
+    llama.cpp itself (see docs/compatibility.md).
+    """
+    kwargs: dict[str, Any] = {
+        "max_tokens": request.max_tokens,
+        "temperature": request.temperature,
+        "top_p": request.top_p,
+        "top_k": request.top_k,
+        "min_p": request.min_p,
+        "repeat_penalty": request.repeat_penalty,
+        "presence_penalty": request.presence_penalty,
+        "frequency_penalty": request.frequency_penalty,
+        "seed": request.seed,
+        "stop": request.stop or None,
+    }
+    if request.mirostat_mode:
+        kwargs["mirostat_mode"] = request.mirostat_mode
+        kwargs["mirostat_tau"] = request.mirostat_tau
+        kwargs["mirostat_eta"] = request.mirostat_eta
+    return kwargs
+
+
+def _structured_kwargs(request: GenerationRequest) -> dict[str, Any]:
+    """Map structured-output fields onto llama-cpp-python constrained decoding."""
+    if request.grammar is not None:
+        from llama_cpp import LlamaGrammar
+
+        return {"grammar": LlamaGrammar.from_string(request.grammar)}
+    if request.json_schema is not None:
+        return {"response_format": {"type": "json_object", "schema": request.json_schema}}
+    if request.json_object:
+        return {"response_format": {"type": "json_object"}}
+    return {}
+
+
 class LlamaCppBackend(ThreadedBackend):
     """A single-model llama.cpp backend."""
 
@@ -87,6 +138,7 @@ class LlamaCppBackend(ThreadedBackend):
             context_length=self._n_ctx,
             streaming=True,
             max_output_tokens=None,
+            supports_structured_output=_structured_output_supported(),
             extra={"n_gpu_layers": self._n_gpu_layers},
         )
 
@@ -113,13 +165,9 @@ class LlamaCppBackend(ThreadedBackend):
         assert self._llm is not None
         stream = self._llm.create_completion(
             prompt=request.prompt,
-            max_tokens=request.max_tokens,
-            temperature=request.temperature,
-            top_p=request.top_p,
-            top_k=request.top_k,
-            seed=request.seed,
-            stop=request.stop or None,
             stream=True,
+            **_sampler_kwargs(request),
+            **_structured_kwargs(request),
         )
         finish = FinishReason.STOP
         try:
@@ -142,13 +190,9 @@ class LlamaCppBackend(ThreadedBackend):
         assert request.messages is not None
         stream = self._llm.create_chat_completion(
             messages=[{"role": m.role, "content": m.content} for m in request.messages],
-            max_tokens=request.max_tokens,
-            temperature=request.temperature,
-            top_p=request.top_p,
-            top_k=request.top_k,
-            seed=request.seed,
-            stop=request.stop or None,
             stream=True,
+            **_sampler_kwargs(request),
+            **_structured_kwargs(request),
         )
         finish = FinishReason.STOP
         try:

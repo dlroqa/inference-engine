@@ -58,6 +58,15 @@ class GenerationStream(abc.ABC):
         """
         return 0
 
+    @property
+    def prompt_tokens(self) -> int:
+        """Prompt token count, known once generation starts (0 if unavailable).
+
+        Available before the terminal result so an edge can report input-token
+        usage in an opening streaming event (e.g. Anthropic ``message_start``).
+        """
+        return 0
+
     async def collect(self) -> GenerationResult:
         """Consume the whole stream and return the terminal result.
 
