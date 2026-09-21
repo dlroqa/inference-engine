@@ -160,7 +160,10 @@ def create_app(
     app = FastAPI(
         title="Inference Engine",
         version=__version__,
-        summary="Local GGUF inference: OpenAI + Anthropic APIs, dashboard, model lifecycle (Blocks 0–8).",
+        summary=(
+            "Local GGUF inference: OpenAI + Anthropic APIs, dashboard, "
+            "model lifecycle (Blocks 0–8)."
+        ),
         lifespan=lifespan,
     )
     app.state.settings = settings
