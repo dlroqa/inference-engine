@@ -75,6 +75,16 @@ class Settings(BaseSettings):
     rate_limit_per_min: int = Field(default=120, ge=0)
     max_concurrent_per_key: int = Field(default=8, ge=0)
 
+    # Controlled concurrency (Block 7). Engine-wide admission control in front of
+    # the backend. The Tier-1 llama.cpp runtime serializes decoding per model
+    # context, so the honest default concurrency is 1; overlapping requests wait
+    # in a bounded queue (up to max_concurrency_queue waiters, concurrency_queue_timeout_s
+    # seconds) and are rejected with a retriable saturation error beyond that.
+    # See docs/concurrency.md before raising max_concurrency.
+    max_concurrency: int = Field(default=1, ge=1, le=1024)
+    max_concurrency_queue: int = Field(default=32, ge=0, le=100_000)
+    concurrency_queue_timeout_s: float = Field(default=30.0, ge=0.0, le=3600.0)
+
     # Compute-unit quota (Block 3). 0 = unlimited. 5-hour rolling window and a
     # weekly fixed cap; CU = prompt_tokens*w_in + completion_tokens*w_out.
     quota_5h_cu: float = Field(default=1_000_000.0, ge=0)

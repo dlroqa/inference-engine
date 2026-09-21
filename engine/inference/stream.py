@@ -67,6 +67,10 @@ class QueueGenerationStream(GenerationStream):
 
         self._index = 0
         self._parts: list[str] = []
+        # Number of times the producer had to block on a full token queue because
+        # the consumer fell behind. A slow-consumer signal; the buffer stays
+        # bounded either way (the semaphore is the bound).
+        self._backpressure_waits = 0
         self._timings = GenerationTimings(started_at=time.monotonic())
         self._result: GenerationResult | None = None
         self._exhausted = False
@@ -92,7 +96,11 @@ class QueueGenerationStream(GenerationStream):
                     finish = FinishReason.CANCELLED
                     gen.close()
                     break
-                self._capacity.acquire()
+                # Try to reserve a queue slot without blocking; if it's full the
+                # consumer is behind, so record the backpressure and then wait.
+                if not self._capacity.acquire(blocking=False):
+                    self._backpressure_waits += 1
+                    self._capacity.acquire()
                 if self._cancel.is_set():
                     self._capacity.release()
                     finish = FinishReason.CANCELLED
@@ -199,3 +207,12 @@ class QueueGenerationStream(GenerationStream):
     @property
     def result(self) -> GenerationResult | None:
         return self._result
+
+    @property
+    def backpressure_waits(self) -> int:
+        """How many times the producer blocked on a full queue (slow consumer).
+
+        Safe to read once the stream is finished/closed (the worker thread has
+        joined), which is when the edge reports it.
+        """
+        return self._backpressure_waits

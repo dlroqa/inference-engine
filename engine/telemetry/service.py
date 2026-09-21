@@ -38,6 +38,8 @@ class Telemetry:
         self.resources = ResourceSampler(disk_path=data_dir)
         self.power = PowerProbe()
         self.sample_interval_s = sample_interval_s
+        # Optional admission scheduler (Block 7); its metrics ride the snapshot.
+        self.scheduler: Any | None = None
         self._task: asyncio.Task[None] | None = None
         # For measured completion-token throughput between samples.
         self._last_completion_total: int | None = None
@@ -91,6 +93,7 @@ class Telemetry:
             "gpu": gpu(),
             "energy": energy_state(reading, tok_per_s),
             "backend": self._backend_panel(backend),
+            "scheduler": self.scheduler.snapshot() if self.scheduler is not None else None,
         }
 
     def publish_snapshot(self, backend: InferenceBackend | None) -> dict[str, Any]:
@@ -148,6 +151,19 @@ class Telemetry:
                 "category": category,
                 "endpoint": endpoint,
                 "model": model,
+            },
+        )
+
+    def request_rejected(
+        self, *, request_id: str, endpoint: str, reason: str, retry_after_s: int
+    ) -> None:
+        self.feed(
+            EventType.REQUEST_REJECTED,
+            {
+                "request_id": request_id,
+                "endpoint": endpoint,
+                "reason": reason,
+                "retry_after_s": retry_after_s,
             },
         )
 

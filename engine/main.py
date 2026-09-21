@@ -31,6 +31,7 @@ from engine.config import Settings, load_config
 from engine.gateway import Gateway
 from engine.inference.base import InferenceBackend
 from engine.inference.factory import build_backend
+from engine.inference.scheduler import Scheduler
 from engine.inference.types import BackendError
 from engine.logging_setup import configure_logging, get_logger
 from engine.models.registry import ModelRegistry
@@ -93,6 +94,14 @@ def create_app(
         max_rows=settings.log_events_max_rows,
     )
     logging.getLogger().addHandler(log_collector)
+
+    # Controlled concurrency (Block 7): admission control in front of the backend.
+    scheduler = Scheduler(
+        max_concurrency=settings.max_concurrency,
+        max_queue_depth=settings.max_concurrency_queue,
+        queue_timeout_s=settings.concurrency_queue_timeout_s,
+    )
+    telemetry.scheduler = scheduler
 
     # Model lifecycle (Block 6): registry + orchestration service.
     model_registry = ModelRegistry(settings.db_path)  # type: ignore[arg-type]
@@ -163,6 +172,7 @@ def create_app(
     app.state.event_bus = event_bus
     app.state.counters = counters
     app.state.telemetry = telemetry
+    app.state.scheduler = scheduler
     app.state.log_collector = log_collector
     app.state.model_registry = model_registry
     app.state.model_service = model_service

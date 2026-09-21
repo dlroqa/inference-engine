@@ -44,6 +44,7 @@ class EventType(enum.StrEnum):
     REQUEST_PROGRESS = "request.progress"
     REQUEST_END = "request.end"
     REQUEST_ERROR = "request.error"
+    REQUEST_REJECTED = "request.rejected"
 
 
 @dataclass(slots=True)

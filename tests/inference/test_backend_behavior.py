@@ -172,6 +172,45 @@ def test_busy_and_not_ready_guards() -> None:
     asyncio.run(body())
 
 
+def test_slow_consumer_cannot_grow_token_buffer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A consumer slower than the producer applies backpressure; the buffer is bounded.
+
+    The producer thread blocks on the bounded token queue rather than buffering
+    without limit, so a slow client cannot make the engine accumulate the whole
+    generation in memory. The stream records the backpressure as a slow-consumer
+    signal.
+    """
+
+    async def body() -> None:
+        # A small buffer + a fast producer + a slow consumer forces backpressure.
+        from engine.inference import stream as stream_mod
+
+        orig_init = stream_mod.QueueGenerationStream.__init__
+
+        def small_buffer_init(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            kwargs["maxsize"] = 4
+            orig_init(self, *args, **kwargs)
+
+        monkeypatch.setattr(stream_mod.QueueGenerationStream, "__init__", small_buffer_init)
+
+        backend = FakeBackend(tokens=["x"] * 40)  # produce quickly
+        await backend.load()
+        stream = backend.generate(GenerationRequest(prompt="hi"))
+
+        count = 0
+        async for _ in stream:
+            count += 1
+            await asyncio.sleep(0.01)  # consume slowly
+
+        assert count == 40  # all tokens still delivered in order
+        assert stream.result is not None and stream.result.completion_tokens == 40
+        # The producer had to wait on the full queue: the slow-consumer signal fired.
+        assert stream.backpressure_waits > 0
+        assert backend.state == BackendState.READY
+
+    asyncio.run(body())
+
+
 def test_health_and_capabilities() -> None:
     async def body() -> None:
         backend = FakeBackend()

@@ -42,6 +42,14 @@ function feedLine(e: FeedEvent): JSX.Element {
         <span className="muted">{e.category}</span>
       </>
     );
+  } else if (e.type === "request.rejected") {
+    body = (
+      <>
+        <Badge tone="warn">shed</Badge>
+        <span className="muted">{e.reason}</span>
+        {e.retry_after_s != null && <span>retry {e.retry_after_s}s</span>}
+      </>
+    );
   } else {
     body = (
       <>
@@ -66,6 +74,7 @@ export function Overview(): JSX.Element {
   const c = snapshot?.counters;
   const r = snapshot?.resources;
   const model = snapshot?.backend;
+  const s = snapshot?.scheduler;
 
   return (
     <>
@@ -86,7 +95,11 @@ export function Overview(): JSX.Element {
           <StatCard
             label="Requests"
             value={num(c?.requests_total ?? 0)}
-            sub={`${num(c?.requests_active ?? 0)} active · ${num(c?.requests_errors ?? 0)} errors`}
+            sub={
+              `${num(c?.requests_active ?? 0)} active · ${num(s?.queue_depth ?? 0)} queued · ` +
+              `${num(c?.requests_errors ?? 0)} errors` +
+              (s && s.rejected_total > 0 ? ` · ${num(s.rejected_total)} shed` : "")
+            }
           />
         </div>
         <div className="col-3">

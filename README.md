@@ -276,13 +276,42 @@ cover the whole lifecycle:
 
 Models live under `<data_dir>/models/` (configurable via `models_dir`).
 
+## Controlled concurrency (Block 7)
+
+An **admission scheduler** sits in front of the backend so the engine degrades
+predictably under load instead of failing requests outright or exhausting memory.
+The `llama.cpp` runtime serializes decoding per model context, so the honest
+default concurrency is **1**; overlapping requests wait in a bounded queue and run
+in order, and only excess load beyond the queue is shed:
+
+- **Bounded admission.** `max_concurrency` slots gate concurrent generations;
+  waiting requests queue up to `max_concurrency_queue`, for at most
+  `concurrency_queue_timeout_s`. Past either bound, the request is shed with
+  `429 engine_saturated` and a `retry-after` header (SDK clients retry it).
+- **Capacity is always released** — on completion, failure, and **client
+  disconnect** (a disconnected stream aborts its generation and frees the slot
+  promptly).
+- **Slow consumers can't grow memory.** Tokens flow through a bounded, semaphore-
+  guarded queue, so a client that reads slower than the model generates applies
+  backpressure to the producer instead of buffering the whole response.
+- **Observable.** `GET /metrics` (and `WS /ws/metrics`) carry a `scheduler` panel
+  (slots in use, queue depth, admissions, rejections, cancellations, slow-consumer
+  events, and queue wait-time); the live feed emits `request.rejected` on shedding.
+
+Configure with `max_concurrency`, `max_concurrency_queue`, and
+`concurrency_queue_timeout_s`. Full policy, metric definitions, and the load-test
+profile are in [docs/concurrency.md](docs/concurrency.md);
+`scripts/load_test.py` drives a running engine and prints an admission/latency
+summary.
+
 ## Operator dashboard (Block 5)
 
 A small React/Vite single-page app — the local operator UI — is served by the
 engine at **`/dashboard`** (the root path redirects there). Four views, all driven
 by the typed admin API and the Block 4 WebSocket feeds:
 
-- **Overview** — health, loaded model + state, uptime, request/token counters,
+- **Overview** — health, loaded model + state, uptime, request/token counters
+  (including in-flight, queued, and shed requests from the admission scheduler),
   animated CPU/RAM/disk meters, energy state, and the live inference feed. The
   metrics stream reconnects automatically and falls back to REST polling of
   `/metrics`; the connection state is always shown.
@@ -411,7 +440,7 @@ engine/
 │   ├── admin_router.py # /admin/overview, /admin/model/*, /admin/keys
 │   ├── deps.py         # operator access gate (loopback or valid key)
 │   └── errors.py       # OpenAI error envelope + structured error logging
-├── inference/          # internal generation contract + llama.cpp backend
+├── inference/          # generation contract, llama.cpp backend, admission scheduler
 ├── models/             # registry, GGUF probe, downloader, host compat, lifecycle service
 ├── auth/ · quota/      # API keys · compute-unit quota
 ├── telemetry/          # event bus, counters, resources, power, logs, diagnostics

@@ -205,6 +205,23 @@ jobs:
           python scripts/model_lifecycle_smoke.py \
             --base-url http://127.0.0.1:8125 --model-path "$HOME/models/tiny.gguf"
 
+      - name: Concurrency load test (real model, bounded admission)
+        run: |
+          IE_MODEL_PATH="$HOME/models/tiny.gguf" IE_MODEL_ID=tiny \
+            inference-engine serve --port 8126 --data-dir /tmp/ie-serve-load &
+          SRV=$!
+          trap 'kill $SRV 2>/dev/null || true' EXIT
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8126/healthz >/dev/null 2>&1 && break
+            sleep 0.5
+          done
+          # Repeatable profile: 64 requests, 16 concurrent, on the AVX2 runner.
+          # Verifies the engine bounds concurrent load to success + retriable 429
+          # shedding (never a crash / 5xx), and reports the scheduler counters.
+          python scripts/load_test.py --base-url http://127.0.0.1:8126 \
+            --model tiny --concurrency 16 --requests 64 --max-tokens 16 \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
   build:
     name: Build & validate package
     runs-on: ubuntu-latest
