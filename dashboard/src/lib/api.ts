@@ -147,6 +147,42 @@ export interface CreatedKey {
   token: string;
 }
 
+export interface ModelCompat {
+  status: "ok" | "needs_backend" | "too_large" | "unknown";
+  reason: string;
+}
+
+export interface ModelInfo {
+  id: string;
+  name: string;
+  filename: string;
+  source_type: "huggingface" | "url" | "import";
+  source_ref: string | null;
+  sha256: string | null;
+  size_bytes: number | null;
+  downloaded_bytes: number;
+  progress: number | null;
+  quant: string | null;
+  arch: string | null;
+  context_length: number | null;
+  status: "downloading" | "verifying" | "ready" | "error" | "cancelled";
+  error: string | null;
+  active: boolean;
+  loaded: boolean;
+  added_at: string;
+  compat: ModelCompat;
+}
+
+export interface DownloadRequest {
+  source_type: "huggingface" | "url";
+  name?: string | null;
+  repo?: string | null;
+  filename?: string | null;
+  revision?: string;
+  url?: string | null;
+  expected_sha256?: string | null;
+}
+
 export interface FeedEvent {
   type: string;
   ts: number;
@@ -184,6 +220,22 @@ export const api = {
   revokeKey: (id: string) => request<{ revoked: boolean; id: string }>(`/admin/keys/${id}`, { method: "DELETE" }),
   deleteKey: (id: string) =>
     request<{ deleted: boolean; id: string }>(`/admin/keys/${id}?purge=true`, { method: "DELETE" }),
+
+  // Model lifecycle (Block 6)
+  listModels: () => request<{ models: ModelInfo[] }>("/admin/models"),
+  getModel: (id: string) => request<ModelInfo>(`/admin/models/${id}`),
+  importModel: (path: string, name: string | null) =>
+    request<ModelInfo>("/admin/models/import", { method: "POST", body: JSON.stringify({ path, name }) }),
+  downloadModel: (body: DownloadRequest) =>
+    request<ModelInfo>("/admin/models/download", { method: "POST", body: JSON.stringify(body) }),
+  cancelDownload: (id: string) =>
+    request<{ cancelling: boolean; id: string }>(`/admin/models/${id}/cancel`, { method: "POST" }),
+  loadModelById: (id: string) =>
+    request<{ result: string; model: ModelInfo }>(`/admin/models/${id}/load`, { method: "POST" }),
+  unloadModelById: (id: string) =>
+    request<{ result: string; model: ModelInfo }>(`/admin/models/${id}/unload`, { method: "POST" }),
+  deleteModel: (id: string) =>
+    request<{ deleted: boolean; id: string }>(`/admin/models/${id}`, { method: "DELETE" }),
 };
 
 export function wsUrl(path: string): string {

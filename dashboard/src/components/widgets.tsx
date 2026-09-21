@@ -51,13 +51,13 @@ export function Meter({
   );
 }
 
-type Tone = "ok" | "warn" | "danger" | "neutral";
+export type ToneName = "ok" | "warn" | "danger" | "neutral";
 
-export function Badge({ tone, children }: { tone: Tone; children: ReactNode }): JSX.Element {
+export function Badge({ tone, children }: { tone: ToneName; children: ReactNode }): JSX.Element {
   return <span className={`badge ${tone}`}>{children}</span>;
 }
 
-const CATEGORY_TONE: Record<string, Tone> = {
+const CATEGORY_TONE: Record<string, ToneName> = {
   validation: "warn",
   auth: "warn",
   limit: "warn",
@@ -67,12 +67,12 @@ const CATEGORY_TONE: Record<string, Tone> = {
   internal: "danger",
 };
 
-export function categoryTone(category: string | null | undefined): Tone {
+export function categoryTone(category: string | null | undefined): ToneName {
   if (!category) return "neutral";
   return CATEGORY_TONE[category] ?? "neutral";
 }
 
-export function stateTone(state: string): Tone {
+export function stateTone(state: string): ToneName {
   if (state === "ready" || state === "generating") return "ok";
   if (state === "failed") return "danger";
   if (state === "loading") return "warn";

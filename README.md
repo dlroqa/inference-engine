@@ -247,6 +247,35 @@ curl -s http://127.0.0.1:8000/metrics | jq .energy
   `x-request-id` correlation header. A failed request writes a structured
   `log_events` row (category + stage + stacktrace, correlated by request id).
 
+## Model lifecycle (Block 6)
+
+Models are managed through a **registry** (persisted in SQLite) rather than a
+single hand-set `model_path`. The dashboard's **Models** page and the admin API
+cover the whole lifecycle:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /admin/models` | List registry models with progress + host-compat. |
+| `POST /admin/models/import` | Register a local GGUF file (SHA-256 verified, metadata probed). |
+| `POST /admin/models/download` | Start a verified download — Hugging Face (`repo` + `filename`) or a direct `url`, with optional `expected_sha256`. |
+| `GET /admin/models/{id}` | One model — poll download progress. |
+| `POST /admin/models/{id}/cancel` | Cancel an in-progress download (resumable `.part` kept). |
+| `POST /admin/models/{id}/load` · `/unload` | Load a registry model (becomes the active model) / unload it. |
+| `DELETE /admin/models/{id}` | Remove a model (unload it first). |
+
+- **Verified & recoverable:** downloads stream to a `.part` file, resume via HTTP
+  `Range`, and are checked against `expected_sha256` before being committed;
+  imports hash the file on registration. GGUF **arch / quant / context length** are
+  read from the file header without loading it.
+- **Honest host compatibility:** each model reports `ok`, `too_large`, or
+  `needs_backend` — the last when `llama-cpp-python` isn't installed or the CPU
+  lacks AVX2. A downloaded model is **never** implied runnable just because it's
+  listed. (Model *catalog search/discovery* and non-text modalities are later work.)
+- A configured `model_path` is auto-registered as the active model on startup, so
+  existing setups keep working.
+
+Models live under `<data_dir>/models/` (configurable via `models_dir`).
+
 ## Operator dashboard (Block 5)
 
 A small React/Vite single-page app — the local operator UI — is served by the
@@ -257,7 +286,11 @@ by the typed admin API and the Block 4 WebSocket feeds:
   animated CPU/RAM/disk meters, energy state, and the live inference feed. The
   metrics stream reconnects automatically and falls back to REST polling of
   `/metrics`; the connection state is always shown.
-- **Models** — the configured model identity with safe **load / unload** actions.
+- **Models** — the model **registry**: download from Hugging Face (repo + file) or
+  a direct URL, or import a local GGUF; each add is **SHA-256 verified** with
+  resumable, cancellable downloads and a live progress bar. Rows show probed GGUF
+  metadata (arch · quant · size), a **host-compatibility** badge, and safe
+  **load / unload / delete / set-active** actions.
 - **Logs** — recent request/log events filtered by level and free-text (request
   id, model, error category), with per-row category and stage.
 - **API keys** — create (with a label), copy the new secret **once**, and revoke.
@@ -327,7 +360,9 @@ push/PR (and on demand via **workflow_dispatch**):
   integration test, and **renders a real completion** (uploaded as the
   `real-generation` artifact and shown in the run summary). This is the canonical
   place the llama.cpp path is exercised, since local dev CPUs may lack AVX. It
-  also runs on demand via **workflow_dispatch**.
+  also runs the dashboard control-plane smoke and the **model-lifecycle smoke**
+  (import → load → generate → unload → delete on the real model), and runs on
+  demand via **workflow_dispatch**.
 - **`dashboard`**: installs the SPA deps, type-checks, runs the **vitest**
   component tests, and builds the dashboard into `engine/static` — the React/Vite
   build/test environment (Block 5).
@@ -377,6 +412,7 @@ engine/
 │   ├── deps.py         # operator access gate (loopback or valid key)
 │   └── errors.py       # OpenAI error envelope + structured error logging
 ├── inference/          # internal generation contract + llama.cpp backend
+├── models/             # registry, GGUF probe, downloader, host compat, lifecycle service
 ├── auth/ · quota/      # API keys · compute-unit quota
 ├── telemetry/          # event bus, counters, resources, power, logs, diagnostics
 ├── static/             # built operator dashboard SPA (build artifact, served at /dashboard)
