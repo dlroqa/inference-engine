@@ -10,27 +10,30 @@ it.
 | --- | --- | --- | --- |
 | `llamacpp` (default) | llama.cpp via `llama-cpp-python` | in-process, local GGUF | `[llama]` |
 | `remote_vllm` | vLLM OpenAI-compatible server | external HTTP endpoint | `[remote]` |
+| `remote_sglang` | SGLang OpenAI-compatible server | external HTTP endpoint | `[remote]` |
 
 Backend *registry*, health-aware routing across several live backends, and
 virtual auto-models are later Block 10 sub-slices; this page covers selecting a
 single backend.
 
-## Remote vLLM (Block 10, sub-slice 1)
+## Remote backends: vLLM & SGLang (Block 10, sub-slices 1–2)
 
-`backend_kind = "remote_vllm"` proxies generation to a running
-[vLLM](https://docs.vllm.ai) server over its OpenAI-compatible API
-(`/v1/models`, `/v1/chat/completions`, `/v1/completions`). The engine keeps
-owning auth, rate limits, quotas, admission control, telemetry, and the OpenAI
-**and** Anthropic edges; vLLM only does the decoding.
+vLLM (`remote_vllm`) and SGLang (`remote_sglang`) both expose an
+**OpenAI-compatible** server (`/v1/models`, `/v1/chat/completions`,
+`/v1/completions`, SSE deltas, and a terminal usage chunk via `stream_options`),
+so they share one adapter core (`OpenAICompatibleRemoteBackend`) and behave
+identically — only the selected `backend_kind` differs. The engine keeps owning
+auth, rate limits, quotas, admission control, telemetry, and the OpenAI **and**
+Anthropic edges; the remote server only does the decoding.
 
 Install the extra and point the engine at your server:
 
 ```toml
 # config.toml
-backend_kind    = "remote_vllm"
+backend_kind    = "remote_vllm"                       # or "remote_sglang"
 model_id        = "team-llama3"                       # what YOUR clients request
 remote_base_url = "http://vllm.internal:8000/v1"      # or the server root
-remote_model    = "meta-llama/Meta-Llama-3-8B-Instruct"  # what vLLM serves
+remote_model    = "meta-llama/Meta-Llama-3-8B-Instruct"  # what the server serves
 # remote_api_key = "…"   # prefer IE_REMOTE_API_KEY (never commit secrets)
 ```
 
@@ -42,7 +45,8 @@ IE_REMOTE_API_KEY="sk-…" inference-engine serve
 Every setting is also available as an `IE_*` env var
 (`IE_BACKEND_KIND`, `IE_REMOTE_BASE_URL`, `IE_REMOTE_MODEL`,
 `IE_REMOTE_API_KEY`, …). `remote_base_url` accepts either the server root
-(`http://host:8000`) or the OpenAI base (`.../v1`).
+(`http://host:8000`) or the OpenAI base (`.../v1`). SGLang typically serves on
+port 30000; use its `--served-model-name` as `remote_model`.
 
 ### Behavior and guarantees
 
@@ -73,30 +77,32 @@ Every setting is also available as an `IE_*` env var
 ### Egress control
 
 Outbound inference is a kill switch: set `allow_remote_backends = false`
-(`IE_ALLOW_REMOTE_BACKENDS=false`) to refuse building a remote backend, e.g. in
+(`IE_ALLOW_REMOTE_BACKENDS=false`) to refuse building any remote backend, e.g. in
 an air-gapped deployment. The single `remote_base_url` is the egress allowlist
-for this sub-slice; broader external-provider spillover with per-destination
+for these sub-slices; broader external-provider spillover with per-destination
 allowlisting is a later sub-slice. See [security.md](security.md).
 
 ### Not yet (later sub-slices)
 
-- Structured output (grammar / JSON-schema): the remote backend reports
+- Structured output (grammar / JSON-schema): the remote backends report
   `supports_structured_output = false`, so the edge rejects structured requests
-  rather than returning unconstrained text, even though vLLM can guide decoding.
-- A second adapter (SGLang), Triton, a multi-backend registry with health-aware
-  least-busy routing, prefix/KV-cache affinity, virtual auto-models, and
-  external-provider spillover.
+  rather than returning unconstrained text, even though these servers can guide
+  decoding.
+- **Triton** — deferred by design until a real multi-model workload justifies it.
+- A multi-backend registry with health-aware least-busy routing, prefix/KV-cache
+  affinity, virtual auto-models, and external-provider spillover.
 
 ### Verifying against a real server
 
-vLLM requires a GPU, which hosted CI runners lack, so CI exercises the remote
-adapter against a real OpenAI-compatible **model** server (llama.cpp's OpenAI
-server on the AVX2 runner) using `scripts/vllm_smoke.py`. Operators run the same
-script against their vLLM deployment for a true end-to-end check:
+vLLM and SGLang require a GPU, which hosted CI runners lack, so CI exercises the
+shared remote adapter against a real OpenAI-compatible **model** server
+(llama.cpp's OpenAI server on the AVX2 runner) using `scripts/remote_smoke.py`,
+smoking both `--backend vllm` and `--backend sglang`. Operators run the same
+script against their real deployment for a true end-to-end check:
 
 ```bash
-python scripts/vllm_smoke.py \
-  --base-url http://vllm.internal:8000/v1 \
+python scripts/remote_smoke.py --backend sglang \
+  --base-url http://sglang.internal:30000/v1 \
   --model meta-llama/Meta-Llama-3-8B-Instruct \
-  --api-key "$VLLM_API_KEY" --wait
+  --api-key "$REMOTE_API_KEY" --wait
 ```

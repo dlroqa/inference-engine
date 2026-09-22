@@ -137,10 +137,11 @@ class Settings(BaseSettings):
     log_events_max_rows: int = Field(default=2000, ge=0, le=1_000_000)
 
     # Backend selection (Block 10). "llamacpp" is the local GGUF runtime (Block 1);
-    # "remote_vllm" proxies generation to an external vLLM OpenAI-compatible server.
-    # Remote adapters are gated by allow_remote_backends and require remote_base_url
-    # + remote_model. See docs/backends.md.
-    backend_kind: Literal["llamacpp", "remote_vllm"] = "llamacpp"
+    # "remote_vllm"/"remote_sglang" proxy generation to an external OpenAI-compatible
+    # server (vLLM, sub-slice 1; SGLang, sub-slice 2). Remote adapters are gated by
+    # allow_remote_backends and require remote_base_url + remote_model. See
+    # docs/backends.md.
+    backend_kind: Literal["llamacpp", "remote_vllm", "remote_sglang"] = "llamacpp"
 
     # Remote backend (Block 10, sub-slice 1 = vLLM). Credentials are sent only to
     # remote_base_url and never logged. remote_model is the explicit upstream model
@@ -210,7 +211,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_remote_backend(self) -> Settings:
-        if self.backend_kind == "remote_vllm":
+        if self.backend_kind.startswith("remote_"):
             missing = [
                 name
                 for name, value in (
@@ -221,7 +222,7 @@ class Settings(BaseSettings):
             ]
             if missing:
                 raise ValueError(
-                    "backend_kind='remote_vllm' requires "
+                    f"backend_kind={self.backend_kind!r} requires "
                     + " and ".join(missing)
                     + " (set IE_REMOTE_BASE_URL / IE_REMOTE_MODEL); see docs/backends.md"
                 )

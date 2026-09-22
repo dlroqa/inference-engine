@@ -1,7 +1,7 @@
 """Build the configured inference backend from settings.
 
 Block 1 supported exactly one backend (llama.cpp). Block 10 adds remote adapters
-(vLLM first): ``backend_kind`` selects the runtime. Backend *registry* and
+(vLLM, then SGLang): ``backend_kind`` selects the runtime. Backend *registry* and
 health-aware routing across several live backends are later sub-slices.
 """
 
@@ -15,8 +15,8 @@ from engine.inference.types import ModelLoadError
 
 def build_backend(settings: Settings) -> InferenceBackend:
     """Construct (but do not load) the backend selected by ``backend_kind``."""
-    if settings.backend_kind == "remote_vllm":
-        return _build_remote_vllm(settings)
+    if settings.backend_kind.startswith("remote_"):
+        return _build_remote(settings)
     if settings.model_path is None:
         raise ModelLoadError(
             "no model configured; set model_path (IE_MODEL_PATH, --model-path, "
@@ -31,20 +31,30 @@ def build_backend(settings: Settings) -> InferenceBackend:
     )
 
 
-def _build_remote_vllm(settings: Settings) -> InferenceBackend:
+def _build_remote(settings: Settings) -> InferenceBackend:
     if not settings.allow_remote_backends:
         raise ModelLoadError(
             "remote backends are disabled (allow_remote_backends=false); "
             "enable it to proxy inference to an external server"
         )
     if not settings.remote_base_url or not settings.remote_model:
-        # Defensive: config validation already enforces this for remote_vllm.
-        raise ModelLoadError("remote_vllm backend requires remote_base_url and remote_model")
-    from engine.inference.remote import RemoteVLLMBackend
-    from engine.inference.remote.vllm import RemoteVLLMConfig
+        # Defensive: config validation already enforces this for remote_* kinds.
+        raise ModelLoadError(
+            f"{settings.backend_kind} backend requires remote_base_url and remote_model"
+        )
+    from engine.inference.remote import (
+        RemoteBackendConfig,
+        RemoteSGLangBackend,
+        RemoteVLLMBackend,
+    )
 
-    return RemoteVLLMBackend(
-        RemoteVLLMConfig(
+    classes = {
+        "remote_vllm": RemoteVLLMBackend,
+        "remote_sglang": RemoteSGLangBackend,
+    }
+    backend_cls = classes[settings.backend_kind]
+    return backend_cls(
+        RemoteBackendConfig(
             base_url=settings.remote_base_url,
             remote_model=settings.remote_model,
             model_id=settings.model_id,
