@@ -21,7 +21,7 @@ from typing import Any
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
-from engine.api.deps import require_operator
+from engine.api.deps import operator_identity, require_operator
 from engine.api.errors import OpenAIError
 from engine.auth.keys import KeyStore
 from engine.inference.base import InferenceBackend
@@ -156,6 +156,12 @@ def create_key(request: Request, body: KeyCreate) -> dict[str, Any]:
     store: KeyStore = request.app.state.gateway.keys
     record, token = store.create(label=body.label)
     _log.info("key_created", extra={"key_id": record.id})
+    request.app.state.audit.record(
+        "key.create",
+        actor=operator_identity(request),
+        target=record.id,
+        detail={"label": body.label},
+    )
     # The token is returned exactly once; it is never stored or shown again.
     return {
         "id": record.id,
@@ -195,6 +201,9 @@ def revoke_or_delete_key(
             )
         store.delete(key_id)
         _log.info("key_deleted", extra={"key_id": key_id})
+        request.app.state.audit.record(
+            "key.delete", actor=operator_identity(request), target=key_id
+        )
         return {"deleted": True, "id": key_id}
 
     revoked = store.revoke(key_id)
@@ -206,4 +215,43 @@ def revoke_or_delete_key(
             code="key_not_found",
         )
     _log.info("key_revoked", extra={"key_id": key_id})
+    request.app.state.audit.record("key.revoke", actor=operator_identity(request), target=key_id)
     return {"revoked": True, "id": key_id}
+
+
+@router.get("/audit")
+def audit_log(
+    request: Request,
+    limit: int = Query(default=100, ge=1, le=1000),
+    verify: bool = Query(
+        default=False, description="Recompute and report the hash-chain integrity."
+    ),
+) -> dict[str, Any]:
+    """The tamper-evident operator/security audit log (Block 9b).
+
+    Records only structured metadata (never prompts, responses, or secrets). With
+    ``verify=true`` the hash chain is recomputed and its integrity reported.
+    """
+    require_operator(request)
+    audit = request.app.state.audit
+    events = [
+        {
+            "id": e.id,
+            "ts": e.ts,
+            "actor": e.actor,
+            "action": e.action,
+            "target": e.target,
+            "detail": e.detail,
+            "hash": e.hash,
+        }
+        for e in audit.list(limit=limit)
+    ]
+    body: dict[str, Any] = {"events": events}
+    if verify:
+        result = audit.verify()
+        body["verify"] = {
+            "ok": result.ok,
+            "count": result.count,
+            "first_bad_id": result.first_bad_id,
+        }
+    return body

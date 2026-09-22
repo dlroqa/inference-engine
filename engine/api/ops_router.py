@@ -49,6 +49,15 @@ def logs(
 @router.get("/diagnostics")
 def diagnostics_bundle(request: Request) -> JSONResponse:
     require_operator(request)
+    if not request.app.state.settings.diagnostics_enabled:
+        from engine.api.errors import OpenAIError
+
+        raise OpenAIError(
+            "the diagnostics bundle is disabled by the operator",
+            status_code=403,
+            type="invalid_request_error",
+            code="diagnostics_disabled",
+        )
     telemetry: Telemetry = request.app.state.telemetry
     collector: LogCollector | None = getattr(request.app.state, "log_collector", None)
     backend = getattr(request.app.state, "backend", None)

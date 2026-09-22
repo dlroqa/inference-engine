@@ -92,6 +92,32 @@ class Settings(BaseSettings):
     require_model_ready: bool = False
     drain_timeout_s: float = Field(default=30.0, ge=0.0, le=600.0)
 
+    # Security hardening baseline (Block 9b). All default to the current
+    # (permissive-but-safe) behavior so existing setups are unaffected; tighten
+    # them for exposed/production or air-gapped deployments. See docs/security.md.
+    #
+    # ip_allowlist: when non-empty, only these CIDRs may reach the server (403
+    # otherwise). trust_forwarded_for uses the client IP from X-Forwarded-For (only
+    # enable behind a trusted reverse proxy that sets it).
+    ip_allowlist: list[str] = Field(default_factory=list)
+    trust_forwarded_for: bool = False
+    # Kill switches for dynamic/unsafe features.
+    allow_network_downloads: bool = True  # egress: model downloads/imports from HF/URL
+    allow_model_management: bool = True  # dynamic import/download/load/unload/delete
+    allow_structured_output: bool = True  # grammar/JSON-constrained decoding
+    diagnostics_enabled: bool = True  # the /diagnostics support bundle
+
+    @model_validator(mode="after")
+    def _validate_ip_allowlist(self) -> Settings:
+        import ipaddress
+
+        for cidr in self.ip_allowlist:
+            try:
+                ipaddress.ip_network(cidr, strict=False)
+            except ValueError as exc:
+                raise ValueError(f"invalid ip_allowlist entry {cidr!r}: {exc}") from exc
+        return self
+
     # Compute-unit quota (Block 3). 0 = unlimited. 5-hour rolling window and a
     # weekly fixed cap; CU = prompt_tokens*w_in + completion_tokens*w_out.
     quota_5h_cu: float = Field(default=1_000_000.0, ge=0)

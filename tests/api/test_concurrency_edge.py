@@ -54,16 +54,27 @@ def test_cancellation_frees_capacity(tmp_path: Path) -> None:
             assert sched["cancelled_total"] >= 1
             assert sched["in_use"] == 0
 
-            # Capacity is genuinely free: a fresh short request completes.
-            done = await client.post(
-                f"{base}/v1/chat/completions",
-                json={
-                    "model": MODEL_ID,
-                    "messages": [{"role": "user", "content": "b"}],
-                    "max_tokens": 3,
-                },
-            )
-            assert done.status_code == 200, done.text
+            # Capacity is freed, and the engine recovers: a fresh request succeeds.
+            # There is a brief, honest window where the backend is still finishing
+            # the aborted generation (the model stays busy until the in-flight call
+            # returns), during which a new request gets a retriable 503 model_busy —
+            # so retry briefly, exactly as a real client would.
+            status = None
+            for _ in range(100):
+                done = await client.post(
+                    f"{base}/v1/chat/completions",
+                    json={
+                        "model": MODEL_ID,
+                        "messages": [{"role": "user", "content": "b"}],
+                        "max_tokens": 3,
+                    },
+                )
+                status = done.status_code
+                if status == 200:
+                    break
+                assert done.json()["error"]["code"] == "model_busy"
+                await asyncio.sleep(0.02)
+            assert status == 200, done.text
 
     with running_app(app) as base:
         asyncio.run(body(base))

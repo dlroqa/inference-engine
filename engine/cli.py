@@ -169,13 +169,16 @@ def _ensure_migrated(settings: Settings) -> None:
 
 
 def _cmd_keys(settings: Settings, args: argparse.Namespace) -> int:
+    from engine.audit import AuditLog
     from engine.auth.keys import KeyStore
 
     _ensure_migrated(settings)
     store = KeyStore(settings.db_path)  # type: ignore[arg-type]
+    audit = AuditLog(settings.db_path)  # type: ignore[arg-type]
 
     if args.keys_command == "create":
         record, token = store.create(label=args.label)
+        audit.record("key.create", actor="cli", target=record.id, detail={"label": args.label})
         print(
             json.dumps(
                 {"id": record.id, "prefix": record.prefix, "label": record.label, "token": token}
@@ -199,6 +202,8 @@ def _cmd_keys(settings: Settings, args: argparse.Namespace) -> int:
         return 0
     if args.keys_command == "revoke":
         ok = store.revoke(args.key_id)
+        if ok:
+            audit.record("key.revoke", actor="cli", target=args.key_id)
         print(json.dumps({"revoked": ok, "id": args.key_id}))
         return 0 if ok else 1
     return 2  # pragma: no cover

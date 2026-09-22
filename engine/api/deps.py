@@ -10,7 +10,22 @@ from __future__ import annotations
 from fastapi import Request
 
 from engine.api.errors import OpenAIError
-from engine.gateway import Gateway, extract_token
+from engine.gateway import LOCAL_KEY_ID, Gateway, extract_token
+
+
+def operator_identity(request: Request) -> str:
+    """Best-effort identity of the operator making an admin call, for audit records.
+
+    Returns the API key id when a valid key is presented, else ``"local"`` (a
+    loopback dev client). Never returns a secret.
+    """
+    gateway: Gateway = request.app.state.gateway
+    token = extract_token(request)
+    if token:
+        record = gateway.keys.verify(token)
+        if record is not None:
+            return record.id
+    return LOCAL_KEY_ID
 
 
 def require_operator(request: Request) -> None:
