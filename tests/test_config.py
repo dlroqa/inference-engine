@@ -167,3 +167,39 @@ def test_valid_ip_allowlist_accepted(tmp_path) -> None:  # type: ignore[no-untyp
 
     s = Settings(data_dir=tmp_path, ip_allowlist=["127.0.0.1/32", "10.0.0.0/8", "::1/128"])
     assert len(s.ip_allowlist) == 3
+
+
+def test_remote_workers_parse_and_default_capacity(tmp_path):
+    from engine.config import Settings
+
+    s = Settings(
+        data_dir=tmp_path,
+        remote_workers=[
+            {"name": "w1", "kind": "remote_vllm", "base_url": "http://a/v1", "model": "m"},
+            {
+                "name": "w2",
+                "kind": "remote_sglang",
+                "base_url": "http://b",
+                "model": "m",
+                "max_in_flight": 16,
+            },
+        ],
+    )
+    assert [w.name for w in s.remote_workers] == ["w1", "w2"]
+    assert s.remote_workers[0].max_in_flight == 8  # default
+    assert s.remote_workers[1].max_in_flight == 16
+    assert s.remote_workers[1].kind == "remote_sglang"
+
+
+def test_remote_worker_rejects_unknown_kind(tmp_path):
+    from pydantic import ValidationError
+
+    from engine.config import Settings
+
+    with __import__("pytest").raises(ValidationError):
+        Settings(
+            data_dir=tmp_path,
+            remote_workers=[
+                {"name": "w", "kind": "llamacpp", "base_url": "http://a", "model": "m"}
+            ],
+        )

@@ -126,6 +126,23 @@ async def model_unload(request: Request) -> dict[str, Any]:
     return {"result": "unloaded", "model": _model_panel(request, backend)}
 
 
+@router.get("/backends")
+def backends(request: Request) -> dict[str, Any]:
+    """Per-backend routing status (Block 10, sub-slice 3): local + remote pool.
+
+    Secret-free: names, kind, local/remote, state, availability, and in-flight —
+    never a base URL credential. The registry decides placement per request.
+    """
+    require_operator(request)
+    registry = request.app.state.backend_registry
+    entries = registry.status()
+    return {
+        "backends": entries,
+        "ready": registry.any_ready(),
+        "count": len(entries),
+    }
+
+
 class KeyCreate(BaseModel):
     model_config = {"extra": "forbid"}
     label: str | None = Field(default=None, max_length=200)

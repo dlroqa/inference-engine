@@ -29,7 +29,7 @@ from engine.api.schemas.anthropic import (
 from engine.api.serving import Served
 from engine.inference.base import InferenceBackend
 from engine.inference.scheduler import SchedulerSaturated
-from engine.inference.types import BackendState, FinishReason, GenerationRequest
+from engine.inference.types import FinishReason, GenerationRequest
 
 router = APIRouter(prefix="/v1", tags=["anthropic"])
 
@@ -43,8 +43,9 @@ def _stop_reason(reason: FinishReason) -> str:
 
 
 def _ready_backend(request: Request) -> InferenceBackend:
-    backend: InferenceBackend | None = getattr(request.app.state, "backend", None)
-    if backend is None or backend.state not in (BackendState.READY, BackendState.GENERATING):
+    # The pool is homogeneous (one model_id); any ready backend gives capabilities.
+    backend = request.app.state.backend_registry.representative()
+    if backend is None:
         raise AnthropicError("no model is loaded", status_code=503, type="api_error")
     return backend
 
@@ -91,7 +92,6 @@ async def messages(request: Request, body: MessagesRequest) -> Response:
     served = await serving.start_generation(
         request,
         gen_request,
-        backend,
         endpoint=endpoint,
         model_id=model_id,
         prompt_text=body.prompt_text(),

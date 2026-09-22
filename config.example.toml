@@ -51,6 +51,23 @@ log_level = "INFO"
 # remote_tls_verify          = true                # verify the remote's TLS certificate
 # allow_remote_backends      = true                # kill switch: false refuses outbound inference
 
+# --- Multiple backends & routing (Block 10, sub-slice 3) ---
+# Run several backends at once and route each request to the least-busy healthy
+# one. The primary backend above is entry 0; add more with [[remote_workers]].
+# primary_max_in_flight caps concurrent generations on the primary (llama.cpp
+# serializes, so 1). backend_health_interval_s probes remote liveness (0 = off).
+# Raise max_concurrency (Controlled concurrency, above) to overlap across backends.
+# primary_max_in_flight     = 1
+# backend_health_interval_s = 10.0
+#
+# [[remote_workers]]
+# name          = "vllm-a"
+# kind          = "remote_vllm"      # or "remote_sglang"
+# base_url      = "http://gpu-a:8000/v1"
+# model         = "meta-llama/Meta-Llama-3-8B-Instruct"
+# max_in_flight = 8
+# # api_key     =                    # prefer a secure source; never commit
+
 # --- Secure gateway (Block 3) ---
 # Network binding beyond loopback must be opted into explicitly.
 # allow_network_bind  = false   # set true to bind a non-loopback host

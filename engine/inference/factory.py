@@ -7,10 +7,15 @@ health-aware routing across several live backends are later sub-slices.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from engine.config import Settings
 from engine.inference.base import InferenceBackend
 from engine.inference.llamacpp import LlamaCppBackend
 from engine.inference.types import ModelLoadError
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from engine.config import RemoteWorkerSpec
 
 
 def build_backend(settings: Settings) -> InferenceBackend:
@@ -64,5 +69,30 @@ def _build_remote(settings: Settings) -> InferenceBackend:
             max_prestream_retries=settings.remote_max_prestream_retries,
             context_length=settings.remote_context_length,
             tls_verify=settings.remote_tls_verify,
+        )
+    )
+
+
+def build_remote_worker(spec: RemoteWorkerSpec) -> InferenceBackend:
+    """Construct (but do not load) a remote backend from a ``remote_workers`` spec."""
+    from engine.inference.remote import (
+        RemoteBackendConfig,
+        RemoteSGLangBackend,
+        RemoteVLLMBackend,
+    )
+
+    classes = {"remote_vllm": RemoteVLLMBackend, "remote_sglang": RemoteSGLangBackend}
+    backend_cls = classes[spec.kind]
+    return backend_cls(
+        RemoteBackendConfig(
+            base_url=spec.base_url,
+            remote_model=spec.model,
+            model_id="local-model",  # the pool serves the engine's single model_id
+            api_key=spec.api_key,
+            connect_timeout_s=spec.connect_timeout_s,
+            read_timeout_s=spec.read_timeout_s,
+            max_prestream_retries=spec.max_prestream_retries,
+            context_length=spec.context_length,
+            tls_verify=spec.tls_verify,
         )
     )
