@@ -136,6 +136,26 @@ class Settings(BaseSettings):
     log_ring_size: int = Field(default=500, ge=0, le=100_000)
     log_events_max_rows: int = Field(default=2000, ge=0, le=1_000_000)
 
+    # Backend selection (Block 10). "llamacpp" is the local GGUF runtime (Block 1);
+    # "remote_vllm" proxies generation to an external vLLM OpenAI-compatible server.
+    # Remote adapters are gated by allow_remote_backends and require remote_base_url
+    # + remote_model. See docs/backends.md.
+    backend_kind: Literal["llamacpp", "remote_vllm"] = "llamacpp"
+
+    # Remote backend (Block 10, sub-slice 1 = vLLM). Credentials are sent only to
+    # remote_base_url and never logged. remote_model is the explicit upstream model
+    # name (the engine's model_id is what clients see). 0 retries = fail fast; any
+    # pre-stream retry is bounded and never happens after the first token is sent.
+    allow_remote_backends: bool = True  # kill switch for outbound remote inference
+    remote_base_url: str | None = None
+    remote_model: str | None = None
+    remote_api_key: str | None = None
+    remote_connect_timeout_s: float = Field(default=10.0, ge=0.1, le=600.0)
+    remote_read_timeout_s: float = Field(default=60.0, ge=0.1, le=3600.0)
+    remote_max_prestream_retries: int = Field(default=1, ge=0, le=10)
+    remote_context_length: int | None = Field(default=None, ge=8, le=1_048_576)
+    remote_tls_verify: bool = True
+
     # Local inference runtime (Block 1). A single explicitly configured GGUF
     # model. Multiple models, downloads, and GPU auto-tuning are later blocks;
     # n_gpu_layers is a manual knob (0 = CPU-only default).
@@ -185,6 +205,25 @@ class Settings(BaseSettings):
                     f"refusing to bind to non-loopback host {self.host!r} with auth "
                     "disabled; enable require_auth or set allow_insecure_bind=true to "
                     "acknowledge the risk"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_remote_backend(self) -> Settings:
+        if self.backend_kind == "remote_vllm":
+            missing = [
+                name
+                for name, value in (
+                    ("remote_base_url", self.remote_base_url),
+                    ("remote_model", self.remote_model),
+                )
+                if not value
+            ]
+            if missing:
+                raise ValueError(
+                    "backend_kind='remote_vllm' requires "
+                    + " and ".join(missing)
+                    + " (set IE_REMOTE_BASE_URL / IE_REMOTE_MODEL); see docs/backends.md"
                 )
         return self
 

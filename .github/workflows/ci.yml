@@ -244,6 +244,24 @@ jobs:
             --model tiny --concurrency 16 --requests 64 --max-tokens 16 \
             | tee -a "$GITHUB_STEP_SUMMARY"
 
+      - name: Remote vLLM adapter against a real OpenAI-compatible server
+        run: |
+          # vLLM needs a GPU that hosted runners lack, so the remote adapter is
+          # exercised against a real *model* server: a second engine serving the
+          # tiny GGUF behind our OpenAI edge stands in for vLLM here (operators
+          # validate real vLLM on a GPU host with the same scripts/vllm_smoke.py).
+          IE_MODEL_PATH="$HOME/models/tiny.gguf" IE_MODEL_ID=tiny \
+            inference-engine serve --port 8130 --data-dir /tmp/ie-upstream &
+          SRV=$!
+          trap 'kill $SRV 2>/dev/null || true' EXIT
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8130/healthz >/dev/null 2>&1 && break
+            sleep 0.5
+          done
+          python scripts/vllm_smoke.py \
+            --base-url http://127.0.0.1:8130/v1 --model tiny --wait \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
   build:
     name: Build & validate package
     runs-on: ubuntu-latest

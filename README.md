@@ -6,7 +6,7 @@ ordered **vertical slices** (Blocks 0–12) per
 Each block must be deployable, testable, documented, and useful before the next
 begins.
 
-> **Current status: Block 9 — Production deployment (9a + 9b).**
+> **Current status: Block 10 — Remote scale-out (sub-slice 1: vLLM adapter).**
 > Shipped so far: local GGUF inference (Block 1); **OpenAI** `/v1/chat/completions`
 > + **Anthropic** `/v1/messages` with streaming, sampling controls, and
 > capability-gated structured output (Blocks 2, 8); a secure gateway — API keys,
@@ -14,7 +14,7 @@ begins.
 > telemetry + an operator dashboard (Blocks 4–5); model lifecycle with
 > checksum-verified downloads (Block 6); controlled concurrency with admission
 > control (Block 7); and a Docker deployment path with graceful drain, readiness
-> gating, backup/restore (9a), and a security hardening baseline — trusted-network/IP policy, egress + feature kill switches, and a tamper-evident audit log (9b). **Not yet:** remote scale-out (Block 10), organizations/billing
+> gating, backup/restore (9a), and a security hardening baseline — trusted-network/IP policy, egress + feature kill switches, and a tamper-evident audit log (9b); and a **remote vLLM backend** — proxy generation to an external OpenAI-compatible server with explicit model mapping, secure credentials, timeouts, and safe pre-stream-only failover (Block 10, sub-slice 1). **Not yet:** the rest of remote scale-out (more adapters, backend registry + health-aware routing, auto-models — Block 10), organizations/billing
 > (Block 11), and advanced safety tooling (Block 12).
 
 ---
@@ -115,6 +115,34 @@ Backend limitations: single resident model; generations are serialized (a second
 concurrent request is rejected as busy); no downloads, routing, GPU auto-tuning,
 or batching yet. `llama-cpp-python` prebuilt wheels require AVX2; on CPUs without
 it, build from source with AVX disabled.
+
+## Remote backend: vLLM (Block 10)
+
+Instead of the local llama.cpp runtime, the engine can proxy generation to an
+external **vLLM** server over its OpenAI-compatible API, while still owning auth,
+limits, quotas, admission control, telemetry, and both provider edges. Install
+the `remote` extra and select the backend:
+
+```bash
+pip install "inference-engine[remote]"
+```
+
+```toml
+backend_kind    = "remote_vllm"
+model_id        = "team-llama3"                          # what clients request
+remote_base_url = "http://vllm.internal:8000/v1"
+remote_model    = "meta-llama/Meta-Llama-3-8B-Instruct"  # what vLLM serves
+```
+
+The API key (`IE_REMOTE_API_KEY`) is sent only to the remote and never logged or
+echoed. On load the backend verifies via `/v1/models` that the remote actually
+serves `remote_model`. Connect/read timeouts are bounded. A transient failure
+**before the first token** is retried up to `remote_max_prestream_retries`; once
+any token has reached the client an upstream error ends the stream honestly —
+never a silent re-route. Set `allow_remote_backends = false` to refuse outbound
+inference. Structured output, more adapters (SGLang/Triton), a multi-backend
+registry with health-aware routing, and virtual auto-models are later Block 10
+sub-slices. See [docs/backends.md](docs/backends.md).
 
 ## OpenAI-compatible API (Block 2)
 
