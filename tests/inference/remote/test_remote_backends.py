@@ -1,8 +1,10 @@
-"""Unit tests for the remote vLLM backend (Block 10, sub-slice 1).
+"""Tests for the remote OpenAI-compatible backends (Block 10, sub-slices 1-2).
 
-Each async body is wrapped in ``asyncio.run`` (no plugin dep), matching the rest
-of the inference suite. A real fake-vLLM Uvicorn server provides genuine HTTP
-transport so streaming, mid-stream disconnects, and status codes are exercised.
+The vLLM and SGLang adapters share one core (``OpenAICompatibleRemoteBackend``),
+so the behavioral tests are parametrized over both classes and run against a real
+fake-server Uvicorn instance (genuine HTTP transport — streaming, mid-stream
+disconnects, status codes). Each async body is wrapped in ``asyncio.run`` (no
+plugin dep), matching the rest of the inference suite.
 """
 
 from __future__ import annotations
@@ -12,9 +14,13 @@ import json
 
 import pytest
 
-from engine.inference.remote.vllm import (
+from engine.inference.remote import (
+    OpenAICompatibleRemoteBackend,
+    RemoteBackendConfig,
+    RemoteSGLangBackend,
     RemoteVLLMBackend,
-    RemoteVLLMConfig,
+)
+from engine.inference.remote.openai_compat import (
     _normalize_base_url,
     _Outcome,
     _parse_sse_line,
@@ -26,12 +32,20 @@ from engine.inference.types import (
     GenerationRequest,
     Message,
 )
-from tests.inference.remote.fake_vllm import TOKENS, FakeVLLM, serve
+from tests.inference.remote.fake_openai_server import TOKENS, FakeOpenAIServer, serve
 
 REMOTE_MODEL = "meta-llama/fake"
 
+# Every backend behavior test runs against each concrete adapter.
+ADAPTERS = [
+    pytest.param(RemoteVLLMBackend, "remote-vllm", id="vllm"),
+    pytest.param(RemoteSGLangBackend, "remote-sglang", id="sglang"),
+]
 
-def _backend(base_url: str, **overrides: object) -> RemoteVLLMBackend:
+
+def _backend(
+    backend_cls: type[OpenAICompatibleRemoteBackend], base_url: str, **overrides: object
+) -> OpenAICompatibleRemoteBackend:
     params: dict = {
         "base_url": base_url,
         "remote_model": REMOTE_MODEL,
@@ -39,7 +53,7 @@ def _backend(base_url: str, **overrides: object) -> RemoteVLLMBackend:
         "max_prestream_retries": 1,
     }
     params.update(overrides)
-    return RemoteVLLMBackend(RemoteVLLMConfig(**params))
+    return backend_cls(RemoteBackendConfig(**params))
 
 
 def _chat_req(**kw: object) -> GenerationRequest:
@@ -56,15 +70,19 @@ async def _drain(stream: object) -> str:
 # -- happy path -----------------------------------------------------------
 
 
-def test_chat_streaming_happy_path() -> None:
-    fake = FakeVLLM(model=REMOTE_MODEL)
+@pytest.mark.parametrize("backend_cls,expected_name", ADAPTERS)
+def test_chat_streaming_happy_path(
+    backend_cls: type[OpenAICompatibleRemoteBackend], expected_name: str
+) -> None:
+    fake = FakeOpenAIServer(model=REMOTE_MODEL)
 
     async def body() -> None:
         with serve(fake) as url:
-            backend = _backend(url, api_key="secret-key")
+            backend = _backend(backend_cls, url, api_key="secret-key")
             await backend.load()
             assert backend.state is BackendState.READY
             caps = backend.capabilities()
+            assert caps.backend == expected_name
             assert caps.model_id == "local-model"
             assert caps.context_length == 8192  # probed from /v1/models
             assert caps.supports_structured_output is False
@@ -75,7 +93,6 @@ def test_chat_streaming_happy_path() -> None:
             result = stream.result
             assert result is not None
             assert result.finish_reason.value == "stop"
-            # Usage is taken from the terminal usage chunk, not guessed.
             assert result.prompt_tokens == 7
             assert result.completion_tokens == len(TOKENS)
             await backend.unload()
@@ -84,12 +101,15 @@ def test_chat_streaming_happy_path() -> None:
     asyncio.run(body())
 
 
-def test_completion_streaming_happy_path() -> None:
-    fake = FakeVLLM(model=REMOTE_MODEL)
+@pytest.mark.parametrize("backend_cls,expected_name", ADAPTERS)
+def test_completion_streaming_happy_path(
+    backend_cls: type[OpenAICompatibleRemoteBackend], expected_name: str
+) -> None:
+    fake = FakeOpenAIServer(model=REMOTE_MODEL)
 
     async def body() -> None:
         with serve(fake) as url:
-            backend = _backend(url)
+            backend = _backend(backend_cls, url)
             await backend.load()
             stream = backend.generate(GenerationRequest(prompt="hello"))
             text = await _drain(stream)
@@ -102,16 +122,17 @@ def test_completion_streaming_happy_path() -> None:
 # -- explicit model mapping + credentials ---------------------------------
 
 
-def test_explicit_model_mapping_and_bearer_credentials() -> None:
-    fake = FakeVLLM(model=REMOTE_MODEL)
+@pytest.mark.parametrize("backend_cls,expected_name", ADAPTERS)
+def test_explicit_model_mapping_and_bearer_credentials(
+    backend_cls: type[OpenAICompatibleRemoteBackend], expected_name: str
+) -> None:
+    fake = FakeOpenAIServer(model=REMOTE_MODEL)
 
     async def body() -> None:
         with serve(fake) as url:
-            backend = _backend(url, api_key="sk-topsecret")
+            backend = _backend(backend_cls, url, api_key="sk-topsecret")
             await backend.load()
             await _drain(backend.generate(_chat_req(request_id="req-123")))
-            # The upstream request carries the operator-mapped remote model, never
-            # a client-chosen name, and forwards our request id.
             assert fake.last_body["model"] == REMOTE_MODEL
             assert fake.last_auth == "Bearer sk-topsecret"
             assert fake.last_request_id == "req-123"
@@ -119,17 +140,21 @@ def test_explicit_model_mapping_and_bearer_credentials() -> None:
     asyncio.run(body())
 
 
-def test_health_never_leaks_credentials() -> None:
-    fake = FakeVLLM(model=REMOTE_MODEL)
+@pytest.mark.parametrize("backend_cls,expected_name", ADAPTERS)
+def test_health_never_leaks_credentials(
+    backend_cls: type[OpenAICompatibleRemoteBackend], expected_name: str
+) -> None:
+    fake = FakeOpenAIServer(model=REMOTE_MODEL)
 
     async def body() -> None:
         with serve(fake) as url:
-            backend = _backend(url, api_key="sk-topsecret")
+            backend = _backend(backend_cls, url, api_key="sk-topsecret")
             await backend.load()
             snapshot = await backend.health()
             blob = json.dumps(snapshot)
             assert "sk-topsecret" not in blob
             assert "authorization" not in blob.lower()
+            assert snapshot["backend"] == expected_name
             assert snapshot["remote_model"] == REMOTE_MODEL
             assert snapshot["state"] == "ready"
 
@@ -139,12 +164,15 @@ def test_health_never_leaks_credentials() -> None:
 # -- health / readiness at load ------------------------------------------
 
 
-def test_load_fails_when_model_not_served() -> None:
-    fake = FakeVLLM(model="some-other-model")
+@pytest.mark.parametrize("backend_cls,expected_name", ADAPTERS)
+def test_load_fails_when_model_not_served(
+    backend_cls: type[OpenAICompatibleRemoteBackend], expected_name: str
+) -> None:
+    fake = FakeOpenAIServer(model="some-other-model")
 
     async def body() -> None:
         with serve(fake) as url:
-            backend = _backend(url)
+            backend = _backend(backend_cls, url)
             with pytest.raises(Exception) as excinfo:
                 await backend.load()
             assert "does not serve" in str(excinfo.value)
@@ -153,8 +181,11 @@ def test_load_fails_when_model_not_served() -> None:
     asyncio.run(body())
 
 
-def test_generate_before_ready_raises() -> None:
-    backend = _backend("http://127.0.0.1:1")  # never loaded
+@pytest.mark.parametrize("backend_cls,expected_name", ADAPTERS)
+def test_generate_before_ready_raises(
+    backend_cls: type[OpenAICompatibleRemoteBackend], expected_name: str
+) -> None:
+    backend = _backend(backend_cls, "http://127.0.0.1:1")  # never loaded
     with pytest.raises(BackendNotReadyError):
         backend.generate(_chat_req())
 
@@ -162,13 +193,15 @@ def test_generate_before_ready_raises() -> None:
 # -- safe pre-stream failover only ---------------------------------------
 
 
-def test_prestream_transient_error_is_retried() -> None:
-    # First attempt 503s before any token; the bounded pre-stream retry recovers.
-    fake = FakeVLLM(model=REMOTE_MODEL, mode="prestream_error", fail_times=1)
+@pytest.mark.parametrize("backend_cls,expected_name", ADAPTERS)
+def test_prestream_transient_error_is_retried(
+    backend_cls: type[OpenAICompatibleRemoteBackend], expected_name: str
+) -> None:
+    fake = FakeOpenAIServer(model=REMOTE_MODEL, mode="prestream_error", fail_times=1)
 
     async def body() -> None:
         with serve(fake) as url:
-            backend = _backend(url, max_prestream_retries=1)
+            backend = _backend(backend_cls, url, max_prestream_retries=1)
             await backend.load()
             text = await _drain(backend.generate(_chat_req()))
             assert text == "".join(TOKENS)
@@ -177,27 +210,32 @@ def test_prestream_transient_error_is_retried() -> None:
     asyncio.run(body())
 
 
-def test_prestream_retries_are_bounded() -> None:
-    fake = FakeVLLM(model=REMOTE_MODEL, mode="prestream_error", fail_times=5)
+@pytest.mark.parametrize("backend_cls,expected_name", ADAPTERS)
+def test_prestream_retries_are_bounded(
+    backend_cls: type[OpenAICompatibleRemoteBackend], expected_name: str
+) -> None:
+    fake = FakeOpenAIServer(model=REMOTE_MODEL, mode="prestream_error", fail_times=5)
 
     async def body() -> None:
         with serve(fake) as url:
-            backend = _backend(url, max_prestream_retries=1)
+            backend = _backend(backend_cls, url, max_prestream_retries=1)
             await backend.load()
             with pytest.raises(GenerationFailedError):
                 await _drain(backend.generate(_chat_req()))
-            # Initial attempt + exactly one retry, then give up.
-            assert fake.chat_calls == 2
+            assert fake.chat_calls == 2  # initial attempt + exactly one retry
 
     asyncio.run(body())
 
 
-def test_non_retriable_status_is_not_retried() -> None:
-    fake = FakeVLLM(model=REMOTE_MODEL, mode="http_400")
+@pytest.mark.parametrize("backend_cls,expected_name", ADAPTERS)
+def test_non_retriable_status_is_not_retried(
+    backend_cls: type[OpenAICompatibleRemoteBackend], expected_name: str
+) -> None:
+    fake = FakeOpenAIServer(model=REMOTE_MODEL, mode="http_400")
 
     async def body() -> None:
         with serve(fake) as url:
-            backend = _backend(url, max_prestream_retries=3)
+            backend = _backend(backend_cls, url, max_prestream_retries=3)
             await backend.load()
             with pytest.raises(GenerationFailedError):
                 await _drain(backend.generate(_chat_req()))
@@ -206,15 +244,18 @@ def test_non_retriable_status_is_not_retried() -> None:
     asyncio.run(body())
 
 
-def test_no_failover_after_first_token() -> None:
+@pytest.mark.parametrize("backend_cls,expected_name", ADAPTERS)
+def test_no_failover_after_first_token(
+    backend_cls: type[OpenAICompatibleRemoteBackend], expected_name: str
+) -> None:
     # The upstream drops the connection after emitting one token. Because a token
     # has already reached the client, the backend must NOT retry: it ends the
     # stream honestly with the partial text and a single upstream attempt.
-    fake = FakeVLLM(model=REMOTE_MODEL, mode="drop_after_first")
+    fake = FakeOpenAIServer(model=REMOTE_MODEL, mode="drop_after_first")
 
     async def body() -> None:
         with serve(fake) as url:
-            backend = _backend(url, max_prestream_retries=3)
+            backend = _backend(backend_cls, url, max_prestream_retries=3)
             await backend.load()
             stream = backend.generate(_chat_req())
             received: list[str] = []
@@ -230,12 +271,15 @@ def test_no_failover_after_first_token() -> None:
     asyncio.run(body())
 
 
-def test_aclose_before_iteration_is_clean() -> None:
-    fake = FakeVLLM(model=REMOTE_MODEL)
+@pytest.mark.parametrize("backend_cls,expected_name", ADAPTERS)
+def test_aclose_before_iteration_is_clean(
+    backend_cls: type[OpenAICompatibleRemoteBackend], expected_name: str
+) -> None:
+    fake = FakeOpenAIServer(model=REMOTE_MODEL)
 
     async def body() -> None:
         with serve(fake) as url:
-            backend = _backend(url)
+            backend = _backend(backend_cls, url)
             await backend.load()
             stream = backend.generate(_chat_req())
             await stream.aclose()
@@ -246,7 +290,7 @@ def test_aclose_before_iteration_is_clean() -> None:
     asyncio.run(body())
 
 
-# -- SSE parser (fast, no server) ----------------------------------------
+# -- SSE parser + base_url normalization (fast, no server) ----------------
 
 
 def test_parse_sse_line_variants() -> None:

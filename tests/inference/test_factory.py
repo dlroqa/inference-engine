@@ -27,34 +27,40 @@ def test_build_backend_constructs_llamacpp(tmp_path: Path) -> None:
     assert backend.state.value == "unloaded"
 
 
-def test_build_backend_constructs_remote_vllm(tmp_path: Path) -> None:
-    from engine.inference.remote.vllm import RemoteVLLMBackend
+@pytest.mark.parametrize(
+    "kind,cls_name",
+    [("remote_vllm", "RemoteVLLMBackend"), ("remote_sglang", "RemoteSGLangBackend")],
+)
+def test_build_backend_constructs_remote(tmp_path: Path, kind: str, cls_name: str) -> None:
+    import engine.inference.remote as remote
 
     settings = Settings(
         data_dir=tmp_path,
-        backend_kind="remote_vllm",
-        remote_base_url="http://vllm.internal:8000",
+        backend_kind=kind,
+        remote_base_url="http://remote.internal:8000",
         remote_model="meta-llama/x",
         model_id="served-x",
     )
     backend = build_backend(settings)
-    assert isinstance(backend, RemoteVLLMBackend)
+    assert type(backend).__name__ == cls_name
+    assert isinstance(backend, remote.OpenAICompatibleRemoteBackend)
     assert backend.state.value == "unloaded"
 
 
 def test_remote_vllm_requires_base_url_and_model(tmp_path: Path) -> None:
     from engine.config import ConfigError, load_config
 
-    with pytest.raises(ConfigError) as excinfo:
-        load_config({"data_dir": tmp_path, "backend_kind": "remote_vllm"})
-    assert "remote_base_url" in str(excinfo.value)
+    for kind in ("remote_vllm", "remote_sglang"):
+        with pytest.raises(ConfigError) as excinfo:
+            load_config({"data_dir": tmp_path, "backend_kind": kind})
+        assert "remote_base_url" in str(excinfo.value)
 
 
 def test_remote_backend_kill_switch(tmp_path: Path) -> None:
     settings = Settings(
         data_dir=tmp_path,
-        backend_kind="remote_vllm",
-        remote_base_url="http://vllm.internal:8000",
+        backend_kind="remote_sglang",
+        remote_base_url="http://sglang.internal:8000",
         remote_model="meta-llama/x",
         allow_remote_backends=False,
     )

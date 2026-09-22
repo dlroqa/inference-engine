@@ -1,4 +1,4 @@
-"""A minimal fake vLLM OpenAI-compatible server for backend tests.
+"""A minimal fake OpenAI-compatible server for remote-backend tests (vLLM/SGLang).
 
 Runs as a real Uvicorn server (in a thread) so the remote backend exercises real
 HTTP transport — streaming, mid-stream disconnects, and status codes — which the
@@ -25,8 +25,8 @@ TOKENS = ["Hello", ", ", "world", "!"]
 
 
 @dataclass
-class FakeVLLM:
-    """Mutable behavior + call log for one fake vLLM instance."""
+class FakeOpenAIServer:
+    """Mutable behavior + call log for one fake OpenAI-compatible instance."""
 
     model: str = "meta-llama/fake"
     max_model_len: int = 8192
@@ -121,7 +121,7 @@ def _free_port() -> int:
 
 
 @contextlib.contextmanager
-def serve(fake: FakeVLLM) -> Iterator[str]:
+def serve(fake: FakeOpenAIServer) -> Iterator[str]:
     """Run ``fake`` on a real Uvicorn server; yield its base URL."""
     port = _free_port()
     config = uvicorn.Config(fake.app(), host="127.0.0.1", port=port, log_level="error")
@@ -134,7 +134,7 @@ def serve(fake: FakeVLLM) -> Iterator[str]:
                 break
             time.sleep(0.05)
         if not server.started:
-            raise RuntimeError("fake vLLM did not start")
+            raise RuntimeError("fake server did not start")
         yield f"http://127.0.0.1:{port}"
     finally:
         server.should_exit = True

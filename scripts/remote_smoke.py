@@ -1,18 +1,18 @@
-"""CI/operator smoke: drive the remote backend against a real OpenAI-compatible server.
+"""CI/operator smoke: drive a remote backend against a real OpenAI-compatible server.
 
-Exercises :class:`RemoteVLLMBackend` end to end over real HTTP: it verifies the
-configured model is served (``/v1/models``), streams a chat completion, and
-asserts non-empty output with a clean terminal result.
+Exercises the remote adapter (vLLM or SGLang) end to end over real HTTP: it
+verifies the configured model is served (``/v1/models``), streams a chat
+completion, and asserts non-empty output with a clean terminal result.
 
-The remote vLLM adapter speaks the OpenAI streaming protocol, so any conformant
-server validates the adapter path. In CI we point it at a llama.cpp OpenAI server
-(a real model server on a CPU runner); operators with a GPU point it straight at
-their vLLM deployment — same script, same assertions::
+Both adapters speak the OpenAI streaming protocol, so any conformant server
+validates the adapter path. In CI we point it at a llama.cpp OpenAI server (a real
+model server on a CPU runner); operators with a GPU point it straight at their
+vLLM or SGLang deployment — same script, same assertions::
 
-    python scripts/vllm_smoke.py \
-        --base-url http://vllm.internal:8000/v1 \
+    python scripts/remote_smoke.py --backend sglang \
+        --base-url http://sglang.internal:30000/v1 \
         --model meta-llama/Meta-Llama-3-8B-Instruct \
-        --api-key "$VLLM_API_KEY"
+        --api-key "$REMOTE_API_KEY" --wait
 """
 
 from __future__ import annotations
@@ -24,8 +24,14 @@ import sys
 import time
 import urllib.request
 
-from engine.inference.remote.vllm import RemoteVLLMBackend, RemoteVLLMConfig
+from engine.inference.remote import (
+    RemoteBackendConfig,
+    RemoteSGLangBackend,
+    RemoteVLLMBackend,
+)
 from engine.inference.types import GenerationRequest, Message
+
+_BACKENDS = {"vllm": RemoteVLLMBackend, "sglang": RemoteSGLangBackend}
 
 
 def _wait_models(base_url: str, timeout_s: float = 60.0) -> None:
@@ -43,8 +49,8 @@ def _wait_models(base_url: str, timeout_s: float = 60.0) -> None:
 
 
 async def _run(args: argparse.Namespace) -> int:
-    backend = RemoteVLLMBackend(
-        RemoteVLLMConfig(
+    backend = _BACKENDS[args.backend](
+        RemoteBackendConfig(
             base_url=args.base_url,
             remote_model=args.model,
             model_id="smoke-model",
@@ -53,7 +59,7 @@ async def _run(args: argparse.Namespace) -> int:
         )
     )
     await backend.load()
-    print(f"loaded: {json.dumps(await backend.health())}")
+    print(f"loaded ({args.backend}): {json.dumps(await backend.health())}")
 
     request = GenerationRequest(
         messages=[Message(role="user", content=args.prompt)],
@@ -78,6 +84,7 @@ async def _run(args: argparse.Namespace) -> int:
         "SMOKE OK: "
         + json.dumps(
             {
+                "backend": args.backend,
                 "finish_reason": result.finish_reason.value,
                 "prompt_tokens": result.prompt_tokens,
                 "completion_tokens": result.completion_tokens,
@@ -90,6 +97,7 @@ async def _run(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--backend", choices=sorted(_BACKENDS), default="vllm")
     parser.add_argument("--base-url", required=True, help="OpenAI-compatible base URL (…/v1)")
     parser.add_argument("--model", required=True, help="model id the server serves")
     parser.add_argument("--api-key", default=None)
