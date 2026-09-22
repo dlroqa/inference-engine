@@ -316,6 +316,45 @@ jobs:
           path: dist/*
           retention-days: 2
 
+  container:
+    name: Docker image (build + start smoke)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image (CPU, no llama backend)
+        run: |
+          docker build \
+            --build-arg IE_BUILD_SHA="${GITHUB_SHA::7}" \
+            --build-arg IE_BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -t inference-engine:ci .
+
+      - name: Start container from a clean environment
+        run: |
+          docker run -d --name ie -p 8000:8000 -v ie-data:/data inference-engine:ci
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8000/healthz >/dev/null 2>&1 && break
+            sleep 1
+          done
+
+      - name: Smoke health, version, and dashboard
+        run: |
+          HEALTH=$(curl -sf http://127.0.0.1:8000/healthz)
+          echo "healthz: $HEALTH"
+          echo "$HEALTH" | python -c 'import sys,json; assert json.load(sys.stdin)["status"]=="ok"'
+          VERSION=$(curl -sf http://127.0.0.1:8000/version)
+          echo "version: $VERSION"
+          echo "$VERSION" | python -c 'import sys,json; d=json.load(sys.stdin); assert d["commit"], "build sha not surfaced"'
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/dashboard/)" = "200"
+          # Runs as a non-root user.
+          test "$(docker exec ie id -u)" != "0"
+
+      - name: Graceful stop
+        run: |
+          docker stop -t 40 ie
+          docker logs ie 2>&1 | grep -q '"event": "drain_complete"' || { echo "::error::no graceful drain on stop"; docker logs ie; exit 1; }
+
   ci-success:
     # Single gate for the whole pipeline (build + render + test). Branch
     # protection can require just this check. Fails if any needed job failed
@@ -323,7 +362,7 @@ jobs:
     name: CI passed (build + render + test)
     runs-on: ubuntu-latest
     if: always()
-    needs: [test, dashboard, integration-llama, build]
+    needs: [test, dashboard, integration-llama, build, container]
     steps:
       - name: Verify all jobs succeeded
         run: |
@@ -331,10 +370,12 @@ jobs:
           echo "dashboard:         ${{ needs.dashboard.result }}"
           echo "integration-llama: ${{ needs.integration-llama.result }}"
           echo "build:             ${{ needs.build.result }}"
+          echo "container:         ${{ needs.container.result }}"
           if [ "${{ needs.test.result }}" != "success" ] \
              || [ "${{ needs.dashboard.result }}" != "success" ] \
              || [ "${{ needs.integration-llama.result }}" != "success" ] \
-             || [ "${{ needs.build.result }}" != "success" ]; then
+             || [ "${{ needs.build.result }}" != "success" ] \
+             || [ "${{ needs.container.result }}" != "success" ]; then
             echo "::error::one or more CI jobs did not succeed"
             exit 1
           fi

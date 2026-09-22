@@ -65,3 +65,42 @@ def test_readyz_uses_per_app_state(tmp_path) -> None:  # type: ignore[no-untyped
                 p.unlink()
         assert ca.get("/readyz").status_code == 503
         assert cb.get("/readyz").status_code == 200
+
+
+def test_healthz_reports_build_info(client: TestClient) -> None:
+    body = client.get("/healthz").json()
+    assert "build" in body
+    assert body["build"]["version"]
+
+
+def test_version_endpoint(client: TestClient) -> None:
+    body = client.get("/version").json()
+    assert body["version"]
+    assert "commit" in body and "built_at" in body
+
+
+def test_build_info_reads_env(client: TestClient, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("IE_BUILD_SHA", "abc123")
+    monkeypatch.setenv("IE_BUILD_DATE", "2026-01-01T00:00:00Z")
+    body = client.get("/version").json()
+    assert body["commit"] == "abc123"
+    assert body["built_at"] == "2026-01-01T00:00:00Z"
+
+
+def test_require_model_ready_gates_readiness(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from engine.config import Settings
+    from engine.main import create_app
+
+    settings = Settings(data_dir=tmp_path, require_model_ready=True)
+    with TestClient(create_app(settings)) as c:
+        resp = c.get("/readyz")
+        assert resp.status_code == 503
+        assert resp.json()["checks"]["inference"] == "model not ready"
+
+
+def test_readyz_not_ready_while_draining(client: TestClient) -> None:
+    # Flip the scheduler into draining and confirm readiness reports it.
+    client.app.state.scheduler.begin_drain()  # type: ignore[attr-defined]
+    resp = client.get("/readyz")
+    assert resp.status_code == 503
+    assert resp.json()["checks"]["intake"] == "draining"

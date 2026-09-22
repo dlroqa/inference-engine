@@ -86,6 +86,13 @@ class Scheduler:
         self._clock = clock
         self._sem = asyncio.Semaphore(max_concurrency)
 
+        # Graceful drain (Block 9): once draining, new work is refused and callers
+        # can await in-flight work reaching zero. ``_idle`` is set whenever no slot
+        # is in use, so shutdown can wait for a clean point.
+        self._draining = False
+        self._idle = asyncio.Event()
+        self._idle.set()
+
         # Live gauges.
         self._in_use = 0
         self._waiters = 0
@@ -112,6 +119,12 @@ class Scheduler:
         generation finishes, fails, or is cancelled. Raises
         :class:`SchedulerSaturated` when the queue is full or the wait times out.
         """
+        # Refuse new work while draining for shutdown; the client should retry
+        # elsewhere/later (readiness has already flipped to not-ready).
+        if self._draining:
+            self._rejected_queue_full += 1
+            raise SchedulerSaturated("draining", retry_after_s=self._retry_after_hint())
+
         # ``Semaphore.locked()`` is True when no permit is free *or* other waiters
         # are already queued (asyncio semaphores are FIFO-fair since 3.10), so this
         # is the honest "would I have to wait?" check.
@@ -142,6 +155,7 @@ class Scheduler:
 
         waited = max(0.0, self._clock() - wait_start) if must_queue else 0.0
         self._in_use += 1
+        self._idle.clear()
         self._peak_in_use = max(self._peak_in_use, self._in_use)
         self._admitted += 1
         self._wait_total += waited
@@ -155,7 +169,32 @@ class Scheduler:
             self._in_use -= 1
         if cancelled:
             self._cancelled += 1
+        if self._in_use == 0:
+            self._idle.set()
         self._sem.release()
+
+    # -- graceful drain ----------------------------------------------------
+
+    def begin_drain(self) -> None:
+        """Stop admitting new work; in-flight generations are allowed to finish."""
+        self._draining = True
+
+    @property
+    def is_draining(self) -> bool:
+        return self._draining
+
+    async def wait_drained(self, timeout_s: float) -> bool:
+        """Wait until no slot is in use (or ``timeout_s`` elapses).
+
+        Returns True if the scheduler reached idle, False on timeout.
+        """
+        if self._in_use == 0:
+            return True
+        try:
+            await asyncio.wait_for(self._idle.wait(), timeout_s)
+            return True
+        except TimeoutError:
+            return False
 
     # -- signals -----------------------------------------------------------
 
@@ -196,6 +235,7 @@ class Scheduler:
             "max_concurrency": self._max_concurrency,
             "max_queue_depth": self._max_queue_depth,
             "queue_timeout_s": self._queue_timeout_s,
+            "draining": self._draining,
             "in_use": self._in_use,
             "available": self._max_concurrency - self._in_use,
             "queue_depth": self._waiters,

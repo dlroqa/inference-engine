@@ -134,3 +134,38 @@ def test_slow_consumer_signal() -> None:
         assert sched.snapshot()["slow_consumer_total"] == 1
 
     asyncio.run(body())
+
+
+def test_drain_refuses_new_work() -> None:
+    async def body() -> None:
+        sched = Scheduler(max_concurrency=1)
+        sched.begin_drain()
+        assert sched.is_draining is True
+        with pytest.raises(SchedulerSaturated) as ei:
+            await sched.admit()
+        assert ei.value.reason == "draining"
+
+    asyncio.run(body())
+
+
+def test_wait_drained_returns_true_when_idle() -> None:
+    async def body() -> None:
+        sched = Scheduler(max_concurrency=1)
+        assert await sched.wait_drained(0.1) is True
+
+    asyncio.run(body())
+
+
+def test_wait_drained_waits_for_in_flight() -> None:
+    async def body() -> None:
+        sched = Scheduler(max_concurrency=1)
+        lease = await sched.admit()
+        sched.begin_drain()
+        # A slot is held: draining is not yet complete.
+        assert await sched.wait_drained(0.05) is False
+        # Release it, then drain completes.
+        lease.release()
+        assert await sched.wait_drained(0.5) is True
+        assert sched.snapshot()["draining"] is True
+
+    asyncio.run(body())

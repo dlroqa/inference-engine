@@ -48,6 +48,23 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("config", parents=[common], help="Print resolved configuration and exit.")
     sub.add_parser("version", help="Print the version and exit.")
 
+    bk = sub.add_parser(
+        "backup", parents=[common], help="Back up the database + config to a tarball."
+    )
+    bk.add_argument(
+        "--out",
+        type=Path,
+        default=Path("."),
+        help="Output directory or .tar.gz file path (default: current directory).",
+    )
+    rs = sub.add_parser(
+        "restore", parents=[common], help="Restore the database + config from a backup tarball."
+    )
+    rs.add_argument("--from", dest="archive", type=Path, required=True, help="Backup tarball path.")
+    rs.add_argument(
+        "--force", action="store_true", help="Overwrite an existing database if present."
+    )
+
     gen = sub.add_parser(
         "generate",
         parents=[common],
@@ -105,6 +122,38 @@ def _cmd_migrate(settings: Settings) -> int:
 
 def _cmd_config(settings: Settings) -> int:
     print(settings.model_dump_json(indent=2))
+    return 0
+
+
+def _cmd_backup(settings: Settings, args: argparse.Namespace) -> int:
+    from engine.backup import create_backup
+
+    try:
+        archive = create_backup(settings, args.out)
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(json.dumps({"archive": str(archive)}))
+    return 0
+
+
+def _cmd_restore(settings: Settings, args: argparse.Namespace) -> int:
+    from engine.backup import restore_backup
+
+    try:
+        result = restore_backup(args.archive, settings, force=args.force)
+    except (FileNotFoundError, FileExistsError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(
+        json.dumps(
+            {
+                "db_path": str(result.db_path),
+                "config_path": str(result.config_path) if result.config_path else None,
+                "engine_version": result.manifest.get("engine_version"),
+            }
+        )
+    )
     return 0
 
 
@@ -223,6 +272,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_migrate(settings)
     if args.command == "config":
         return _cmd_config(settings)
+    if args.command == "backup":
+        return _cmd_backup(settings, args)
+    if args.command == "restore":
+        return _cmd_restore(settings, args)
     if args.command == "generate":
         return _cmd_generate(settings, args)
     if args.command == "keys":

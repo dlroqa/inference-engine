@@ -54,6 +54,14 @@ log_level = "INFO"
 # max_concurrency_queue         = 32    # waiting requests allowed (0 = shed immediately)
 # concurrency_queue_timeout_s   = 30.0  # max wait for a slot (0 = wait indefinitely)
 
+# --- Production deployment (Block 9) ---
+# require_model_ready makes /readyz report not-ready until a model is loaded (so a
+# load balancer only routes once inference can serve). drain_timeout_s bounds how
+# long graceful shutdown waits for in-flight generations to finish. See
+# docs/deployment.md.
+# require_model_ready = false
+# drain_timeout_s     = 30.0
+
 # Compute-unit (CU) quota (0 = unlimited). CU = prompt*w_in + completion*w_out.
 # quota_5h_cu       = 1000000    # 5-hour rolling window
 # quota_weekly_cu   = 5000000    # weekly fixed cap

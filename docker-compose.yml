@@ -1,0 +1,27 @@
+# Reference deployment for the Inference Engine (Block 9).
+# See docs/deployment.md for volumes, model store, backups, and reverse-proxy/TLS.
+services:
+  inference-engine:
+    build:
+      context: .
+      args:
+        # Set to "true" to bundle the llama.cpp CPU backend (requires an AVX2 host).
+        INSTALL_LLAMA: "false"
+    image: inference-engine:local
+    restart: unless-stopped
+    # Bind to loopback on the host; terminate TLS/authn at a reverse proxy in front.
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      IE_HOST: "0.0.0.0"            # bind inside the container
+      IE_ALLOW_NETWORK_BIND: "true" # required for a non-loopback bind
+      IE_DATA_DIR: "/data"          # db, logs, and model store live here
+      IE_REQUIRE_AUTH: "true"       # require an API key on the network bind
+      IE_REQUIRE_MODEL_READY: "true" # /readyz is not-ready until a model is loaded
+      # IE_MODEL_PATH: "/data/models/model.gguf"  # preload a model on startup
+    volumes:
+      - engine-data:/data
+    stop_grace_period: 40s          # allow graceful drain (drain_timeout_s + margin)
+
+volumes:
+  engine-data:

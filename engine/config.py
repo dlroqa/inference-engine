@@ -85,6 +85,13 @@ class Settings(BaseSettings):
     max_concurrency_queue: int = Field(default=32, ge=0, le=100_000)
     concurrency_queue_timeout_s: float = Field(default=30.0, ge=0.0, le=3600.0)
 
+    # Production deployment (Block 9). Readiness/drain knobs for load-balanced
+    # deployments. require_model_ready makes /readyz report not-ready until a model
+    # is loaded (so a balancer only routes once inference can serve);
+    # drain_timeout_s bounds how long graceful shutdown waits for in-flight work.
+    require_model_ready: bool = False
+    drain_timeout_s: float = Field(default=30.0, ge=0.0, le=600.0)
+
     # Compute-unit quota (Block 3). 0 = unlimited. 5-hour rolling window and a
     # weekly fixed cap; CU = prompt_tokens*w_in + completion_tokens*w_out.
     quota_5h_cu: float = Field(default=1_000_000.0, ge=0)
