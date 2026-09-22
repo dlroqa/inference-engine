@@ -62,6 +62,16 @@ log_level = "INFO"
 # require_model_ready = false
 # drain_timeout_s     = 30.0
 
+# --- Security hardening (Block 9b) ---
+# All default to permissive-but-safe; tighten for exposed/air-gapped deployments.
+# See docs/security.md.
+# ip_allowlist = ["10.0.0.0/8"]   # only these CIDRs may connect (empty = all)
+# trust_forwarded_for   = false   # honor X-Forwarded-For (ONLY behind a trusted proxy)
+# allow_network_downloads = true  # false = block model downloads (air-gapped)
+# allow_model_management  = true  # false = block import/download/load/unload/delete
+# allow_structured_output = true  # false = reject JSON/grammar-constrained requests
+# diagnostics_enabled     = true  # false = disable the /diagnostics bundle
+
 # Compute-unit (CU) quota (0 = unlimited). CU = prompt*w_in + completion*w_out.
 # quota_5h_cu       = 1000000    # 5-hour rolling window
 # quota_weekly_cu   = 5000000    # weekly fixed cap

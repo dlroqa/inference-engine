@@ -101,6 +101,14 @@ async def chat_completions(request: Request, body: ChatCompletionRequest) -> Res
     # Structured output (Block 8): honored via constrained decoding when the backend
     # supports it; otherwise rejected clearly (never silently unconstrained text).
     mode, schema = body.structured_output()
+    if mode != "none" and not request.app.state.settings.allow_structured_output:
+        raise OpenAIError(
+            "structured output is disabled by the operator",
+            status_code=400,
+            type="invalid_request_error",
+            param="response_format",
+            code="structured_output_disabled",
+        )
     if mode != "none" and not caps.supports_structured_output:
         raise OpenAIError(
             "structured output (response_format json) is not supported by the loaded backend",

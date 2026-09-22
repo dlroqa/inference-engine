@@ -6,7 +6,7 @@ ordered **vertical slices** (Blocks 0–12) per
 Each block must be deployable, testable, documented, and useful before the next
 begins.
 
-> **Current status: Block 9 — Production deployment (9a).**
+> **Current status: Block 9 — Production deployment (9a + 9b).**
 > Shipped so far: local GGUF inference (Block 1); **OpenAI** `/v1/chat/completions`
 > + **Anthropic** `/v1/messages` with streaming, sampling controls, and
 > capability-gated structured output (Blocks 2, 8); a secure gateway — API keys,
@@ -14,8 +14,7 @@ begins.
 > telemetry + an operator dashboard (Blocks 4–5); model lifecycle with
 > checksum-verified downloads (Block 6); controlled concurrency with admission
 > control (Block 7); and a Docker deployment path with graceful drain, readiness
-> gating, and backup/restore (Block 9a). **Not yet:** the security hardening
-> baseline (Block 9b), remote scale-out (Block 10), organizations/billing
+> gating, backup/restore (9a), and a security hardening baseline — trusted-network/IP policy, egress + feature kill switches, and a tamper-evident audit log (9b). **Not yet:** remote scale-out (Block 10), organizations/billing
 > (Block 11), and advanced safety tooling (Block 12).
 
 ---
@@ -425,6 +424,17 @@ docker compose up --build      # or: docker build -t inference-engine . && docke
 
 - **Supply chain:** `/version` reports the build commit/date; every model records a
   SHA-256; generate an SBOM with `python scripts/generate_sbom.py --out sbom.json`.
+
+## Security (Block 9b)
+
+Hardening for exposed/production deployments, all defaulting to permissive-but-safe:
+an **IP allowlist** (`ip_allowlist`, with optional `trust_forwarded_for` behind a
+proxy), an **egress lock** and **feature kill switches** (`allow_network_downloads`,
+`allow_model_management`, `allow_structured_output`, `diagnostics_enabled`), enforced
+safe-format validation and log redaction (prompts/responses/secrets are never
+logged), CI **`pip-audit`** + SBOM for CVE/inventory visibility, and a
+**tamper-evident, hash-chained audit log** of operator/security actions
+(`GET /admin/audit?verify=true`). Details in [docs/security.md](docs/security.md).
 
 ## Test & checks
 

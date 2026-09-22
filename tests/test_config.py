@@ -151,3 +151,19 @@ def test_missing_default_config_is_not_an_error(
     settings = load_config(cli_overrides={"data_dir": tmp_path})
     assert settings.config_file is None
     assert settings.port == 8000
+
+
+def test_invalid_ip_allowlist_rejected() -> None:
+    import pytest
+
+    from engine.config import Settings
+
+    with pytest.raises(Exception):  # noqa: B017 - pydantic ValidationError
+        Settings(data_dir=None, ip_allowlist=["not-a-cidr"])  # type: ignore[arg-type]
+
+
+def test_valid_ip_allowlist_accepted(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from engine.config import Settings
+
+    s = Settings(data_dir=tmp_path, ip_allowlist=["127.0.0.1/32", "10.0.0.0/8", "::1/128"])
+    assert len(s.ip_allowlist) == 3

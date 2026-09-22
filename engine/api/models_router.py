@@ -21,7 +21,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
-from engine.api.deps import require_operator
+from engine.api.deps import operator_identity, require_operator
 from engine.api.errors import OpenAIError
 from engine.inference.base import InferenceBackend
 from engine.inference.types import BackendError, BackendState
@@ -31,6 +31,34 @@ from engine.models.service import ModelService, ModelServiceError
 router = APIRouter(prefix="/admin/models", tags=["models"])
 
 _LOADED = (BackendState.READY, BackendState.GENERATING)
+
+
+def _require_management(request: Request) -> None:
+    """Kill switch: dynamic model management (import/download/load/unload/delete)."""
+    if not request.app.state.settings.allow_model_management:
+        raise OpenAIError(
+            "model management is disabled by the operator",
+            status_code=403,
+            type="invalid_request_error",
+            code="model_management_disabled",
+        )
+
+
+def _require_downloads(request: Request) -> None:
+    """Kill switch / egress policy: fetching models from the network."""
+    if not request.app.state.settings.allow_network_downloads:
+        raise OpenAIError(
+            "network model downloads are disabled by the operator",
+            status_code=403,
+            type="invalid_request_error",
+            code="downloads_disabled",
+        )
+
+
+def _audit(request: Request, action: str, target: str | None, **detail: Any) -> None:
+    request.app.state.audit.record(
+        action, actor=operator_identity(request), target=target, detail=detail
+    )
 
 
 def _service(request: Request) -> ModelService:
@@ -118,12 +146,14 @@ def get_model(request: Request, model_id: str) -> dict[str, Any]:
 @router.post("/import")
 async def import_model(request: Request, body: ImportBody) -> dict[str, Any]:
     require_operator(request)
+    _require_management(request)
     try:
         record = await _service(request).import_local(Path(body.path), body.name)
     except ModelServiceError as exc:
         raise OpenAIError(
             str(exc), status_code=400, type="invalid_request_error", code="model_import_failed"
         ) from exc
+    _audit(request, "model.import", record.id, name=record.name, source="import")
     return _serialize(request, record)
 
 
@@ -131,6 +161,8 @@ async def import_model(request: Request, body: ImportBody) -> dict[str, Any]:
 async def download_model(request: Request, body: DownloadBody) -> dict[str, Any]:
     # Async so the background download task is created on the running event loop.
     require_operator(request)
+    _require_management(request)
+    _require_downloads(request)
     try:
         record = _service(request).start_download(
             source_type=body.source_type,
@@ -145,6 +177,7 @@ async def download_model(request: Request, body: DownloadBody) -> dict[str, Any]
         raise OpenAIError(
             str(exc), status_code=400, type="invalid_request_error", code="model_download_failed"
         ) from exc
+    _audit(request, "model.download", record.id, name=record.name, source=body.source_type)
     return _serialize(request, record)
 
 
@@ -166,6 +199,7 @@ def cancel_download(request: Request, model_id: str) -> dict[str, Any]:
 @router.post("/{model_id}/load")
 async def load_model(request: Request, model_id: str) -> dict[str, Any]:
     require_operator(request)
+    _require_management(request)
     record = _require(request, model_id)
     if record.status != ModelStatus.READY.value:
         raise OpenAIError(
@@ -194,24 +228,28 @@ async def load_model(request: Request, model_id: str) -> dict[str, Any]:
             await previous.unload()
         except BackendError:  # pragma: no cover - best-effort cleanup
             pass
+    _audit(request, "model.load", model_id, name=record.name)
     return {"result": "loaded", "model": _serialize(request, _require(request, model_id))}
 
 
 @router.post("/{model_id}/unload")
 async def unload_model(request: Request, model_id: str) -> dict[str, Any]:
     require_operator(request)
+    _require_management(request)
     record = _require(request, model_id)
     backend: InferenceBackend | None = getattr(request.app.state, "backend", None)
     if _is_loaded(request, record) and backend is not None:
         await backend.unload()
         request.app.state.backend = None
     _registry(request).clear_active()
+    _audit(request, "model.unload", model_id, name=record.name)
     return {"result": "unloaded", "model": _serialize(request, _require(request, model_id))}
 
 
 @router.delete("/{model_id}")
 async def delete_model(request: Request, model_id: str) -> dict[str, Any]:
     require_operator(request)
+    _require_management(request)
     record = _require(request, model_id)
     if _is_loaded(request, record):
         raise OpenAIError(
@@ -224,4 +262,5 @@ async def delete_model(request: Request, model_id: str) -> dict[str, Any]:
     service = _service(request)
     service.delete_files(record)
     _registry(request).delete(model_id)
+    _audit(request, "model.delete", model_id, name=record.name)
     return {"deleted": True, "id": model_id}

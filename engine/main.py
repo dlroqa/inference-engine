@@ -8,9 +8,10 @@ internal ``GenerationRequest``/token-stream contract.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from engine.api.models_router import router as models_router
 from engine.api.openai_router import router as openai_router
 from engine.api.ops_router import router as ops_router
 from engine.api.ws_router import router as ws_router
+from engine.audit import AuditLog
 from engine.auth.keys import KeyStore
 from engine.config import Settings, load_config
 from engine.gateway import Gateway
@@ -54,6 +56,30 @@ def get_settings() -> Settings:
     if _active_settings is None:
         raise RuntimeError("Application settings are not initialized")
     return _active_settings
+
+
+def _client_ip(request: Request, *, trust_forwarded_for: bool) -> str | None:
+    """Resolve the caller's IP for the trusted-network policy.
+
+    Uses the direct peer by default. Only when ``trust_forwarded_for`` is set (i.e.
+    the app sits behind a trusted reverse proxy) is the left-most ``X-Forwarded-For``
+    entry used; otherwise a client could spoof the header to bypass the allowlist.
+    """
+    if trust_forwarded_for:
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            return xff.split(",")[0].strip()
+    return request.client.host if request.client else None
+
+
+def _ip_permitted(
+    client_ip: str, networks: Sequence[ipaddress.IPv4Network | ipaddress.IPv6Network]
+) -> bool:
+    try:
+        addr = ipaddress.ip_address(client_ip)
+    except ValueError:
+        return False
+    return any(addr in net for net in networks)
 
 
 def create_app(
@@ -183,6 +209,10 @@ def create_app(
     app.state.counters = counters
     app.state.telemetry = telemetry
     app.state.scheduler = scheduler
+    app.state.audit = AuditLog(settings.db_path)  # type: ignore[arg-type]
+
+    # Trusted-network policy (Block 9b): parse the IP allowlist once.
+    allow_networks = [ipaddress.ip_network(c, strict=False) for c in settings.ip_allowlist]
     app.state.log_collector = log_collector
     app.state.model_registry = model_registry
     app.state.model_service = model_service
@@ -207,6 +237,22 @@ def create_app(
                     status_code=413,
                     type="invalid_request_error",
                     code="payload_too_large",
+                )
+        return await call_next(request)
+
+    @app.middleware("http")
+    async def _ip_allowlist(request: Request, call_next) -> Response:  # type: ignore[no-untyped-def]
+        # Trusted-network policy (Block 9b): when an allowlist is configured, only
+        # permitted client IPs may reach any endpoint. Registered last so it is the
+        # outermost middleware and rejects before any other work happens.
+        if allow_networks:
+            client_ip = _client_ip(request, trust_forwarded_for=settings.trust_forwarded_for)
+            if client_ip is None or not _ip_permitted(client_ip, allow_networks):
+                return error_response(
+                    "client address not permitted",
+                    status_code=403,
+                    type="invalid_request_error",
+                    code="ip_not_allowed",
                 )
         return await call_next(request)
 
