@@ -12,9 +12,8 @@ it.
 | `remote_vllm` | vLLM OpenAI-compatible server | external HTTP endpoint | `[remote]` |
 | `remote_sglang` | SGLang OpenAI-compatible server | external HTTP endpoint | `[remote]` |
 
-Backend *registry*, health-aware routing across several live backends, and
-virtual auto-models are later Block 10 sub-slices; this page covers selecting a
-single backend.
+Health-aware routing across several live backends is covered below; virtual
+auto-models and routing *policies* are later Block 10 sub-slices.
 
 ## Remote backends: vLLM & SGLang (Block 10, sub-slices 1–2)
 
@@ -82,6 +81,52 @@ an air-gapped deployment. The single `remote_base_url` is the egress allowlist
 for these sub-slices; broader external-provider spillover with per-destination
 allowlisting is a later sub-slice. See [security.md](security.md).
 
+## Multiple backends & routing (Block 10, sub-slice 3)
+
+The engine can run **several backends at once** — a local llama.cpp plus remote
+vLLM/SGLang workers, or several remote workers — and route each request to the
+**least-busy healthy** one. A single-backend setup is just a pool of one, so it
+behaves exactly as before.
+
+The primary backend is whatever `backend_kind` selects; add more with
+`[[remote_workers]]` tables. All workers serve the engine's single `model_id`
+(the pool is homogeneous — heterogeneous pools and routing *policies* are later
+sub-slices):
+
+```toml
+model_path       = "/models/llama3.gguf"   # primary = local llama.cpp
+primary_max_in_flight = 1                    # llama serializes; raise for a remote primary
+
+[[remote_workers]]
+name    = "vllm-a"
+kind    = "remote_vllm"
+base_url = "http://gpu-a:8000/v1"
+model    = "meta-llama/Meta-Llama-3-8B-Instruct"
+max_in_flight = 8
+
+[[remote_workers]]
+name    = "sglang-b"
+kind    = "remote_sglang"
+base_url = "http://gpu-b:30000/v1"
+model    = "meta-llama/Meta-Llama-3-8B-Instruct"
+```
+
+**Selection.** Each admitted request goes to the ready backend with the fewest
+in-flight generations (stable tie-break by declaration order), skipping any that
+is unloaded, failed a health probe, or is at its `max_in_flight` capacity. If all
+healthy backends are full the request gets the same retriable saturation as the
+scheduler (429/529); if none is loaded it is a 503. The **global** Block-7
+`max_concurrency` still caps total in-flight, so raise it to actually overlap
+across backends (see [concurrency.md](concurrency.md)).
+
+**Health.** `backend_health_interval_s` (default 10s; 0 disables) governs a
+background liveness probe of remote workers (`/v1/models`); a worker that goes
+down is skipped by routing until it recovers. Local backends use their state.
+
+**Status.** `GET /admin/backends` (operator-gated) returns each backend's name,
+kind, local/remote, state, availability, and in-flight count — secret-free, no
+base URLs with credentials.
+
 ### Not yet (later sub-slices)
 
 - Structured output (grammar / JSON-schema): the remote backends report
@@ -89,8 +134,8 @@ allowlisting is a later sub-slice. See [security.md](security.md).
   rather than returning unconstrained text, even though these servers can guide
   decoding.
 - **Triton** — deferred by design until a real multi-model workload justifies it.
-- A multi-backend registry with health-aware least-busy routing, prefix/KV-cache
-  affinity, virtual auto-models, and external-provider spillover.
+- Prefix/KV-cache affinity, routing/cascade policies, virtual auto-models, and
+  external-provider spillover.
 
 ### Verifying against a real server
 

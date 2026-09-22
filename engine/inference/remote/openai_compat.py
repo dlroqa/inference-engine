@@ -289,6 +289,22 @@ class OpenAICompatibleRemoteBackend(InferenceBackend):
             extra={"remote_model": self._cfg.remote_model},
         )
 
+    async def check_health(self) -> bool:
+        """Lightweight liveness probe for the registry (bounded timeout).
+
+        Returns True iff the backend is loaded and the remote answers ``/v1/models``
+        quickly. Secret-free and never raises — a failure just marks the backend
+        unavailable so selection routes elsewhere.
+        """
+        client = self._client
+        if client is None or self._state not in (BackendState.READY, BackendState.GENERATING):
+            return False
+        try:
+            resp = await client.get("/v1/models", timeout=5.0)
+        except Exception:
+            return False
+        return resp.status_code == 200
+
     async def health(self) -> dict[str, object]:
         # Secret-free by construction: base_url and model only, never the key.
         snapshot: dict[str, object] = {

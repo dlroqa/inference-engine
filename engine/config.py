@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from platformdirs import user_config_path, user_data_dir
-from pydantic import Field, ValidationError, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -44,6 +44,30 @@ def default_data_dir() -> Path:
 
 def default_config_file() -> Path:
     return Path(user_config_path(APP_NAME, appauthor=False)) / "config.toml"
+
+
+class RemoteWorkerSpec(BaseModel):
+    """One additional remote backend in the routing pool (Block 10, sub-slice 3).
+
+    Declared as ``[[remote_workers]]`` tables in config.toml. Each is an
+    OpenAI-compatible remote (vLLM or SGLang) serving the same model_id as the
+    primary backend; the registry routes each request to the least-busy healthy
+    one. Secrets belong in api_key via a secure source, never committed.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    name: str
+    kind: Literal["remote_vllm", "remote_sglang"] = "remote_vllm"
+    base_url: str
+    model: str
+    api_key: str | None = None
+    connect_timeout_s: float = Field(default=10.0, ge=0.1, le=600.0)
+    read_timeout_s: float = Field(default=60.0, ge=0.1, le=3600.0)
+    max_prestream_retries: int = Field(default=1, ge=0, le=10)
+    context_length: int | None = Field(default=None, ge=8, le=1_048_576)
+    tls_verify: bool = True
+    max_in_flight: int = Field(default=8, ge=1, le=4096)
 
 
 class Settings(BaseSettings):
@@ -156,6 +180,16 @@ class Settings(BaseSettings):
     remote_max_prestream_retries: int = Field(default=1, ge=0, le=10)
     remote_context_length: int | None = Field(default=None, ge=8, le=1_048_576)
     remote_tls_verify: bool = True
+
+    # Multi-backend routing (Block 10, sub-slice 3). The primary backend above is
+    # entry 0; remote_workers add more OpenAI-compatible backends to the pool.
+    # Requests route to the least-busy healthy backend. backend_health_interval_s
+    # governs the background liveness probe of remote backends (0 disables it).
+    # primary_max_in_flight caps concurrent generations placed on the primary
+    # (llama.cpp serializes, so 1; raise it for a remote primary). See docs/backends.md.
+    remote_workers: list[RemoteWorkerSpec] = Field(default_factory=list)
+    primary_max_in_flight: int = Field(default=1, ge=1, le=4096)
+    backend_health_interval_s: float = Field(default=10.0, ge=0.0, le=3600.0)
 
     # Local inference runtime (Block 1). A single explicitly configured GGUF
     # model. Multiple models, downloads, and GPU auto-tuning are later blocks;

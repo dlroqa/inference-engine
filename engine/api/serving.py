@@ -22,9 +22,15 @@ from dataclasses import dataclass
 from fastapi import Request
 
 from engine.gateway import ApiAccess, Gateway
-from engine.inference.base import GenerationStream, InferenceBackend
+from engine.inference.base import GenerationStream
+from engine.inference.registry import BackendRegistry, NoBackendAvailable, RegistryLease
 from engine.inference.scheduler import Scheduler, SchedulerLease, SchedulerSaturated
-from engine.inference.types import FinishReason, GenerationRequest, GenerationResult
+from engine.inference.types import (
+    BackendNotReadyError,
+    FinishReason,
+    GenerationRequest,
+    GenerationResult,
+)
 from engine.logging_setup import get_logger
 from engine.telemetry.counters import Counters
 from engine.telemetry.service import Telemetry
@@ -39,6 +45,7 @@ class Served:
 
     access: ApiAccess
     lease: SchedulerLease
+    registry_lease: RegistryLease
     stream: GenerationStream
     request_id: str
     model_id: str
@@ -51,7 +58,6 @@ class Served:
 async def start_generation(
     request: Request,
     gen_request: GenerationRequest,
-    backend: InferenceBackend,
     *,
     endpoint: str,
     model_id: str,
@@ -70,6 +76,7 @@ async def start_generation(
     telemetry: Telemetry = request.app.state.telemetry
     counters: Counters = request.app.state.counters
     scheduler: Scheduler = request.app.state.scheduler
+    registry: BackendRegistry = request.app.state.backend_registry
 
     access = gateway.authorize(
         request, prompt_text=prompt_text, max_tokens=max_tokens, endpoint=endpoint
@@ -87,14 +94,32 @@ async def start_generation(
         )
         raise on_saturated(exc) from exc
 
+    # Placement (Block 10, sub-slice 3): route to the least-busy healthy backend.
+    try:
+        registry_lease = registry.acquire()
+    except NoBackendAvailable as exc:
+        lease.release()
+        access.abort()
+        if exc.reason == "busy":
+            saturated = SchedulerSaturated("all_backends_busy", retry_after_s=1)
+            telemetry.request_rejected(
+                request_id=request_id,
+                endpoint=endpoint,
+                reason=saturated.reason,
+                retry_after_s=saturated.retry_after_s,
+            )
+            raise on_saturated(saturated) from exc
+        raise BackendNotReadyError("no backend is ready to generate") from exc
+
     counters.request_started()
     telemetry.request_start(
         request_id=request_id, endpoint=endpoint, model=model_id, key_id=access.key_id
     )
 
     try:
-        stream = backend.generate(gen_request)
+        stream = registry_lease.backend.generate(gen_request)
     except BaseException as exc:
+        registry_lease.release()
         lease.release()
         access.abort()
         counters.request_finished(prompt_tokens=0, completion_tokens=0, error=True)
@@ -106,6 +131,7 @@ async def start_generation(
     return Served(
         access=access,
         lease=lease,
+        registry_lease=registry_lease,
         stream=stream,
         request_id=request_id,
         model_id=model_id,
@@ -131,6 +157,7 @@ def finish_generation(served: Served, *, error: BaseException | None) -> Generat
     if served.stream.backpressure_waits:
         served.scheduler.note_slow_consumer(served.stream.backpressure_waits)
     served.lease.release(cancelled=cancelled)
+    served.registry_lease.release()
 
     prompt_tokens = result.prompt_tokens if result else 0
     completion_tokens = result.completion_tokens if result else 0

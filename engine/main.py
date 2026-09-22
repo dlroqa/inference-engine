@@ -8,10 +8,12 @@ internal ``GenerationRequest``/token-stream contract.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import ipaddress
 import logging
 import uuid
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -33,7 +35,8 @@ from engine.auth.keys import KeyStore
 from engine.config import Settings, load_config
 from engine.gateway import Gateway
 from engine.inference.base import InferenceBackend
-from engine.inference.factory import build_backend
+from engine.inference.factory import build_backend, build_remote_worker
+from engine.inference.registry import BackendEntry, BackendRegistry
 from engine.inference.scheduler import Scheduler
 from engine.inference.types import BackendError
 from engine.logging_setup import configure_logging, get_logger
@@ -80,6 +83,17 @@ def _ip_permitted(
     except ValueError:
         return False
     return any(addr in net for net in networks)
+
+
+def _fixed_provider(
+    backend: InferenceBackend,
+) -> Callable[[], InferenceBackend | None]:
+    """A registry provider that always returns one fixed backend (remote workers)."""
+
+    def _provider() -> InferenceBackend | None:
+        return backend
+
+    return _provider
 
 
 def create_app(
@@ -171,6 +185,33 @@ def create_app(
                 app.state.backend = None
                 log.warning("model_load_failed", extra={"error": str(exc)})
 
+        # Load any additional remote workers (Block 10, sub-slice 3). A worker that
+        # fails to load is left unavailable; the registry simply routes elsewhere.
+        for worker in getattr(app.state, "remote_workers", []):
+            try:
+                await worker.load()
+                log.info("remote_worker_loaded", extra={"backend": worker.name})
+            except BackendError as exc:
+                log.warning(
+                    "remote_worker_load_failed",
+                    extra={"backend": worker.name, "error": str(exc)},
+                )
+
+        # Periodic backend liveness refresh so routing skips a remote that went down.
+        health_task: asyncio.Task[None] | None = None
+        if settings.backend_health_interval_s > 0 and settings.remote_workers:
+            registry = app.state.backend_registry
+
+            async def _health_loop() -> None:
+                while True:
+                    await asyncio.sleep(settings.backend_health_interval_s)
+                    try:
+                        await registry.refresh_health()
+                    except Exception:  # pragma: no cover - defensive
+                        log.warning("backend_health_refresh_failed")
+
+            health_task = asyncio.create_task(_health_loop())
+
         # Start the metrics sampler once the loop is running (skip if disabled).
         if settings.metrics_interval_s > 0:
             telemetry.start(lambda: getattr(app.state, "backend", None))
@@ -184,6 +225,13 @@ def create_app(
             scheduler.begin_drain()
             drained = await scheduler.wait_drained(settings.drain_timeout_s)
             log.info("drain_complete", extra={"drained": drained})
+            if health_task is not None:
+                health_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await health_task
+            for worker in getattr(app.state, "remote_workers", []):
+                with contextlib.suppress(Exception):
+                    await worker.unload()
             await telemetry.stop()
             await model_service.shutdown()
             logging.getLogger().removeHandler(log_collector)
@@ -203,6 +251,31 @@ def create_app(
     )
     app.state.settings = settings
     app.state.backend = backend
+    # Backend registry (Block 10, sub-slice 3): the primary backend is entry 0
+    # (tracked live so admin load/unload swaps are reflected); remote_workers add
+    # more OpenAI-compatible backends. Requests route to the least-busy healthy one.
+    _primary_entry = BackendEntry(
+        name="primary",
+        kind=settings.backend_kind,
+        is_local=settings.backend_kind == "llamacpp",
+        provider=lambda: getattr(app.state, "backend", None),
+        max_in_flight=settings.primary_max_in_flight,
+    )
+    app.state.remote_workers = []
+    _worker_entries = []
+    for _spec in settings.remote_workers:
+        _wb = build_remote_worker(_spec)
+        app.state.remote_workers.append(_wb)
+        _worker_entries.append(
+            BackendEntry(
+                name=_spec.name,
+                kind=_spec.kind,
+                is_local=False,
+                provider=_fixed_provider(_wb),
+                max_in_flight=_spec.max_in_flight,
+            )
+        )
+    app.state.backend_registry = BackendRegistry([_primary_entry, *_worker_entries])
     app.state.gateway = Gateway(
         settings,
         KeyStore(settings.db_path),  # type: ignore[arg-type]
