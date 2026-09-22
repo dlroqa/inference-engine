@@ -158,7 +158,10 @@ def create_app(
         # the dashboard, then build + load it unless a backend was injected.
         if settings.model_path is not None:
             model_service.register_configured(settings.model_path, settings.model_id)
-        if not injected_backend and settings.model_path is not None:
+        # A backend is configured either by a local model_path (llama.cpp) or by
+        # selecting a remote adapter (Block 10), which needs no local model file.
+        backend_configured = settings.model_path is not None or settings.backend_kind != "llamacpp"
+        if not injected_backend and backend_configured:
             try:
                 built = build_backend(settings)
                 await built.load()

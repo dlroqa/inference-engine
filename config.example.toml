@@ -1,4 +1,4 @@
-# Example Inference Engine configuration (Blocks 0–7).
+# Example Inference Engine configuration (Blocks 0–10).
 #
 # Copy to a location of your choice and pass it with:
 #     inference-engine serve --config ./config.toml
@@ -33,6 +33,23 @@ log_level = "INFO"
 # n_ctx        = 4096                     # context window
 # n_threads    =                          # CPU threads (unset = library default)
 # n_gpu_layers = 0                        # layers offloaded to GPU (0 = CPU only)
+
+# --- Remote backend: vLLM (Block 10, sub-slice 1) ---
+# Proxy generation to an external vLLM OpenAI-compatible server instead of the
+# local llama.cpp runtime. Requires the 'remote' extra:
+#     pip install "inference-engine[remote]"
+# See docs/backends.md for behavior and guarantees.
+# backend_kind    = "remote_vllm"                 # default "llamacpp"
+# remote_base_url = "http://vllm.internal:8000/v1"  # server root or .../v1
+# remote_model    = "meta-llama/Meta-Llama-3-8B-Instruct"  # what vLLM serves
+# model_id        = "team-llama3"                 # what YOUR clients request
+# remote_api_key  =                                # prefer IE_REMOTE_API_KEY; never commit secrets
+# remote_connect_timeout_s   = 10.0
+# remote_read_timeout_s      = 60.0                # max gap between streamed tokens
+# remote_max_prestream_retries = 1                 # bounded; never retried after first token
+# remote_context_length      =                     # unset = probe /v1/models max_model_len
+# remote_tls_verify          = true                # verify the remote's TLS certificate
+# allow_remote_backends      = true                # kill switch: false refuses outbound inference
 
 # --- Secure gateway (Block 3) ---
 # Network binding beyond loopback must be opted into explicitly.
