@@ -149,6 +149,12 @@ def create_app(
         try:
             yield
         finally:
+            # Graceful drain (Block 9): stop admitting new work and let bounded
+            # in-flight generations finish (or time out) before releasing the model,
+            # so a rolling restart never severs active requests.
+            scheduler.begin_drain()
+            drained = await scheduler.wait_drained(settings.drain_timeout_s)
+            log.info("drain_complete", extra={"drained": drained})
             await telemetry.stop()
             await model_service.shutdown()
             logging.getLogger().removeHandler(log_collector)

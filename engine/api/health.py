@@ -14,6 +14,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from engine import __version__
+from engine.buildinfo import build_info
 from engine.config import Settings
 from engine.inference.base import InferenceBackend
 from engine.inference.types import BackendState
@@ -28,7 +29,13 @@ INFERENCE_NOTE = "no model loaded; configure model_path and load a model to serv
 @router.get("/healthz")
 def healthz() -> dict[str, object]:
     """Liveness: the process is up and able to handle requests."""
-    return {"status": "ok", "version": __version__}
+    return {"status": "ok", "version": __version__, "build": build_info()}
+
+
+@router.get("/version")
+def version() -> dict[str, object]:
+    """Release/build metadata (version, commit, build date)."""
+    return build_info()
 
 
 @router.get("/readyz")
@@ -77,6 +84,18 @@ def readyz(request: Request) -> JSONResponse:
         inference["state"] = backend.state.value
     else:
         inference["reason"] = INFERENCE_NOTE
+
+    # Operators can declare a loaded model part of readiness (Block 9), so a load
+    # balancer only routes once inference can actually serve.
+    if settings.require_model_ready and not model_loaded:
+        checks["inference"] = "model not ready"
+        ready = False
+
+    # While draining for shutdown, report not-ready so the balancer stops routing.
+    scheduler = getattr(request.app.state, "scheduler", None)
+    if scheduler is not None and scheduler.is_draining:
+        checks["intake"] = "draining"
+        ready = False
 
     body: dict[str, object] = {
         "status": "ready" if ready else "not_ready",

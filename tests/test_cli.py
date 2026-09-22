@@ -97,3 +97,32 @@ def test_serve_invokes_uvicorn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     rc = main(["serve", "--data-dir", str(tmp_path), "--host", "127.0.0.1", "--port", "8099"])
     assert rc == 0
     assert calls == {"host": "127.0.0.1", "port": 8099}
+
+
+def test_backup_and_restore_cli(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    src = tmp_path / "src"
+    # Seed a DB with a key via the CLI.
+    assert main(["keys", "create", "--data-dir", str(src), "--label", "k"]) == 0
+    capsys.readouterr()
+
+    out_dir = tmp_path / "backups"
+    assert main(["backup", "--data-dir", str(src), "--out", str(out_dir)]) == 0
+    archive = json.loads(capsys.readouterr().out)["archive"]
+    assert Path(archive).is_file()
+
+    dst = tmp_path / "dst"
+    assert main(["restore", "--data-dir", str(dst), "--from", archive]) == 0
+    restored = json.loads(capsys.readouterr().out)
+    assert restored["engine_version"]
+    # The restored DB has the key.
+    assert main(["keys", "list", "--data-dir", str(dst)]) == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert any(r["label"] == "k" for r in rows)
+
+
+def test_restore_missing_archive_exit_code(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = main(["restore", "--data-dir", str(tmp_path), "--from", str(tmp_path / "nope.tar.gz")])
+    assert rc == 1
+    assert "not found" in capsys.readouterr().err

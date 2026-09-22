@@ -6,15 +6,17 @@ ordered **vertical slices** (Blocks 0–12) per
 Each block must be deployable, testable, documented, and useful before the next
 begins.
 
-> **Current status: Block 3 — Secure local gateway + quota foundation.**
-> The OpenAI-compatible API (Block 2) is now guarded: **API keys** (hashed at
-> rest, issued once, revocable), **request-size / rate / concurrency limits**, and
-> a **compute-unit quota** (5-hour rolling window + weekly fixed cap) with
-> `X-RateLimit-*` headers. The server binds to **loopback by default**; binding to
-> a network interface requires an explicit opt-in and (by default) authentication.
-> Every inference request is attributed to a key id + request id in an audit log,
-> with no secrets recorded. **Not yet:** organizations, billing/payment providers
-> (Block 11), Anthropic `/v1/messages` (Block 8), dashboard, or model downloads.
+> **Current status: Block 9 — Production deployment (9a).**
+> Shipped so far: local GGUF inference (Block 1); **OpenAI** `/v1/chat/completions`
+> + **Anthropic** `/v1/messages` with streaming, sampling controls, and
+> capability-gated structured output (Blocks 2, 8); a secure gateway — API keys,
+> request/rate/concurrency limits, and a compute-unit quota (Block 3); operability
+> telemetry + an operator dashboard (Blocks 4–5); model lifecycle with
+> checksum-verified downloads (Block 6); controlled concurrency with admission
+> control (Block 7); and a Docker deployment path with graceful drain, readiness
+> gating, and backup/restore (Block 9a). **Not yet:** the security hardening
+> baseline (Block 9b), remote scale-out (Block 10), organizations/billing
+> (Block 11), and advanced safety tooling (Block 12).
 
 ---
 
@@ -397,6 +399,33 @@ A control-plane smoke test drives the whole operator flow (model load → genera
 python scripts/dashboard_smoke.py --base-url http://127.0.0.1:8000 [--api-key sk-ie-…]
 ```
 
+## Deployment (Block 9)
+
+A supported, reproducible deployment path via Docker, with graceful shutdown,
+readiness gating, and backup/restore. Full details — volumes, reverse-proxy/TLS,
+upgrades, the supported-platform matrix, and supply-chain basics — are in
+[docs/deployment.md](docs/deployment.md).
+
+```bash
+docker compose up --build      # or: docker build -t inference-engine . && docker run ...
+```
+
+- **Graceful drain:** on `SIGTERM` the engine stops admitting work, lets in-flight
+  generations finish (up to `drain_timeout_s`), then releases the model — so
+  rolling restarts never sever active requests. `/readyz` reports not-ready while
+  draining so a balancer stops routing.
+- **Readiness gating:** set `require_model_ready=true` so `/readyz` is not-ready
+  until a model is loaded. Liveness is `/healthz`; `/version` reports the build.
+- **Backup & restore** (DB + config, checksum-verified; model files excepted):
+
+  ```bash
+  inference-engine backup  --out /backups
+  inference-engine restore --from /backups/inference-engine-backup-*.tar.gz
+  ```
+
+- **Supply chain:** `/version` reports the build commit/date; every model records a
+  SHA-256; generate an SBOM with `python scripts/generate_sbom.py --out sbom.json`.
+
 ## Test & checks
 
 ```bash
@@ -482,6 +511,8 @@ engine/
 │   ├── admin_router.py # /admin/overview, /admin/model/*, /admin/keys
 │   ├── deps.py         # operator access gate (loopback or valid key)
 │   └── errors.py       # OpenAI error envelope + structured error logging
+├── backup.py           # database + config backup/restore
+├── buildinfo.py        # release/build metadata (version, commit, date)
 ├── inference/          # generation contract, llama.cpp backend, admission scheduler
 ├── models/             # registry, GGUF probe, downloader, host compat, lifecycle service
 ├── auth/ · quota/      # API keys · compute-unit quota
