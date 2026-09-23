@@ -238,6 +238,13 @@ class Settings(BaseSettings):
     # Named virtual auto-models (Block 10, sub-slice 5a): map a client-facing
     # model name to a route/cascade policy over the pool. See docs/backends.md.
     virtual_models: list[VirtualModelSpec] = Field(default_factory=list)
+    # External-provider spillover (Block 10, sub-slice 7). External providers are
+    # OpenAI-compatible endpoints used ONLY as overflow when the local pool cannot
+    # admit a request. Egress is off by default: enable allow_external_providers
+    # AND list their hosts in egress_allowlist, or startup fails. See docs/backends.md.
+    allow_external_providers: bool = False
+    egress_allowlist: list[str] = Field(default_factory=list)
+    external_providers: list[RemoteWorkerSpec] = Field(default_factory=list)
     primary_max_in_flight: int = Field(default=1, ge=1, le=4096)
     backend_health_interval_s: float = Field(default=10.0, ge=0.0, le=3600.0)
     # Prefix-affinity routing (Block 10.4): route requests sharing the leading
@@ -321,6 +328,30 @@ class Settings(BaseSettings):
                 )
         return self
 
+    @model_validator(mode="after")
+    def _validate_external_providers(self) -> Settings:
+        if not self.external_providers:
+            return self
+        if not self.allow_external_providers:
+            raise ValueError(
+                "external_providers are configured but allow_external_providers is false; "
+                "external egress is off by default — set allow_external_providers=true to "
+                "acknowledge sending prompts off-premise (see docs/backends.md)"
+            )
+        if not self.egress_allowlist:
+            raise ValueError(
+                "external_providers require a non-empty egress_allowlist (the hosts they "
+                "may reach); refusing to allow unrestricted outbound inference"
+            )
+        for prov in self.external_providers:
+            host = _url_host(prov.base_url)
+            if host is None or not _host_allowed(host, self.egress_allowlist):
+                raise ValueError(
+                    f"external provider {prov.name!r} base_url host {host!r} is not in "
+                    f"egress_allowlist {self.egress_allowlist}"
+                )
+        return self
+
     def is_loopback_host(self) -> bool:
         return self.host in {"127.0.0.1", "::1", "localhost"}
 
@@ -349,6 +380,25 @@ class Settings(BaseSettings):
         if toml_path is not None and toml_path.is_file():
             sources.append(TomlConfigSettingsSource(settings_cls, toml_file=toml_path))
         return tuple(sources)
+
+
+def _url_host(url: str) -> str | None:
+    from urllib.parse import urlparse
+
+    try:
+        return urlparse(url).hostname
+    except ValueError:
+        return None
+
+
+def _host_allowed(host: str, allowlist: list[str]) -> bool:
+    """True if ``host`` matches an allowlist entry (exact or dot-suffix domain)."""
+    host = host.lower()
+    for raw in allowlist:
+        entry = raw.lower().lstrip(".")
+        if host == entry or host.endswith("." + entry):
+            return True
+    return False
 
 
 def load_config(

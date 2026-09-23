@@ -201,7 +201,9 @@ def create_app(
 
         # Periodic backend liveness refresh so routing skips a remote that went down.
         health_task: asyncio.Task[None] | None = None
-        if settings.backend_health_interval_s > 0 and settings.remote_workers:
+        if settings.backend_health_interval_s > 0 and (
+            settings.remote_workers or settings.external_providers
+        ):
             registry = app.state.backend_registry
 
             async def _health_loop() -> None:
@@ -283,10 +285,37 @@ def create_app(
                 cost_per_1k_output=_spec.cost_per_1k_output,
             )
         )
-    app.state.backend_registry = BackendRegistry([_primary_entry, *_worker_entries])
+    # External providers (Block 10.7): OpenAI-compatible spillover backends, used
+    # only when the local pool is saturated. Egress is already validated (kill
+    # switch + allowlist) in config; here they join the pool tagged spillover.
+    _external_entries = []
+    for _spec in settings.external_providers:
+        _eb = build_remote_worker(_spec)
+        app.state.remote_workers.append(_eb)  # loaded/unloaded with the other remotes
+        _external_entries.append(
+            BackendEntry(
+                name=_spec.name,
+                kind=_spec.kind,
+                is_local=False,
+                provider=_fixed_provider(_eb),
+                max_in_flight=_spec.max_in_flight,
+                prefix_cache=_spec.prefix_cache,
+                cost_per_1k_input=_spec.cost_per_1k_input,
+                cost_per_1k_output=_spec.cost_per_1k_output,
+                spillover=True,
+                external=True,
+            )
+        )
+    app.state.backend_registry = BackendRegistry(
+        [_primary_entry, *_worker_entries, *_external_entries]
+    )
     # Virtual auto-models (Block 10, sub-slice 5a): resolve named route/cascade
     # policies over the pool. Referenced backend names must exist, else fail fast.
-    _pool_names = {"primary", *(spec.name for spec in settings.remote_workers)}
+    _pool_names = {
+        "primary",
+        *(spec.name for spec in settings.remote_workers),
+        *(spec.name for spec in settings.external_providers),
+    }
     _vmodels: list[VirtualModel] = []
     for _vm in settings.virtual_models:
         _steps = _vm.normalized_steps()

@@ -73,6 +73,7 @@ def _entry(
     is_local: bool = False,
     cap: int = 1,
     prefix_cache: bool = False,
+    spillover: bool = False,
 ) -> BackendEntry:
     return BackendEntry(
         name=name,
@@ -81,6 +82,7 @@ def _entry(
         provider=lambda: backend,
         max_in_flight=cap,
         prefix_cache=prefix_cache,
+        spillover=spillover,
     )
 
 
@@ -256,3 +258,56 @@ def test_status_includes_cache_and_capability_flags() -> None:
     assert rows[1]["supports_prefix_cache"] is False
     assert rows[1]["supports_kv_cache_metrics"] is False
     assert "cache" not in rows[1]
+
+
+# -- spillover tiering (Block 10, sub-slice 7) -----------------------------
+
+
+def test_spillover_used_only_when_local_unavailable() -> None:
+    local = StubBackend()
+    ext = StubBackend()
+    e_local = _entry("local", local, cap=1)
+    e_ext = _entry("ext", ext, cap=5, spillover=True)
+    reg = BackendRegistry([e_local, e_ext])
+    # Local is ready with capacity -> always chosen over spillover.
+    assert reg.select() is e_local
+    # Saturate local -> spillover takes it.
+    e_local.in_flight = 1
+    assert reg.select() is e_ext
+    # Local frees up -> back to local (spillover is overflow only).
+    e_local.in_flight = 0
+    assert reg.select() is e_local
+
+
+def test_spillover_skipped_when_local_only_unready() -> None:
+    # Local present but unloaded, spillover ready: spillover serves.
+    e_local = _entry("local", StubBackend(state=BackendState.UNLOADED))
+    e_ext = _entry("ext", StubBackend(), spillover=True)
+    reg = BackendRegistry([e_local, e_ext])
+    assert reg.select() is e_ext
+
+
+def test_no_backend_when_local_and_spillover_full() -> None:
+    e_local = _entry("local", StubBackend(), cap=1)
+    e_ext = _entry("ext", StubBackend(), cap=1, spillover=True)
+    e_local.in_flight = 1
+    e_ext.in_flight = 1
+    reg = BackendRegistry([e_local, e_ext])
+    assert reg.select() is None
+    with pytest.raises(NoBackendAvailable) as exc:
+        reg.acquire()
+    assert exc.value.reason == "busy"
+
+
+def test_status_reports_tier_and_external() -> None:
+    reg = BackendRegistry(
+        [
+            _entry("local", StubBackend(), is_local=True),
+            _entry("ext", StubBackend(), spillover=True),
+        ]
+    )
+    # mark external on the spillover entry directly
+    reg.entries[1].external = True
+    rows = reg.status()
+    assert rows[0]["tier"] == "primary" and rows[0]["external"] is False
+    assert rows[1]["tier"] == "spillover" and rows[1]["external"] is True
