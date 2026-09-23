@@ -23,7 +23,8 @@ from fastapi import Request
 
 from engine.gateway import ApiAccess, Gateway
 from engine.inference.base import GenerationStream
-from engine.inference.registry import BackendRegistry, NoBackendAvailable, RegistryLease
+from engine.inference.registry import NoBackendAvailable, RegistryLease
+from engine.inference.router import Router
 from engine.inference.scheduler import Scheduler, SchedulerLease, SchedulerSaturated
 from engine.inference.types import (
     BackendNotReadyError,
@@ -61,6 +62,7 @@ async def start_generation(
     *,
     endpoint: str,
     model_id: str,
+    route_model: str,
     prompt_text: str,
     max_tokens: int,
     request_id: str,
@@ -76,7 +78,7 @@ async def start_generation(
     telemetry: Telemetry = request.app.state.telemetry
     counters: Counters = request.app.state.counters
     scheduler: Scheduler = request.app.state.scheduler
-    registry: BackendRegistry = request.app.state.backend_registry
+    router: Router = request.app.state.router
 
     access = gateway.authorize(
         request, prompt_text=prompt_text, max_tokens=max_tokens, endpoint=endpoint
@@ -98,7 +100,7 @@ async def start_generation(
     affinity_chars = request.app.state.settings.prefix_affinity_chars
     prefix_key = prompt_text[:affinity_chars] if affinity_chars > 0 else None
     try:
-        registry_lease = registry.acquire(prefix_key)
+        registry_lease = router.acquire(route_model, prefix_key)
     except NoBackendAvailable as exc:
         lease.release()
         access.abort()

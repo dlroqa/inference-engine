@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from engine.config import Settings
 from engine.inference.registry import BackendEntry, BackendRegistry
+from engine.inference.router import Router
 from engine.main import create_app
 from tests.api.conftest import MODEL_ID
 from tests.support.fake_backend import FakeBackend
@@ -43,6 +44,7 @@ def _build_dual_app(settings: Settings):
         max_in_flight=4,
     )
     app.state.backend_registry = BackendRegistry([primary_entry, worker_entry])
+    app.state.router = Router(app.state.backend_registry, [])
     return app, worker, primary_entry
 
 
@@ -130,6 +132,7 @@ def _prefix_dual_app(tmp_path):
         prefix_cache=True,
     )
     app.state.backend_registry = BackendRegistry([primary_entry, worker_entry])
+    app.state.router = Router(app.state.backend_registry, [])
     return app, primary_entry, worker_entry
 
 

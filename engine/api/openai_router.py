@@ -78,21 +78,19 @@ def _saturated(exc: SchedulerSaturated) -> OpenAIError:
 
 @router.get("/models")
 def list_models(request: Request) -> ModelList:
-    backend = request.app.state.backend_registry.representative()
-    if backend is not None:
-        caps = backend.capabilities()
-        return ModelList(data=[Model(id=caps.model_id)])
-    return ModelList(data=[])
+    names = request.app.state.router.model_names()
+    return ModelList(data=[Model(id=name) for name in names])
 
 
 @router.post("/chat/completions")
 async def chat_completions(request: Request, body: ChatCompletionRequest) -> Response:
     backend = _ready_backend(request)
     caps = backend.capabilities()
-    model_id = caps.model_id
-    if body.model != model_id:
+    router = request.app.state.router
+    model_id = body.model
+    if not router.known_model(model_id):
         raise OpenAIError(
-            f"model {body.model!r} not found; this engine serves {model_id!r}",
+            f"model {model_id!r} not found; this engine serves {router.model_names()}",
             status_code=404,
             type="invalid_request_error",
             param="model",
@@ -150,6 +148,7 @@ async def chat_completions(request: Request, body: ChatCompletionRequest) -> Res
         gen_request,
         endpoint=endpoint,
         model_id=model_id,
+        route_model=model_id,
         prompt_text=prompt_text,
         max_tokens=body.effective_max_tokens() or 256,
         request_id=request_id,

@@ -203,3 +203,31 @@ def test_remote_worker_rejects_unknown_kind(tmp_path):
                 {"name": "w", "kind": "llamacpp", "base_url": "http://a", "model": "m"}
             ],
         )
+
+
+def test_virtual_model_route_and_cascade_normalize(tmp_path):
+    from engine.config import Settings
+
+    s = Settings(
+        data_dir=tmp_path,
+        virtual_models=[
+            {"name": "fast", "policy": "route", "backends": ["primary"]},
+            {"name": "tiered", "policy": "cascade", "steps": [["primary"], ["w1", "w2"]]},
+        ],
+    )
+    assert s.virtual_models[0].normalized_steps() == [["primary"]]
+    assert s.virtual_models[1].normalized_steps() == [["primary"], ["w1", "w2"]]
+
+
+def test_virtual_model_policy_validation(tmp_path):
+    from pydantic import ValidationError
+
+    from engine.config import Settings
+
+    with __import__("pytest").raises(ValidationError):  # route needs backends
+        Settings(data_dir=tmp_path, virtual_models=[{"name": "x", "policy": "route"}])
+    with __import__("pytest").raises(ValidationError):  # cascade must not set backends
+        Settings(
+            data_dir=tmp_path,
+            virtual_models=[{"name": "x", "policy": "cascade", "backends": ["a"]}],
+        )
