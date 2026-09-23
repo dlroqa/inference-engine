@@ -49,16 +49,19 @@ log_level = "INFO"
 # remote_max_prestream_retries = 1                 # bounded; never retried after first token
 # remote_context_length      =                     # unset = probe /v1/models max_model_len
 # remote_tls_verify          = true                # verify the remote's TLS certificate
+# remote_prefix_cache        = true                # primary remote maintains a prefix cache
+# remote_kv_metrics          = true                # scrape the primary remote's /metrics
 # allow_remote_backends      = true                # kill switch: false refuses outbound inference
 
-# --- Multiple backends & routing (Block 10, sub-slice 3) ---
+# --- Multiple backends & routing (Block 10, sub-slices 3-4) ---
 # Run several backends at once and route each request to the least-busy healthy
 # one. The primary backend above is entry 0; add more with [[remote_workers]].
 # primary_max_in_flight caps concurrent generations on the primary (llama.cpp
 # serializes, so 1). backend_health_interval_s probes remote liveness (0 = off).
 # Raise max_concurrency (Controlled concurrency, above) to overlap across backends.
 # primary_max_in_flight     = 1
-# backend_health_interval_s = 10.0
+# backend_health_interval_s = 10.0   # also scrapes remote KV/prefix-cache stats
+# prefix_affinity_chars     = 0      # >0 routes prompts sharing N leading chars to one backend
 #
 # [[remote_workers]]
 # name          = "vllm-a"
@@ -66,6 +69,8 @@ log_level = "INFO"
 # base_url      = "http://gpu-a:8000/v1"
 # model         = "meta-llama/Meta-Llama-3-8B-Instruct"
 # max_in_flight = 8
+# prefix_cache  = true               # server maintains a prefix cache (gates affinity)
+# kv_metrics    = true               # scrape /metrics for KV/prefix-cache stats
 # # api_key     =                    # prefer a secure source; never commit
 
 # --- Secure gateway (Block 3) ---

@@ -74,6 +74,10 @@ async def _run(args: argparse.Namespace) -> int:
     print()
     text = "".join(pieces)
     result = stream.result
+    if args.show_cache:
+        stats = getattr(backend, "cache_stats", None)
+        cache = await stats() if stats is not None else None
+        print(f"cache: {json.dumps(cache)}")
     await backend.unload()
 
     if not text.strip():
@@ -105,6 +109,9 @@ def main() -> int:
     parser.add_argument("--max-tokens", type=int, default=24)
     parser.add_argument("--read-timeout", type=float, default=60.0)
     parser.add_argument("--wait", action="store_true", help="wait for /v1/models first")
+    parser.add_argument(
+        "--show-cache", action="store_true", help="print KV/prefix-cache stats (if exported)"
+    )
     args = parser.parse_args()
     if args.wait:
         _wait_models(args.base_url)

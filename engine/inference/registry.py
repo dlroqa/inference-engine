@@ -15,6 +15,7 @@ cap; the registry does *placement* and per-backend capacity within it.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -41,12 +42,18 @@ class BackendEntry:
     is_local: bool
     provider: Callable[[], InferenceBackend | None]
     max_in_flight: int = 1
+    #: Whether this backend maintains a prefix cache worth affinity routing
+    #: (vLLM/SGLang yes; local llama.cpp no). Set at construction, honestly.
+    prefix_cache: bool = False
     order: int = 0
     in_flight: int = 0
     #: Liveness flag maintained by :meth:`BackendRegistry.refresh_health`; local
     #: backends rely on state, remotes on a lightweight probe. Defaults True so a
     #: never-probed backend is usable as long as it is loaded.
     available: bool = True
+    #: Last-scraped KV/prefix-cache stats (Block 10.4), or None if the backend
+    #: does not export them. Refreshed by :meth:`BackendRegistry.refresh_health`.
+    cache: dict[str, float] | None = None
 
     def backend(self) -> InferenceBackend | None:
         return self.provider()
@@ -120,16 +127,35 @@ class BackendRegistry:
                     return backend
         return None
 
-    def select(self) -> BackendEntry | None:
-        """The ready, not-full backend with the fewest in-flight (stable tie-break)."""
+    def select(self, prefix_key: str | None = None) -> BackendEntry | None:
+        """Pick a backend: prefix-affinity first (when applicable), else least-busy.
+
+        With a ``prefix_key`` and at least one ready prefix-cache-capable backend, a
+        consistent hash of the key maps the request to one such backend so its
+        prefix cache is reused. If that target is at capacity we fall back to
+        least-busy (never overload for affinity's sake). Otherwise — no key, no
+        capable backend, or an unrelated pool — it is plain least-busy among ready,
+        not-full backends (identical to sub-slice 3).
+        """
         candidates = [e for e in self._entries if e.is_ready() and e.has_capacity()]
+        if prefix_key:
+            capable = sorted(
+                (e for e in self._entries if e.is_ready() and e.prefix_cache),
+                key=lambda e: e.order,
+            )
+            if capable:
+                digest = hashlib.sha256(prefix_key.encode("utf-8")).hexdigest()
+                target = capable[int(digest, 16) % len(capable)]
+                if target.has_capacity():
+                    return target
+                # target saturated: fall through to least-busy placement
         if not candidates:
             return None
         return min(candidates, key=lambda e: (e.in_flight, e.order))
 
-    def acquire(self) -> RegistryLease:
-        """Reserve an in-flight slot on the least-busy backend, or raise."""
-        entry = self.select()
+    def acquire(self, prefix_key: str | None = None) -> RegistryLease:
+        """Reserve an in-flight slot on the selected backend, or raise."""
+        entry = self.select(prefix_key)
         if entry is None:
             # Distinguish "nothing loaded/healthy" from "all healthy ones full".
             reason = "busy" if any(e.is_ready() for e in self._entries) else "unloaded"
@@ -153,19 +179,25 @@ class BackendRegistry:
                 caps = backend.capabilities()
                 context_length = caps.context_length
                 model_id = caps.model_id
-            snapshot.append(
-                {
-                    "name": entry.name,
-                    "kind": entry.kind,
-                    "location": "local" if entry.is_local else "remote",
-                    "state": state,
-                    "available": entry.is_ready(),
-                    "in_flight": entry.in_flight,
-                    "max_in_flight": entry.max_in_flight,
-                    "model_id": model_id,
-                    "context_length": context_length,
-                }
-            )
+            supports_kv_metrics = False
+            if backend is not None and backend.state in _READYISH:
+                supports_kv_metrics = backend.capabilities().supports_kv_cache_metrics
+            row: dict[str, object] = {
+                "name": entry.name,
+                "kind": entry.kind,
+                "location": "local" if entry.is_local else "remote",
+                "state": state,
+                "available": entry.is_ready(),
+                "in_flight": entry.in_flight,
+                "max_in_flight": entry.max_in_flight,
+                "model_id": model_id,
+                "context_length": context_length,
+                "supports_prefix_cache": entry.prefix_cache,
+                "supports_kv_cache_metrics": supports_kv_metrics,
+            }
+            if entry.cache is not None:
+                row["cache"] = entry.cache
+            snapshot.append(row)
         return snapshot
 
     async def refresh_health(self) -> None:
@@ -189,3 +221,9 @@ class BackendRegistry:
                     extra={"backend": entry.name, "available": ok},
                 )
             entry.available = ok
+            stats = getattr(backend, "cache_stats", None)
+            if ok and callable(stats):
+                try:
+                    entry.cache = await stats()
+                except Exception:  # pragma: no cover - defensive
+                    entry.cache = None

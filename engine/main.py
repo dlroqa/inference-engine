@@ -260,6 +260,7 @@ def create_app(
         is_local=settings.backend_kind == "llamacpp",
         provider=lambda: getattr(app.state, "backend", None),
         max_in_flight=settings.primary_max_in_flight,
+        prefix_cache=settings.backend_kind != "llamacpp" and settings.remote_prefix_cache,
     )
     app.state.remote_workers = []
     _worker_entries = []
@@ -273,6 +274,7 @@ def create_app(
                 is_local=False,
                 provider=_fixed_provider(_wb),
                 max_in_flight=_spec.max_in_flight,
+                prefix_cache=_spec.prefix_cache,
             )
         )
     app.state.backend_registry = BackendRegistry([_primary_entry, *_worker_entries])

@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 import uvicorn
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse, StreamingResponse
+from starlette.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from starlette.routing import Route
 
 TOKENS = ["Hello", ", ", "world", "!"]
@@ -33,6 +33,8 @@ class FakeOpenAIServer:
     mode: str = "ok"  # ok | prestream_error | http_400 | drop_after_first
     fail_times: int = 1  # how many leading attempts return an error (prestream_error)
     prompt_tokens: int = 7
+    #: Prometheus /metrics body; None -> the endpoint 404s (metrics disabled).
+    metrics_text: str | None = None
 
     chat_calls: int = 0
     completion_calls: int = 0
@@ -47,6 +49,7 @@ class FakeOpenAIServer:
                 Route("/v1/models", self._models, methods=["GET"]),
                 Route("/v1/chat/completions", self._chat, methods=["POST"]),
                 Route("/v1/completions", self._completion, methods=["POST"]),
+                Route("/metrics", self._metrics, methods=["GET"]),
             ]
         )
 
@@ -60,6 +63,11 @@ class FakeOpenAIServer:
                 ],
             }
         )
+
+    async def _metrics(self, request: Request) -> object:
+        if self.metrics_text is None:
+            return PlainTextResponse("not found", status_code=404)
+        return PlainTextResponse(self.metrics_text, media_type="text/plain")
 
     async def _chat(self, request: Request) -> object:
         self.chat_calls += 1
