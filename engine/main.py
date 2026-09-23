@@ -49,6 +49,7 @@ from engine.store.migrations import apply_migrations, migrations_at_head
 from engine.telemetry.counters import Counters
 from engine.telemetry.events import EventBus
 from engine.telemetry.logbuffer import LogCollector
+from engine.telemetry.route_metrics import RouteMetrics
 from engine.telemetry.service import Telemetry
 
 # The active settings for the running app. Set by ``create_app`` so request
@@ -262,6 +263,8 @@ def create_app(
         provider=lambda: getattr(app.state, "backend", None),
         max_in_flight=settings.primary_max_in_flight,
         prefix_cache=settings.backend_kind != "llamacpp" and settings.remote_prefix_cache,
+        cost_per_1k_input=settings.primary_cost_per_1k_input,
+        cost_per_1k_output=settings.primary_cost_per_1k_output,
     )
     app.state.remote_workers = []
     _worker_entries = []
@@ -276,6 +279,8 @@ def create_app(
                 provider=_fixed_provider(_wb),
                 max_in_flight=_spec.max_in_flight,
                 prefix_cache=_spec.prefix_cache,
+                cost_per_1k_input=_spec.cost_per_1k_input,
+                cost_per_1k_output=_spec.cost_per_1k_output,
             )
         )
     app.state.backend_registry = BackendRegistry([_primary_entry, *_worker_entries])
@@ -296,6 +301,7 @@ def create_app(
             VirtualModel(name=_vm.name, policy=_vm.policy, steps=tuple(tuple(s) for s in _steps))
         )
     app.state.router = Router(app.state.backend_registry, _vmodels)
+    app.state.route_metrics = RouteMetrics()
     app.state.gateway = Gateway(
         settings,
         KeyStore(settings.db_path),  # type: ignore[arg-type]

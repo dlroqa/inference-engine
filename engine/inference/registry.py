@@ -54,6 +54,10 @@ class BackendEntry:
     #: Last-scraped KV/prefix-cache stats (Block 10.4), or None if the backend
     #: does not export them. Refreshed by :meth:`BackendRegistry.refresh_health`.
     cache: dict[str, float] | None = None
+    #: Token cost weights for per-route cost accounting (Block 10.5b); 0 = free
+    #: (e.g. a local backend). Cost = prompt/1000*in + completion/1000*out.
+    cost_per_1k_input: float = 0.0
+    cost_per_1k_output: float = 0.0
 
     def backend(self) -> InferenceBackend | None:
         return self.provider()

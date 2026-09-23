@@ -34,6 +34,7 @@ from engine.inference.types import (
 )
 from engine.logging_setup import get_logger
 from engine.telemetry.counters import Counters
+from engine.telemetry.route_metrics import RouteMetrics
 from engine.telemetry.service import Telemetry
 from engine.telemetry.taxonomy import classify
 
@@ -48,6 +49,7 @@ class Served:
     lease: SchedulerLease
     registry_lease: RegistryLease
     stream: GenerationStream
+    route_metrics: RouteMetrics
     request_id: str
     model_id: str
     endpoint: str
@@ -79,6 +81,7 @@ async def start_generation(
     counters: Counters = request.app.state.counters
     scheduler: Scheduler = request.app.state.scheduler
     router: Router = request.app.state.router
+    route_metrics: RouteMetrics = request.app.state.route_metrics
 
     access = gateway.authorize(
         request, prompt_text=prompt_text, max_tokens=max_tokens, endpoint=endpoint
@@ -88,6 +91,7 @@ async def start_generation(
         lease = await scheduler.admit()
     except SchedulerSaturated as exc:
         access.abort()
+        route_metrics.record_shed(route_model)
         telemetry.request_rejected(
             request_id=request_id,
             endpoint=endpoint,
@@ -104,6 +108,7 @@ async def start_generation(
     except NoBackendAvailable as exc:
         lease.release()
         access.abort()
+        route_metrics.record_shed(route_model)
         if exc.reason == "busy":
             saturated = SchedulerSaturated("all_backends_busy", retry_after_s=1)
             telemetry.request_rejected(
@@ -137,6 +142,7 @@ async def start_generation(
         lease=lease,
         registry_lease=registry_lease,
         stream=stream,
+        route_metrics=route_metrics,
         request_id=request_id,
         model_id=model_id,
         endpoint=endpoint,
@@ -165,6 +171,22 @@ def finish_generation(served: Served, *, error: BaseException | None) -> Generat
 
     prompt_tokens = result.prompt_tokens if result else 0
     completion_tokens = result.completion_tokens if result else 0
+    entry = served.registry_lease.entry
+    cost = (
+        prompt_tokens / 1000.0 * entry.cost_per_1k_input
+        + completion_tokens / 1000.0 * entry.cost_per_1k_output
+    )
+    served.route_metrics.record(
+        model=served.model_id,
+        backend=entry.name,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        cost=cost,
+        total_ms=result.timings.total_ms if result else None,
+        ttft_ms=result.timings.ttft_ms if result else None,
+        error=error is not None,
+        cancelled=cancelled,
+    )
     served.access.finalize(
         request_id=served.request_id,
         model=served.model_id,
