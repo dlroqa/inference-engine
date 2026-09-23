@@ -231,3 +231,16 @@ def test_virtual_model_policy_validation(tmp_path):
             data_dir=tmp_path,
             virtual_models=[{"name": "x", "policy": "cascade", "backends": ["a"]}],
         )
+
+
+def test_cost_weights_parse_and_reject_negative(tmp_path):
+    from pydantic import ValidationError
+
+    from engine.config import RemoteWorkerSpec, Settings
+
+    s = Settings(data_dir=tmp_path, primary_cost_per_1k_input=0.5, primary_cost_per_1k_output=1.5)
+    assert (s.primary_cost_per_1k_input, s.primary_cost_per_1k_output) == (0.5, 1.5)
+    w = RemoteWorkerSpec(name="w", base_url="http://x/v1", model="m", cost_per_1k_input=2.0)
+    assert w.cost_per_1k_input == 2.0
+    with __import__("pytest").raises(ValidationError):
+        Settings(data_dir=tmp_path, primary_cost_per_1k_input=-1.0)

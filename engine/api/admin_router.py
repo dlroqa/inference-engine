@@ -166,6 +166,19 @@ def route_plan(request: Request, body: RoutePlanRequest) -> dict[str, Any]:
     return router_.plan(body.model, prefix_key)
 
 
+@router.get("/routes")
+def routes(request: Request) -> dict[str, Any]:
+    """Per-route cost + performance (Block 10, sub-slice 5b), secret-free.
+
+    Rows are keyed by (virtual-model, backend) with request/error/cancel counts,
+    tokens, token cost, success rate, and average total/first-token latency; plus
+    per-model admission sheds and overall totals. Measurement only — it does not
+    change routing (see docs/backends.md).
+    """
+    require_operator(request)
+    return request.app.state.route_metrics.snapshot()
+
+
 class KeyCreate(BaseModel):
     model_config = {"extra": "forbid"}
     label: str | None = Field(default=None, max_length=200)

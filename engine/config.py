@@ -70,6 +70,8 @@ class RemoteWorkerSpec(BaseModel):
     max_in_flight: int = Field(default=8, ge=1, le=4096)
     prefix_cache: bool = True  # server maintains a prefix cache (gates affinity)
     kv_metrics: bool = True  # scrape /metrics for KV/prefix-cache stats
+    cost_per_1k_input: float = Field(default=0.0, ge=0.0)  # token cost accounting (5b)
+    cost_per_1k_output: float = Field(default=0.0, ge=0.0)
 
 
 class VirtualModelSpec(BaseModel):
@@ -243,6 +245,10 @@ class Settings(BaseSettings):
     # reuse its cache. 0 disables it (pure least-busy). Only affects backends
     # that report supports_prefix_cache; others always use least-busy.
     prefix_affinity_chars: int = Field(default=0, ge=0, le=100_000)
+    # Per-route cost accounting (Block 10.5b): token cost weights for the primary
+    # backend (0 = free, e.g. a local model). Remote workers set their own.
+    primary_cost_per_1k_input: float = Field(default=0.0, ge=0.0)
+    primary_cost_per_1k_output: float = Field(default=0.0, ge=0.0)
 
     # Local inference runtime (Block 1). A single explicitly configured GGUF
     # model. Multiple models, downloads, and GPU auto-tuning are later blocks;

@@ -204,8 +204,36 @@ curl -X POST .../admin/route/plan -H "authorization: Bearer $KEY" \
   -d '{"model": "tiered", "prompt": "optional, for affinity"}'
 ```
 
-Per-route **cost and quality/performance measurement** is sub-slice 5b; adaptive
-routing and external-provider spillover are later still.
+#### Per-route cost & performance (sub-slice 5b)
+
+Every served request is attributed to its `(virtual-model, backend)` pair, and
+`GET /admin/routes` (operator-gated) reports the running totals — requests, errors,
+cancellations, tokens, **token cost**, `success_rate`, and average total /
+first-token latency — plus per-model **sheds** (admission failures) and overall
+totals:
+
+```json
+{
+  "routes": [
+    {"model": "fast", "backend": "vllm-a", "requests": 120, "errors": 1,
+     "prompt_tokens": 30000, "completion_tokens": 8000, "cost": 0.114,
+     "success_rate": 0.9917, "avg_total_ms": 240.0, "avg_ttft_ms": 38.0}
+  ],
+  "sheds": {"fast": 3},
+  "totals": {"requests": 120, "errors": 1, "cost": 0.114, "sheds": 3}
+}
+```
+
+**Cost** uses per-backend token weights: `cost = prompt/1000·cost_per_1k_input +
+completion/1000·cost_per_1k_output` (0 = free, e.g. a local backend). Set
+`primary_cost_per_1k_input/output` for the primary and `cost_per_1k_input/output`
+per `remote_workers` entry.
+
+This is **measurement only** — it does not change routing decisions (adaptive
+routing is a later refinement) — and it does not attempt a "quality" score, which
+needs evaluation harnesses (Block 12). Latency is recorded only for requests that
+actually produced tokens (errors/cancellations are counted but excluded from the
+averages). External-provider spillover is sub-slice 7.
 
 ### Not yet (later sub-slices)
 

@@ -6,7 +6,7 @@ ordered **vertical slices** (Blocks 0–12) per
 Each block must be deployable, testable, documented, and useful before the next
 begins.
 
-> **Current status: Block 10 — Remote scale-out (sub-slices 1–5a: adapters, registry, prefix affinity, virtual auto-models).**
+> **Current status: Block 10 — Remote scale-out (sub-slices 1–5: adapters, registry, prefix affinity, virtual auto-models, per-route cost/metrics).**
 > Shipped so far: local GGUF inference (Block 1); **OpenAI** `/v1/chat/completions`
 > + **Anthropic** `/v1/messages` with streaming, sampling controls, and
 > capability-gated structured output (Blocks 2, 8); a secure gateway — API keys,
@@ -154,7 +154,9 @@ surfaces its KV-cache utilization and prefix-cache hit rate — capability-gated
 llama.cpp reports neither. **Virtual auto-models** (`[[virtual_models]]`) map a
 client-facing model name to a **route** or **cascade** policy over the pool, with
 selection-time fallback and a `POST /admin/route/plan` dry-run that explains the
-decision without generating. See [docs/backends.md](docs/backends.md).
+decision without generating. `GET /admin/routes` attributes token **cost** and
+latency/success signals per `(model, backend)` (measurement only). See
+[docs/backends.md](docs/backends.md).
 
 ## OpenAI-compatible API (Block 2)
 

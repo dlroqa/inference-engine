@@ -62,6 +62,8 @@ log_level = "INFO"
 # primary_max_in_flight     = 1
 # backend_health_interval_s = 10.0   # also scrapes remote KV/prefix-cache stats
 # prefix_affinity_chars     = 0      # >0 routes prompts sharing N leading chars to one backend
+# primary_cost_per_1k_input  = 0.0   # token cost accounting for the primary (5b); 0 = free
+# primary_cost_per_1k_output = 0.0
 #
 # [[remote_workers]]
 # name          = "vllm-a"
@@ -71,6 +73,8 @@ log_level = "INFO"
 # max_in_flight = 8
 # prefix_cache  = true               # server maintains a prefix cache (gates affinity)
 # kv_metrics    = true               # scrape /metrics for KV/prefix-cache stats
+# cost_per_1k_input  = 0.0           # token cost accounting (5b); 0 = free
+# cost_per_1k_output = 0.0
 # # api_key     =                    # prefer a secure source; never commit
 #
 # Virtual auto-models (Block 10, sub-slice 5a): map a client-facing model name to a
