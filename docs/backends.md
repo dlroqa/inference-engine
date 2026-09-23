@@ -235,6 +235,48 @@ needs evaluation harnesses (Block 12). Latency is recorded only for requests tha
 actually produced tokens (errors/cancellations are counted but excluded from the
 averages). External-provider spillover is sub-slice 7.
 
+### External-provider spillover (sub-slice 7)
+
+The pool can include **external providers** — OpenAI-compatible endpoints
+(OpenAI, Together, Fireworks, OpenRouter, a hosted vLLM…) used **only as
+overflow** when the local pool cannot admit a request. External egress is treated
+as sensitive:
+
+- **Off by default.** `allow_external_providers = false` unless you opt in.
+- **Egress allowlisted.** Every provider's `base_url` host must match an
+  `egress_allowlist` entry (exact host or `.suffix` domain); an empty allowlist
+  with providers configured, or an off-allowlist host, **fails at startup**.
+- **Secrets** go in each provider's `api_key` (prefer a secure source); they are
+  sent only to that provider and never logged or echoed.
+- **Metered** like any backend — their cost (usually non-zero) and latency show up
+  per route in `GET /admin/routes`, and `GET /admin/backends` marks them
+  `"tier": "spillover"`, `"external": true`.
+
+```toml
+allow_external_providers = true
+egress_allowlist = ["openai.com", "together.ai"]
+
+[[external_providers]]
+name  = "openai"
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
+# api_key via IE_ config / secret source, never committed
+cost_per_1k_input  = 0.15
+cost_per_1k_output = 0.60
+```
+
+**Spillover is preferred-last:** the registry always chooses a ready, non-full
+*local* backend first and only falls to a spillover backend when none can admit.
+The choice is made **once at admission** — consistent with the engine's rule,
+there is **no re-route once tokens have been sent** to the client.
+
+**Not (yet) failover on a generation error.** Because `generate()` streams lazily
+(the upstream call and first token happen after response headers are sent),
+re-routing on a mid-flight error would risk sending duplicated/partial output —
+so cross-backend failover on generation failure is deliberately out of scope;
+only admission-time spillover (saturation / unavailability) and the same-endpoint
+pre-stream retry (sub-slice 1) apply.
+
 ### Not yet (later sub-slices)
 
 - Structured output (grammar / JSON-schema): the remote backends report

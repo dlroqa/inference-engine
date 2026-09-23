@@ -58,6 +58,11 @@ class BackendEntry:
     #: (e.g. a local backend). Cost = prompt/1000*in + completion/1000*out.
     cost_per_1k_input: float = 0.0
     cost_per_1k_output: float = 0.0
+    #: Spillover tier (Block 10.7): a spillover backend (e.g. an external
+    #: provider) is used only when no non-spillover backend can admit the
+    #: request. ``external`` marks off-premise providers (informational/status).
+    spillover: bool = False
+    external: bool = False
 
     def backend(self) -> InferenceBackend | None:
         return self.provider()
@@ -147,6 +152,13 @@ class BackendRegistry:
         not-full backends (identical to sub-slice 3).
         """
         pool = [e for e in self._entries if allowed is None or e.name in allowed]
+        # Two-tier (Block 10.7): prefer non-spillover (local) backends; only use
+        # spillover (e.g. external providers) when no local backend can admit.
+        local = [e for e in pool if not e.spillover]
+        spill = [e for e in pool if e.spillover]
+        return self._pick(local, prefix_key) or self._pick(spill, prefix_key)
+
+    def _pick(self, pool: list[BackendEntry], prefix_key: str | None) -> BackendEntry | None:
         candidates = [e for e in pool if e.is_ready() and e.has_capacity()]
         if prefix_key:
             capable = sorted(
@@ -208,6 +220,8 @@ class BackendRegistry:
                 "context_length": context_length,
                 "supports_prefix_cache": entry.prefix_cache,
                 "supports_kv_cache_metrics": supports_kv_metrics,
+                "tier": "spillover" if entry.spillover else "primary",
+                "external": entry.external,
             }
             if entry.cache is not None:
                 row["cache"] = entry.cache

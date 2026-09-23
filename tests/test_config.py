@@ -244,3 +244,43 @@ def test_cost_weights_parse_and_reject_negative(tmp_path):
     assert w.cost_per_1k_input == 2.0
     with __import__("pytest").raises(ValidationError):
         Settings(data_dir=tmp_path, primary_cost_per_1k_input=-1.0)
+
+
+def test_external_providers_require_kill_switch_and_allowlist(tmp_path):
+    from pydantic import ValidationError
+
+    from engine.config import Settings
+
+    prov = {"name": "oai", "base_url": "https://api.openai.com/v1", "model": "gpt-4o"}
+    # off by default
+    with __import__("pytest").raises(ValidationError):
+        Settings(data_dir=tmp_path, external_providers=[prov])
+    # enabled but no allowlist
+    with __import__("pytest").raises(ValidationError):
+        Settings(data_dir=tmp_path, allow_external_providers=True, external_providers=[prov])
+    # host not in allowlist
+    with __import__("pytest").raises(ValidationError):
+        Settings(
+            data_dir=tmp_path,
+            allow_external_providers=True,
+            egress_allowlist=["together.ai"],
+            external_providers=[prov],
+        )
+    # happy path
+    s = Settings(
+        data_dir=tmp_path,
+        allow_external_providers=True,
+        egress_allowlist=["openai.com"],
+        external_providers=[prov],
+    )
+    assert s.external_providers[0].name == "oai"
+
+
+def test_host_allowed_matching():
+    from engine.config import _host_allowed
+
+    assert _host_allowed("api.openai.com", ["openai.com"]) is True
+    assert _host_allowed("api.openai.com", [".openai.com"]) is True
+    assert _host_allowed("openai.com", ["openai.com"]) is True
+    assert _host_allowed("evil-openai.com", ["openai.com"]) is False
+    assert _host_allowed("api.together.ai", ["openai.com"]) is False

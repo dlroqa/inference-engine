@@ -88,6 +88,20 @@ log_level = "INFO"
 # name  = "tiered"
 # policy = "cascade"                 # try each step in order; first available serves
 # steps = [["vllm-a"], ["vllm-b", "sglang-a"]]
+#
+# External-provider spillover (Block 10, sub-slice 7): OpenAI-compatible endpoints
+# used ONLY as overflow when the local pool is saturated. Off by default; enable
+# the kill switch AND allowlist their hosts, or startup fails.
+# allow_external_providers = true
+# egress_allowlist = ["openai.com", "together.ai"]
+#
+# [[external_providers]]
+# name     = "openai"
+# base_url = "https://api.openai.com/v1"
+# model    = "gpt-4o-mini"
+# cost_per_1k_input  = 0.15          # metered per route (5b)
+# cost_per_1k_output = 0.60
+# # api_key  =                        # prefer a secure source; never commit
 
 # --- Secure gateway (Block 3) ---
 # Network binding beyond loopback must be opted into explicitly.
