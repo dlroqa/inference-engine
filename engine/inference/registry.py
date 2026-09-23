@@ -127,8 +127,13 @@ class BackendRegistry:
                     return backend
         return None
 
-    def select(self, prefix_key: str | None = None) -> BackendEntry | None:
+    def select(
+        self, prefix_key: str | None = None, allowed: frozenset[str] | None = None
+    ) -> BackendEntry | None:
         """Pick a backend: prefix-affinity first (when applicable), else least-busy.
+
+        ``allowed`` restricts the candidates to those backend names (used by the
+        router to scope a virtual model's route/cascade step); None = whole pool.
 
         With a ``prefix_key`` and at least one ready prefix-cache-capable backend, a
         consistent hash of the key maps the request to one such backend so its
@@ -137,10 +142,11 @@ class BackendRegistry:
         capable backend, or an unrelated pool — it is plain least-busy among ready,
         not-full backends (identical to sub-slice 3).
         """
-        candidates = [e for e in self._entries if e.is_ready() and e.has_capacity()]
+        pool = [e for e in self._entries if allowed is None or e.name in allowed]
+        candidates = [e for e in pool if e.is_ready() and e.has_capacity()]
         if prefix_key:
             capable = sorted(
-                (e for e in self._entries if e.is_ready() and e.prefix_cache),
+                (e for e in pool if e.is_ready() and e.prefix_cache),
                 key=lambda e: e.order,
             )
             if capable:
@@ -153,12 +159,16 @@ class BackendRegistry:
             return None
         return min(candidates, key=lambda e: (e.in_flight, e.order))
 
-    def acquire(self, prefix_key: str | None = None) -> RegistryLease:
+    def acquire(
+        self, prefix_key: str | None = None, allowed: frozenset[str] | None = None
+    ) -> RegistryLease:
         """Reserve an in-flight slot on the selected backend, or raise."""
-        entry = self.select(prefix_key)
+        entry = self.select(prefix_key, allowed)
         if entry is None:
-            # Distinguish "nothing loaded/healthy" from "all healthy ones full".
-            reason = "busy" if any(e.is_ready() for e in self._entries) else "unloaded"
+            # Distinguish "nothing loaded/healthy" from "all healthy ones full",
+            # scoped to the allowed set so a cascade step reports honestly.
+            pool = [e for e in self._entries if allowed is None or e.name in allowed]
+            reason = "busy" if any(e.is_ready() for e in pool) else "unloaded"
             raise NoBackendAvailable(reason)
         entry.in_flight += 1
         return RegistryLease(registry=self, entry=entry)

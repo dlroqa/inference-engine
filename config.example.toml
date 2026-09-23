@@ -72,6 +72,18 @@ log_level = "INFO"
 # prefix_cache  = true               # server maintains a prefix cache (gates affinity)
 # kv_metrics    = true               # scrape /metrics for KV/prefix-cache stats
 # # api_key     =                    # prefer a secure source; never commit
+#
+# Virtual auto-models (Block 10, sub-slice 5a): map a client-facing model name to a
+# route/cascade policy over the pool. Backend names are "primary" + remote_workers.
+# [[virtual_models]]
+# name     = "fast"
+# policy   = "route"                 # serve from any backend in `backends`
+# backends = ["primary", "vllm-a"]
+#
+# [[virtual_models]]
+# name  = "tiered"
+# policy = "cascade"                 # try each step in order; first available serves
+# steps = [["vllm-a"], ["vllm-b", "sglang-a"]]
 
 # --- Secure gateway (Block 3) ---
 # Network binding beyond loopback must be opted into explicitly.

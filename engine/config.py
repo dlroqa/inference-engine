@@ -72,6 +72,47 @@ class RemoteWorkerSpec(BaseModel):
     kv_metrics: bool = True  # scrape /metrics for KV/prefix-cache stats
 
 
+class VirtualModelSpec(BaseModel):
+    """A named virtual model that maps a client-facing model name to a routing
+    policy over the backend pool (Block 10, sub-slice 5a).
+
+    Declared as ``[[virtual_models]]`` tables. ``policy`` is:
+
+    * ``route``   — serve from any backend in ``backends`` (least-busy / affinity).
+    * ``cascade`` — try each step in ``steps`` in order; the first step with an
+      available backend serves it (admission-time fallback across steps).
+
+    Backend names refer to the primary (``"primary"``) and ``remote_workers`` names.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    name: str
+    policy: Literal["route", "cascade"] = "route"
+    backends: list[str] = Field(default_factory=list)  # route: allowed set
+    steps: list[list[str]] = Field(default_factory=list)  # cascade: ordered groups
+
+    @model_validator(mode="after")
+    def _check_policy(self) -> VirtualModelSpec:
+        if self.policy == "route":
+            if not self.backends:
+                raise ValueError(f"virtual model {self.name!r} (route) needs non-empty 'backends'")
+            if self.steps:
+                raise ValueError(f"virtual model {self.name!r} (route) must not set 'steps'")
+        else:  # cascade
+            if not self.steps or not all(self.steps):
+                raise ValueError(
+                    f"virtual model {self.name!r} (cascade) needs 'steps' as non-empty groups"
+                )
+            if self.backends:
+                raise ValueError(f"virtual model {self.name!r} (cascade) must not set 'backends'")
+        return self
+
+    def normalized_steps(self) -> list[list[str]]:
+        """The policy as an ordered list of backend-name groups."""
+        return [list(self.backends)] if self.policy == "route" else [list(g) for g in self.steps]
+
+
 class Settings(BaseSettings):
     """Validated engine settings for the Block 0 foundation.
 
@@ -192,6 +233,9 @@ class Settings(BaseSettings):
     # primary_max_in_flight caps concurrent generations placed on the primary
     # (llama.cpp serializes, so 1; raise it for a remote primary). See docs/backends.md.
     remote_workers: list[RemoteWorkerSpec] = Field(default_factory=list)
+    # Named virtual auto-models (Block 10, sub-slice 5a): map a client-facing
+    # model name to a route/cascade policy over the pool. See docs/backends.md.
+    virtual_models: list[VirtualModelSpec] = Field(default_factory=list)
     primary_max_in_flight: int = Field(default=1, ge=1, le=4096)
     backend_health_interval_s: float = Field(default=10.0, ge=0.0, le=3600.0)
     # Prefix-affinity routing (Block 10.4): route requests sharing the leading

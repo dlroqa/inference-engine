@@ -66,11 +66,12 @@ def _event(event_type: str, data: dict[str, Any]) -> str:
 
 @router.post("/messages")
 async def messages(request: Request, body: MessagesRequest) -> Response:
-    backend = _ready_backend(request)
-    model_id = backend.capabilities().model_id
-    if body.model != model_id:
+    _ready_backend(request)  # 503 if no backend is ready
+    router = request.app.state.router
+    model_id = body.model
+    if not router.known_model(model_id):
         raise AnthropicError(
-            f"model {body.model!r} not found; this engine serves {model_id!r}",
+            f"model {model_id!r} not found; this engine serves {router.model_names()}",
             status_code=404,
             type="not_found_error",
         )
@@ -94,6 +95,7 @@ async def messages(request: Request, body: MessagesRequest) -> Response:
         gen_request,
         endpoint=endpoint,
         model_id=model_id,
+        route_model=model_id,
         prompt_text=body.prompt_text(),
         max_tokens=body.max_tokens,
         request_id=request_id,

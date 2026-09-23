@@ -37,6 +37,7 @@ from engine.gateway import Gateway
 from engine.inference.base import InferenceBackend
 from engine.inference.factory import build_backend, build_remote_worker
 from engine.inference.registry import BackendEntry, BackendRegistry
+from engine.inference.router import Router, VirtualModel
 from engine.inference.scheduler import Scheduler
 from engine.inference.types import BackendError
 from engine.logging_setup import configure_logging, get_logger
@@ -278,6 +279,23 @@ def create_app(
             )
         )
     app.state.backend_registry = BackendRegistry([_primary_entry, *_worker_entries])
+    # Virtual auto-models (Block 10, sub-slice 5a): resolve named route/cascade
+    # policies over the pool. Referenced backend names must exist, else fail fast.
+    _pool_names = {"primary", *(spec.name for spec in settings.remote_workers)}
+    _vmodels: list[VirtualModel] = []
+    for _vm in settings.virtual_models:
+        _steps = _vm.normalized_steps()
+        _unknown = sorted({n for step in _steps for n in step} - _pool_names)
+        if _unknown:
+            raise ValueError(
+                f"virtual model {_vm.name!r} references unknown backend(s): "
+                + ", ".join(_unknown)
+                + f"; known backends: {', '.join(sorted(_pool_names))}"
+            )
+        _vmodels.append(
+            VirtualModel(name=_vm.name, policy=_vm.policy, steps=tuple(tuple(s) for s in _steps))
+        )
+    app.state.router = Router(app.state.backend_registry, _vmodels)
     app.state.gateway = Gateway(
         settings,
         KeyStore(settings.db_path),  # type: ignore[arg-type]

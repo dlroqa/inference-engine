@@ -163,6 +163,50 @@ nothing and the `cache` block is simply absent (no fabricated numbers). Live
 verification needs a real vLLM/SGLang on a GPU host —
 `python scripts/remote_smoke.py --backend vllm --base-url … --model … --show-cache`.
 
+### Virtual auto-models & routing policies (sub-slice 5a)
+
+A **virtual model** is a client-facing model name that maps to a routing policy
+over the pool, rather than one physical model. Clients keep requesting a model by
+name (OpenAI `model` / Anthropic `model`); the base served id always works, and
+virtual names add named policies on top. Declare them as `[[virtual_models]]`:
+
+```toml
+# Route: serve from any backend in the set (least-busy / affinity within it).
+[[virtual_models]]
+name     = "fast"
+policy   = "route"
+backends = ["vllm-a", "vllm-b"]
+
+# Cascade: try each step in order; the first step with an available backend
+# serves the request (admission-time fallback across steps).
+[[virtual_models]]
+name  = "tiered"
+policy = "cascade"
+steps = [["vllm-a"], ["vllm-b", "sglang-a"]]
+```
+
+Backend names are `"primary"` plus each `remote_workers` name; an unknown name
+fails fast at startup. Requesting a model that is neither the base id nor a
+declared virtual name is a 404. `/v1/models` lists the base id and every virtual
+name.
+
+**Fallback is selection-time only.** A cascade escalates to the next step when a
+step's backends are unavailable or at capacity; there is **no switch once tokens
+have been sent** — the same rule as remote pre-stream failover. Within a step,
+least-busy and prefix affinity (sub-slices 3-4) still apply.
+
+**Dry-run.** `POST /admin/route/plan` (operator-gated) explains how a name would
+route *right now* — the chosen backend, the candidates considered per step, and
+their state/load — without reserving a slot or generating:
+
+```bash
+curl -X POST .../admin/route/plan -H "authorization: Bearer $KEY" \
+  -d '{"model": "tiered", "prompt": "optional, for affinity"}'
+```
+
+Per-route **cost and quality/performance measurement** is sub-slice 5b; adaptive
+routing and external-provider spillover are later still.
+
 ### Not yet (later sub-slices)
 
 - Structured output (grammar / JSON-schema): the remote backends report

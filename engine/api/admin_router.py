@@ -143,6 +143,29 @@ def backends(request: Request) -> dict[str, Any]:
     }
 
 
+class RoutePlanRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    model: str
+    prompt: str | None = None
+
+
+@router.post("/route/plan")
+def route_plan(request: Request, body: RoutePlanRequest) -> dict[str, Any]:
+    """Dry-run (Block 10, sub-slice 5a): explain how a model name would route now.
+
+    Resolves the route/cascade policy against current backend health/load and
+    returns the chosen backend plus the candidates considered per step — without
+    reserving a slot or generating anything.
+    """
+    require_operator(request)
+    router_ = request.app.state.router
+    settings = request.app.state.settings
+    prefix_key = None
+    if body.prompt and settings.prefix_affinity_chars > 0:
+        prefix_key = body.prompt[: settings.prefix_affinity_chars]
+    return router_.plan(body.model, prefix_key)
+
+
 class KeyCreate(BaseModel):
     model_config = {"extra": "forbid"}
     label: str | None = Field(default=None, max_length=200)
