@@ -25,6 +25,7 @@ from engine import __version__
 from engine.api import health
 from engine.api.admin_router import router as admin_router
 from engine.api.anthropic_router import router as anthropic_router
+from engine.api.billing_router import router as billing_router
 from engine.api.errors import error_response, register_exception_handlers
 from engine.api.models_router import router as models_router
 from engine.api.openai_router import router as openai_router
@@ -32,6 +33,7 @@ from engine.api.ops_router import router as ops_router
 from engine.api.ws_router import router as ws_router
 from engine.audit import AuditLog
 from engine.auth.keys import KeyStore
+from engine.billing.store import BillingStore
 from engine.config import Settings, load_config
 from engine.gateway import Gateway
 from engine.inference.base import InferenceBackend
@@ -169,6 +171,17 @@ def create_app(
         finally:
             conn.close()
         log.info("migrations_applied", extra={"newly_applied": applied})
+
+        # Seed the default plan (Block 11) once the billing tables exist, mirroring
+        # the engine-wide quota limits so an owned key on the default plan behaves
+        # like an unowned key. Operators refine plans via /admin/billing/plans.
+        if settings.default_plan:
+            billing_store.upsert_plan(
+                id=settings.default_plan,
+                name=settings.default_plan,
+                quota_5h_cu=settings.quota_5h_cu,
+                quota_weekly_cu=settings.quota_weekly_cu,
+            )
 
         # Register the configured model in the registry (Block 6) so it appears in
         # the dashboard, then build + load it unless a backend was injected.
@@ -353,10 +366,16 @@ def create_app(
         )
     app.state.router = Router(app.state.backend_registry, _vmodels)
     app.state.route_metrics = RouteMetrics()
+    billing_store = BillingStore(
+        settings.db_path,  # type: ignore[arg-type]
+        default_plan_id=settings.default_plan,
+    )
+    app.state.billing = billing_store
     app.state.gateway = Gateway(
         settings,
         KeyStore(settings.db_path),  # type: ignore[arg-type]
         UsageStore(settings.db_path),  # type: ignore[arg-type]
+        billing_store,
     )
     app.state.event_bus = event_bus
     app.state.counters = counters
@@ -417,6 +436,7 @@ def create_app(
     app.include_router(ws_router)
     app.include_router(admin_router)
     app.include_router(models_router)
+    app.include_router(billing_router)
     _mount_dashboard(app)
     return app
 

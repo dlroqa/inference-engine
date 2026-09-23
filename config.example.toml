@@ -157,6 +157,17 @@ log_level = "INFO"
 # cu_prompt_weight     = 1.0
 # cu_completion_weight = 1.0
 
+# --- Commercial controls / billing (Block 11) ---
+# Off by default. With a provider selected and a signing secret set, the inbound
+# webhook POST /billing/webhooks/stripe drives the client/plan/key lifecycle.
+# Plan and quota values live only in the plans table (managed via
+# /admin/billing/plans); webhook payloads select a plan by id but never define
+# its limits. See docs/billing.md.
+# billing_provider              = "stripe"
+# stripe_webhook_secret         = "whsec_..."     # Stripe endpoint signing secret
+# stripe_signature_tolerance_s  = 300             # reject signatures older than this
+# default_plan                  = "free"          # seeded with the CU limits above; entitlement fallback
+
 # --- Model lifecycle (Block 6) ---
 # Directory where downloaded/imported GGUF models are stored (default: <data_dir>/models).
 # models_dir = "/var/lib/inference-engine/models"

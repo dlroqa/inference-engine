@@ -18,6 +18,7 @@ from fastapi import Request
 
 from engine.api.errors import OpenAIError
 from engine.auth.keys import KeyStore
+from engine.billing.store import STATUS_REVOKED, STATUS_SUSPENDED, BillingStore
 from engine.config import Settings
 from engine.quota.compute import ComputeModel, estimate_prompt_tokens
 from engine.quota.store import UsageStore, WindowUsage
@@ -50,15 +51,18 @@ class Limiter:
         self._windows: dict[str, tuple[int, int]] = {}  # key -> (minute_bucket, count)
         self._inflight: dict[str, int] = {}
 
-    def check_rate(self, key_id: str, now: float | None = None) -> bool:
-        if self._rate <= 0:
+    def check_rate(self, key_id: str, now: float | None = None, *, rate: int | None = None) -> bool:
+        # A per-key rate override (from a plan entitlement) takes precedence over
+        # the engine-wide default; None means "use the default".
+        effective = self._rate if rate is None else rate
+        if effective <= 0:
             return True
         bucket = int((now if now is not None else time.time()) // 60)
         with self._lock:
             cur_bucket, count = self._windows.get(key_id, (bucket, 0))
             if cur_bucket != bucket:
                 cur_bucket, count = bucket, 0
-            if count >= self._rate:
+            if count >= effective:
                 self._windows[key_id] = (cur_bucket, count)
                 return False
             self._windows[key_id] = (cur_bucket, count + 1)
@@ -136,10 +140,17 @@ class ApiAccess:
 
 
 class Gateway:
-    def __init__(self, settings: Settings, key_store: KeyStore, usage_store: UsageStore) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        key_store: KeyStore,
+        usage_store: UsageStore,
+        billing_store: BillingStore | None = None,
+    ) -> None:
         self.settings = settings
         self.keys = key_store
         self.usage = usage_store
+        self.billing = billing_store
         self.compute = ComputeModel(
             prompt_weight=settings.cu_prompt_weight,
             completion_weight=settings.cu_completion_weight,
@@ -201,7 +212,13 @@ class Gateway:
         return headers
 
     def authorize(
-        self, request: Request, *, prompt_text: str, max_tokens: int, endpoint: str
+        self,
+        request: Request,
+        *,
+        prompt_text: str,
+        max_tokens: int,
+        endpoint: str,
+        model: str | None = None,
     ) -> ApiAccess:
         """HTTP entry point: extract the token from the request, then authorize."""
         return self.authorize_token(
@@ -209,10 +226,17 @@ class Gateway:
             prompt_text=prompt_text,
             max_tokens=max_tokens,
             endpoint=endpoint,
+            model=model,
         )
 
     def authorize_token(
-        self, token: str | None, *, prompt_text: str, max_tokens: int, endpoint: str
+        self,
+        token: str | None,
+        *,
+        prompt_text: str,
+        max_tokens: int,
+        endpoint: str,
+        model: str | None = None,
     ) -> ApiAccess:
         """Transport-agnostic authorize (HTTP + gRPC): auth, rate/concurrency, quota."""
         key_id = self._authenticate_token(token)
@@ -222,8 +246,49 @@ class Gateway:
         if key_id == LOCAL_KEY_ID:
             return access
 
+        # Billing entitlement (Block 11). Absent billing or an unowned key falls
+        # back to the engine-wide limits, so Block 3 behavior is unchanged.
+        quota_5h_cu = self.settings.quota_5h_cu
+        quota_weekly_cu = self.settings.quota_weekly_cu
+        rate_override: int | None = None
+        if self.billing is not None:
+            access_state = self.billing.key_access(key_id)
+            if access_state.status == STATUS_REVOKED:
+                access.abort()
+                raise OpenAIError(
+                    "API key revoked",
+                    status_code=403,
+                    type="invalid_request_error",
+                    code="key_revoked",
+                )
+            if access_state.status == STATUS_SUSPENDED:
+                access.abort()
+                raise OpenAIError(
+                    "API key suspended for this account",
+                    status_code=403,
+                    type="invalid_request_error",
+                    code="key_suspended",
+                )
+            entitlement = access_state.entitlement
+            if entitlement is not None:
+                quota_5h_cu = entitlement.quota_5h_cu
+                quota_weekly_cu = entitlement.quota_weekly_cu
+                rate_override = entitlement.rate_limit_per_min
+                if (
+                    entitlement.allowed_models is not None
+                    and model is not None
+                    and model not in entitlement.allowed_models
+                ):
+                    access.abort()
+                    raise OpenAIError(
+                        f"model {model!r} is not included in this plan",
+                        status_code=403,
+                        type="invalid_request_error",
+                        code="model_not_entitled",
+                    )
+
         now = time.time()
-        if not self.limiter.check_rate(key_id, now):
+        if not self.limiter.check_rate(key_id, now, rate=rate_override):
             raise OpenAIError(
                 "rate limit exceeded",
                 status_code=429,
@@ -243,8 +308,8 @@ class Gateway:
 
         # Quota pre-check (fail-closed on either window).
         estimate = self.compute.estimate(estimate_prompt_tokens(prompt_text), max_tokens)
-        u5h = self.usage.usage_5h(key_id, self.settings.quota_5h_cu, now)
-        uweek = self.usage.usage_weekly(key_id, self.settings.quota_weekly_cu, now)
+        u5h = self.usage.usage_5h(key_id, quota_5h_cu, now)
+        uweek = self.usage.usage_weekly(key_id, quota_weekly_cu, now)
         headers = self._quota_headers(u5h, uweek)
         if uweek.would_exceed(estimate):
             access.abort()

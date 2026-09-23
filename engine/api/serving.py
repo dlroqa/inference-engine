@@ -118,7 +118,11 @@ async def start_generation_core(
     route_metrics: RouteMetrics = state.route_metrics
 
     access = gateway.authorize_token(
-        token, prompt_text=prompt_text, max_tokens=max_tokens, endpoint=endpoint
+        token,
+        prompt_text=prompt_text,
+        max_tokens=max_tokens,
+        endpoint=endpoint,
+        model=model_id,
     )
 
     try:
