@@ -6,7 +6,7 @@ ordered **vertical slices** (Blocks 0–12) per
 Each block must be deployable, testable, documented, and useful before the next
 begins.
 
-> **Current status: Block 11 — Commercial controls (sub-slice 1: Stripe billing lifecycle; sub-slice 2: outbound Standard Webhooks). Block 10 remote scale-out complete (sub-slices 1–7: adapters, registry, affinity, auto-models, cost metrics, spillover, gRPC).**
+> **Current status: Block 11 — Commercial controls (sub-slice 1: Stripe billing lifecycle; sub-slice 2: outbound Standard Webhooks; sub-slice 4: client account API). Block 10 remote scale-out complete (sub-slices 1–7: adapters, registry, affinity, auto-models, cost metrics, spillover, gRPC).**
 > Shipped so far: local GGUF inference (Block 1); **OpenAI** `/v1/chat/completions`
 > + **Anthropic** `/v1/messages` with streaming, sampling controls, and
 > capability-gated structured output (Blocks 2, 8); a secure gateway — API keys,
@@ -285,6 +285,14 @@ format: signed deliveries, retries with backoff, a dead-letter state, a replayab
 delivery log, and secret rotation. Destinations are egress-allowlisted; delivery
 runs on a background worker so a slow endpoint never stalls serving. Off by
 default (`webhooks_enabled = true`). See [docs/webhooks.md](docs/webhooks.md).
+
+### Client account API (Block 11.4)
+
+A read-only, OpenAPI-published self-service contract a client consumes with their
+own API key: `GET /client/me`, `/client/plan`, `/client/usage`, `/client/services`.
+The client identity is resolved **only** from the key (never a request field), so
+a client can only ever see their own account — strict authorization isolation. See
+[docs/client-api.md](docs/client-api.md).
 
 ### Network binding & TLS
 
@@ -592,6 +600,7 @@ engine/
 │   ├── ops_router.py   # /metrics, /logs, /diagnostics
 │   ├── admin_router.py # /admin/overview, /admin/model/*, /admin/keys
 │   ├── billing_router.py # /billing/webhooks/stripe, /admin/billing/* (Block 11)
+│   ├── client_router.py  # /client/me, /plan, /usage, /services (Block 11.4)
 │   ├── deps.py         # operator access gate (loopback or valid key)
 │   └── errors.py       # OpenAI error envelope + structured error logging
 ├── backup.py           # database + config backup/restore
