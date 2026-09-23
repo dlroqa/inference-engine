@@ -6,7 +6,7 @@ ordered **vertical slices** (Blocks 0–12) per
 Each block must be deployable, testable, documented, and useful before the next
 begins.
 
-> **Current status: Block 11 — Commercial controls (sub-slice 1: Stripe billing lifecycle; sub-slice 2: outbound Standard Webhooks; sub-slice 4: client account API). Block 10 remote scale-out complete (sub-slices 1–7: adapters, registry, affinity, auto-models, cost metrics, spillover, gRPC).**
+> **Current status: Block 11 — Commercial controls (sub-slice 1: Stripe billing lifecycle; sub-slice 2: outbound Standard Webhooks; sub-slice 4: client account API; sub-slice 5: client event stream). Block 10 remote scale-out complete (sub-slices 1–7: adapters, registry, affinity, auto-models, cost metrics, spillover, gRPC).**
 > Shipped so far: local GGUF inference (Block 1); **OpenAI** `/v1/chat/completions`
 > + **Anthropic** `/v1/messages` with streaming, sampling controls, and
 > capability-gated structured output (Blocks 2, 8); a secure gateway — API keys,
@@ -14,9 +14,9 @@ begins.
 > telemetry + an operator dashboard (Blocks 4–5); model lifecycle with
 > checksum-verified downloads (Block 6); controlled concurrency with admission
 > control (Block 7); and a Docker deployment path with graceful drain, readiness
-> gating, backup/restore (9a), and a security hardening baseline — trusted-network/IP policy, egress + feature kill switches, and a tamper-evident audit log (9b); and **remote vLLM + SGLang backends** — proxy generation to an external OpenAI-compatible server (one shared adapter core) with explicit model mapping, secure credentials, timeouts, and safe pre-stream-only failover, plus a **backend registry** that routes each request to the least-busy healthy backend across a local+remote pool with a status API (Block 10, sub-slices 1–3). **Not yet:** the rest of Block 11 commercial controls (the client-scoped
-> `/client/*` contract + SSE, and the Clients UI), and advanced safety tooling
-> (Block 12).
+> gating, backup/restore (9a), and a security hardening baseline — trusted-network/IP policy, egress + feature kill switches, and a tamper-evident audit log (9b); and **remote vLLM + SGLang backends** — proxy generation to an external OpenAI-compatible server (one shared adapter core) with explicit model mapping, secure credentials, timeouts, and safe pre-stream-only failover, plus a **backend registry** that routes each request to the least-busy healthy backend across a local+remote pool with a status API (Block 10, sub-slices 1–3). **Not yet:** the Block 11 Clients/Live-Monitoring UI (11.6; additional
+> payment providers 11.3 are deferred until a business need is confirmed), and
+> advanced safety tooling (Block 12).
 
 ---
 
@@ -293,6 +293,15 @@ own API key: `GET /client/me`, `/client/plan`, `/client/usage`, `/client/service
 The client identity is resolved **only** from the key (never a request field), so
 a client can only ever see their own account — strict authorization isolation. See
 [docs/client-api.md](docs/client-api.md).
+
+### Client event stream (Block 11.5)
+
+A client can stream their own account events (billing lifecycle + usage-threshold)
+over SSE with `Last-Event-ID` recovery and a polling fallback (`GET
+/client/events`), or reconcile via a fetch. Events come from a durable per-client
+log fed by the same emitter as outbound webhooks, so the two never diverge. CORS is
+restricted to configured origins and scoped to `/client/*`. Off by default
+(`client_events_enabled = true`). See [docs/client-events.md](docs/client-events.md).
 
 ### Network binding & TLS
 
@@ -600,7 +609,7 @@ engine/
 │   ├── ops_router.py   # /metrics, /logs, /diagnostics
 │   ├── admin_router.py # /admin/overview, /admin/model/*, /admin/keys
 │   ├── billing_router.py # /billing/webhooks/stripe, /admin/billing/* (Block 11)
-│   ├── client_router.py  # /client/me, /plan, /usage, /services (Block 11.4)
+│   ├── client_router.py  # /client/me, /plan, /usage, /services (Block 11.4); /client/events[/stream] (11.5)
 │   ├── deps.py         # operator access gate (loopback or valid key)
 │   └── errors.py       # OpenAI error envelope + structured error logging
 ├── backup.py           # database + config backup/restore

@@ -232,6 +232,17 @@ class Settings(BaseSettings):
     # a client crosses this fraction (0<pct<=1) of a plan quota window.
     webhook_usage_threshold_pct: float = Field(default=0.0, ge=0.0, le=1.0)
 
+    # Client-scoped SSE (Block 11.5). Off by default. When enabled, a client can
+    # stream their own account events (the same billing lifecycle / usage-threshold
+    # events as outbound webhooks) over SSE with Last-Event-ID recovery, plus a
+    # reconciliation/polling fetch. CORS is restricted to client_cors_origins.
+    # See docs/client-events.md.
+    client_events_enabled: bool = False
+    client_sse_heartbeat_s: float = Field(default=15.0, ge=1.0, le=300.0)
+    client_events_retention_max_age_s: float = Field(default=2_592_000.0, ge=0.0)  # 0 = keep all
+    client_events_retention_max_per_client: int = Field(default=1000, ge=0)  # 0 = unlimited
+    client_cors_origins: list[str] = Field(default_factory=list)  # [] = same-origin only
+
     # Observability.
     log_level: LogLevel = "INFO"
 

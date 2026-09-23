@@ -132,16 +132,20 @@ _LIFECYCLE_EVENT_TYPES = {
 
 
 def _emit_lifecycle(request: Request, result: Any, source_event_id: str) -> None:
-    """Emit an outbound webhook mirroring a billing lifecycle change, if any."""
-    dispatcher = getattr(request.app.state, "webhook_dispatcher", None)
-    if dispatcher is None or result.client_id is None:
+    """Emit an account event mirroring a billing lifecycle change, if any.
+
+    The emitter fans out to both channels: outbound webhooks and the durable
+    client event log (SSE). Each honors its own enabled flag.
+    """
+    emitter = getattr(request.app.state, "client_event_emitter", None)
+    if emitter is None or result.client_id is None:
         return
     event_type = _LIFECYCLE_EVENT_TYPES.get(result.action)
     if event_type is None:
         return
     # Derive a deterministic event id from the source so a re-processed inbound
-    # event never fans out a duplicate outbound event.
-    dispatcher.emit(
+    # event never fans out a duplicate.
+    emitter.emit(
         client_id=result.client_id,
         event_type=event_type,
         data={"client_id": result.client_id, "action": result.action},
