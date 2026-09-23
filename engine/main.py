@@ -36,6 +36,11 @@ from engine.api.ops_router import router as ops_router
 from engine.api.ws_router import router as ws_router
 from engine.audit import AuditLog
 from engine.auth.keys import KeyStore
+from engine.billing.client_events import (
+    ClientEventEmitter,
+    ClientEventLog,
+    ClientEventNotifier,
+)
 from engine.billing.store import BillingStore
 from engine.billing.webhooks import DeliveryWorker, WebhookDispatcher, WebhookStore
 from engine.config import Settings, load_config
@@ -408,9 +413,34 @@ def create_app(
     webhook_dispatcher = WebhookDispatcher(webhook_store, enabled=settings.webhooks_enabled)
     app.state.webhook_dispatcher = webhook_dispatcher
 
+    # Client-scoped SSE (Block 11.5): a durable per-client event log + in-process
+    # notifier, gated on client_events_enabled. The emitter is the single fan-out
+    # point for account events -> it records to the log (for SSE) and hands off to
+    # the webhook dispatcher (for outbound webhooks); each channel is independently
+    # gated, so either or both can be off.
+    client_event_log: ClientEventLog | None = None
+    client_event_notifier: ClientEventNotifier | None = None
+    if settings.client_events_enabled:
+        client_event_log = ClientEventLog(
+            settings.db_path,  # type: ignore[arg-type]
+            retention_max_age_s=settings.client_events_retention_max_age_s,
+            retention_max_per_client=settings.client_events_retention_max_per_client,
+        )
+        client_event_notifier = ClientEventNotifier()
+    app.state.client_event_log = client_event_log
+    app.state.client_event_notifier = client_event_notifier
+    client_event_emitter = ClientEventEmitter(
+        dispatcher=webhook_dispatcher,
+        event_log=client_event_log,
+        notifier=client_event_notifier,
+    )
+    app.state.client_event_emitter = client_event_emitter
+
     # Usage-threshold events: emit when a client crosses a fraction of its plan's
-    # weekly quota. Off unless webhooks are enabled and a threshold is configured.
-    if settings.webhooks_enabled and settings.webhook_usage_threshold_pct > 0:
+    # weekly quota. Off unless a threshold is configured and at least one delivery
+    # channel (webhooks or client SSE) is enabled.
+    threshold_channel_on = settings.webhooks_enabled or settings.client_events_enabled
+    if settings.webhook_usage_threshold_pct > 0 and threshold_channel_on:
         pct = settings.webhook_usage_threshold_pct
 
         def _on_usage_recorded(key_id: str, _endpoint: str, _cu: float) -> None:
@@ -426,8 +456,8 @@ def create_app(
             used = billing_store.client_usage_cu(client_id, window_start)
             if used < pct * entitlement.quota_weekly_cu:
                 return
-            # Deterministic id -> at most one delivery per client/week/threshold.
-            webhook_dispatcher.emit(
+            # Deterministic id -> at most one event per client/week/threshold.
+            client_event_emitter.emit(
                 client_id=client_id,
                 event_type="usage.threshold.reached",
                 data={
@@ -477,6 +507,31 @@ def create_app(
                     code="payload_too_large",
                 )
         return await call_next(request)
+
+    def _client_cors_headers(origin: str) -> dict[str, str]:
+        return {
+            "access-control-allow-origin": origin,
+            "access-control-allow-credentials": "true",
+            "access-control-allow-methods": "GET, POST, OPTIONS",
+            "access-control-allow-headers": "authorization, x-api-key, last-event-id, content-type",
+            "access-control-expose-headers": "last-event-id",
+            "vary": "Origin",
+        }
+
+    @app.middleware("http")
+    async def _client_cors(request: Request, call_next) -> Response:  # type: ignore[no-untyped-def]
+        # CORS restricted to the client-scoped surface (Block 11.5): only configured
+        # origins get cross-origin access to /client/*, and no other route's CORS
+        # posture changes. A same-origin dashboard is unaffected (no Origin header).
+        origin = request.headers.get("origin")
+        is_client = request.url.path == "/client" or request.url.path.startswith("/client/")
+        allowed = bool(origin) and origin in settings.client_cors_origins
+        if is_client and allowed and request.method == "OPTIONS":
+            return Response(status_code=204, headers=_client_cors_headers(origin))  # type: ignore[arg-type]
+        response = await call_next(request)
+        if is_client and allowed:
+            response.headers.update(_client_cors_headers(origin))  # type: ignore[arg-type]
+        return response
 
     @app.middleware("http")
     async def _ip_allowlist(request: Request, call_next) -> Response:  # type: ignore[no-untyped-def]
