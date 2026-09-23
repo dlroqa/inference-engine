@@ -204,6 +204,17 @@ class Settings(BaseSettings):
     cu_prompt_weight: float = Field(default=1.0, ge=0)
     cu_completion_weight: float = Field(default=1.0, ge=0)
 
+    # Commercial controls (Block 11). Off by default. With a provider selected and
+    # a signing secret set, the inbound webhook (/billing/webhooks/stripe) drives
+    # the client/plan lifecycle. default_plan, when set, is seeded at startup with
+    # the engine-wide quota limits and used as the entitlement fallback for a
+    # client with no active subscription. Plan/quota values live only in the plans
+    # table (operator-controlled); webhook payloads never define them.
+    billing_provider: str | None = None  # None | "stripe"
+    stripe_webhook_secret: str | None = None
+    stripe_signature_tolerance_s: int = Field(default=300, ge=0, le=86_400)
+    default_plan: str | None = None
+
     # Observability.
     log_level: LogLevel = "INFO"
 

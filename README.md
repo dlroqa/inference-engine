@@ -6,7 +6,7 @@ ordered **vertical slices** (Blocks 0–12) per
 Each block must be deployable, testable, documented, and useful before the next
 begins.
 
-> **Current status: Block 10 — Remote scale-out (sub-slices 1–7: adapters, registry, affinity, auto-models, cost metrics, spillover, gRPC).**
+> **Current status: Block 11 — Commercial controls (sub-slice 1: Stripe-first billing lifecycle). Block 10 remote scale-out complete (sub-slices 1–7: adapters, registry, affinity, auto-models, cost metrics, spillover, gRPC).**
 > Shipped so far: local GGUF inference (Block 1); **OpenAI** `/v1/chat/completions`
 > + **Anthropic** `/v1/messages` with streaming, sampling controls, and
 > capability-gated structured output (Blocks 2, 8); a secure gateway — API keys,
@@ -14,8 +14,9 @@ begins.
 > telemetry + an operator dashboard (Blocks 4–5); model lifecycle with
 > checksum-verified downloads (Block 6); controlled concurrency with admission
 > control (Block 7); and a Docker deployment path with graceful drain, readiness
-> gating, backup/restore (9a), and a security hardening baseline — trusted-network/IP policy, egress + feature kill switches, and a tamper-evident audit log (9b); and **remote vLLM + SGLang backends** — proxy generation to an external OpenAI-compatible server (one shared adapter core) with explicit model mapping, secure credentials, timeouts, and safe pre-stream-only failover, plus a **backend registry** that routes each request to the least-busy healthy backend across a local+remote pool with a status API (Block 10, sub-slices 1–3). **Not yet:** the rest of remote scale-out (Triton, KV/prefix affinity, routing policies + auto-models — Block 10), organizations/billing
-> (Block 11), and advanced safety tooling (Block 12).
+> gating, backup/restore (9a), and a security hardening baseline — trusted-network/IP policy, egress + feature kill switches, and a tamper-evident audit log (9b); and **remote vLLM + SGLang backends** — proxy generation to an external OpenAI-compatible server (one shared adapter core) with explicit model mapping, secure credentials, timeouts, and safe pre-stream-only failover, plus a **backend registry** that routes each request to the least-busy healthy backend across a local+remote pool with a status API (Block 10, sub-slices 1–3). **Not yet:** the rest of Block 11 commercial controls (outbound usage
+> webhooks, the client-scoped `/client/*` contract + SSE, and the Clients UI), and
+> advanced safety tooling (Block 12).
 
 ---
 
@@ -264,6 +265,17 @@ concurrency (`max_concurrent_per_key`), and a **compute-unit (CU) quota** — a
 where `CU = prompt_tokens·w_in + completion_tokens·w_out`. Responses carry
 `X-RateLimit-*-CU-5h` / `-Week` headers; exceeding a limit returns `429` with
 `Retry-After`. Over-limit is fail-closed.
+
+### Commercial controls / billing (Block 11.1)
+
+Optionally, keys can be owned by **clients** with a **plan** (entitlement), and a
+single billing provider (**Stripe**) can drive the lifecycle via a
+signature-verified, idempotent webhook: **activate** on subscription,
+**suspend** on payment failure, **revoke** on cancellation. Plans supply the
+per-request quota, rate, and allowed-model limits the gateway enforces; an
+unowned key keeps using the engine-wide limits above, so this is fully additive.
+Off by default (`billing_provider = "stripe"` + `stripe_webhook_secret`). See
+[docs/billing.md](docs/billing.md).
 
 ### Network binding & TLS
 
@@ -570,6 +582,7 @@ engine/
 │   ├── ws_router.py    # /ws/metrics, /ws/feed
 │   ├── ops_router.py   # /metrics, /logs, /diagnostics
 │   ├── admin_router.py # /admin/overview, /admin/model/*, /admin/keys
+│   ├── billing_router.py # /billing/webhooks/stripe, /admin/billing/* (Block 11)
 │   ├── deps.py         # operator access gate (loopback or valid key)
 │   └── errors.py       # OpenAI error envelope + structured error logging
 ├── backup.py           # database + config backup/restore
@@ -577,6 +590,7 @@ engine/
 ├── inference/          # generation contract, llama.cpp backend, admission scheduler
 ├── models/             # registry, GGUF probe, downloader, host compat, lifecycle service
 ├── auth/ · quota/      # API keys · compute-unit quota
+├── billing/            # clients, plans, subscriptions, Stripe lifecycle (Block 11)
 ├── telemetry/          # event bus, counters, resources, power, logs, diagnostics
 ├── static/             # built operator dashboard SPA (build artifact, served at /dashboard)
 └── store/
