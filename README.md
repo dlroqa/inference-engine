@@ -303,6 +303,15 @@ log fed by the same emitter as outbound webhooks, so the two never diverge. CORS
 restricted to configured origins and scoped to `/client/*`. Off by default
 (`client_events_enabled = true`). See [docs/client-events.md](docs/client-events.md).
 
+### Operator monitoring aggregations (Block 11.6a)
+
+Read-only operator rollups that back the Clients / Live-Monitoring UI: `GET
+/admin/usage/attribution` (per-key usage, reconciles with enforcement), `GET
+/admin/errors/taxonomy` (error counts by category), and `GET /admin/alerts`
+(computed alerts — suspended/canceled clients, usage-threshold crossings,
+dead-lettered webhooks, unhealthy backends — each with a cross-link target). See
+[docs/monitoring.md](docs/monitoring.md).
+
 ### Network binding & TLS
 
 The server binds to `127.0.0.1` by default. To bind to a LAN/public interface you
@@ -610,6 +619,7 @@ engine/
 │   ├── admin_router.py # /admin/overview, /admin/model/*, /admin/keys
 │   ├── billing_router.py # /billing/webhooks/stripe, /admin/billing/* (Block 11)
 │   ├── client_router.py  # /client/me, /plan, /usage, /services (Block 11.4); /client/events[/stream] (11.5)
+│   ├── monitoring_router.py # /admin/usage/attribution, /errors/taxonomy, /alerts (11.6a)
 │   ├── deps.py         # operator access gate (loopback or valid key)
 │   └── errors.py       # OpenAI error envelope + structured error logging
 ├── backup.py           # database + config backup/restore

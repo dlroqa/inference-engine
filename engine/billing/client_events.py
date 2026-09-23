@@ -40,6 +40,7 @@ class ClientEvent:
     type: str
     payload: str  # JSON envelope
     ts: float
+    client_id: str | None = None  # set when read across clients (operator views)
 
 
 def _envelope(event_id: str, event_type: str, data: dict[str, Any]) -> str:
@@ -124,6 +125,31 @@ class ClientEventLog:
                     type=r["type"],
                     payload=r["payload"],
                     ts=r["ts"],
+                )
+                for r in rows
+            ]
+        finally:
+            conn.close()
+
+    def recent_of_type(
+        self, event_type: str, *, since: float, limit: int = 100
+    ) -> list[ClientEvent]:
+        """Recent events of a type across all clients (for operator alerts)."""
+        conn = connect(self._db_path)
+        try:
+            rows = conn.execute(
+                "SELECT id, client_id, event_id, type, payload, ts FROM client_events "
+                "WHERE type = ? AND ts >= ? ORDER BY id DESC LIMIT ?;",
+                (event_type, since, limit),
+            ).fetchall()
+            return [
+                ClientEvent(
+                    id=r["id"],
+                    event_id=r["event_id"],
+                    type=r["type"],
+                    payload=r["payload"],
+                    ts=r["ts"],
+                    client_id=r["client_id"],
                 )
                 for r in rows
             ]

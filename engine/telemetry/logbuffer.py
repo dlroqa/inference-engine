@@ -156,3 +156,22 @@ def read_log_events(
         return [dict(row) for row in rows]
     finally:
         conn.close()
+
+
+def read_error_taxonomy(db_path: Path, *, since: float) -> dict[str, int]:
+    """Count categorized error records in ``log_events`` since a time, by category.
+
+    ``category`` is populated only on request-error records (the taxonomy in
+    :mod:`engine.telemetry.taxonomy`), so this is the error breakdown for the
+    monitoring view (Block 11.6). Returns ``{category: count}``, busiest first."""
+    conn = connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT category, COUNT(*) AS n FROM log_events "
+            "WHERE ts >= ? AND category IS NOT NULL "
+            "GROUP BY category ORDER BY n DESC;",
+            (since,),
+        ).fetchall()
+        return {row["category"]: int(row["n"]) for row in rows}
+    finally:
+        conn.close()

@@ -31,6 +31,7 @@ from engine.api.billing_router import router as billing_router
 from engine.api.client_router import router as client_router
 from engine.api.errors import error_response, register_exception_handlers
 from engine.api.models_router import router as models_router
+from engine.api.monitoring_router import router as monitoring_router
 from engine.api.openai_router import router as openai_router
 from engine.api.ops_router import router as ops_router
 from engine.api.ws_router import router as ws_router
@@ -559,6 +560,7 @@ def create_app(
     app.include_router(models_router)
     app.include_router(billing_router)
     app.include_router(client_router)
+    app.include_router(monitoring_router)
     _mount_dashboard(app)
     _install_openapi_bearer_auth(app)
     return app
