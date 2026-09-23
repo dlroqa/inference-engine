@@ -127,6 +127,42 @@ down is skipped by routing until it recovers. Local backends use their state.
 kind, local/remote, state, availability, and in-flight count — secret-free, no
 base URLs with credentials.
 
+### Prompt/KV-cache metrics & prefix affinity (sub-slice 4)
+
+Where a backend actually maintains a prompt/prefix cache — vLLM and SGLang do, the
+local llama.cpp path does not — the engine can route prefix-sharing requests to
+the same worker and surface that worker's cache stats. Everything here is
+**capability-gated and honest**: llama.cpp reports neither, and a remote whose
+build has the feature off is configured to report it off.
+
+**Prefix affinity.** Set `prefix_affinity_chars = N` (default `0` = off). Each
+request whose prompt shares the leading `N` characters is routed, via a consistent
+hash, to the same prefix-cache-capable backend so its cache is reused. If that
+backend is at capacity the request falls back to least-busy placement — affinity
+never overloads one worker. Backends that don't support a prefix cache (or a pool
+with none) always use plain least-busy routing (sub-slice 3). Disable a remote's
+participation with `prefix_cache = false` on its config/worker entry.
+
+**KV/prefix-cache metrics.** When `kv_metrics` is on (default), the background
+health refresh also scrapes the remote's Prometheus `/metrics` for KV-cache
+utilization and prefix-cache hit rate (vLLM `vllm:gpu_cache_usage_perc` /
+`vllm:prefix_cache_*`, SGLang `sglang:token_usage` / `sglang:cache_hit_rate`).
+`GET /admin/backends` then includes a `cache` block per capable backend and omits
+it for the rest:
+
+```json
+{
+  "name": "vllm-b", "location": "remote", "state": "ready",
+  "supports_prefix_cache": true, "supports_kv_cache_metrics": true,
+  "cache": {"kv_cache_utilization": 0.42, "prefix_cache_hit_rate": 0.75}
+}
+```
+
+SGLang exports metrics only with `--enable-metrics`; without it, `kv_metrics` finds
+nothing and the `cache` block is simply absent (no fabricated numbers). Live
+verification needs a real vLLM/SGLang on a GPU host —
+`python scripts/remote_smoke.py --backend vllm --base-url … --model … --show-cache`.
+
 ### Not yet (later sub-slices)
 
 - Structured output (grammar / JSON-schema): the remote backends report

@@ -323,3 +323,107 @@ def test_normalize_base_url_accepts_both_forms() -> None:
     assert _normalize_base_url("http://h:8000/") == "http://h:8000"
     assert _normalize_base_url("http://h:8000/v1") == "http://h:8000"
     assert _normalize_base_url("http://h:8000/v1/") == "http://h:8000"
+
+
+# -- KV/prefix-cache metrics + capability gating (Block 10, sub-slice 4) ---
+
+_VLLM_METRICS = """\
+# HELP vllm:gpu_cache_usage_perc GPU KV-cache usage.
+# TYPE vllm:gpu_cache_usage_perc gauge
+vllm:gpu_cache_usage_perc{model_name="m"} 0.42
+# TYPE vllm:prefix_cache_queries_total counter
+vllm:prefix_cache_queries_total{model_name="m"} 200.0
+vllm:prefix_cache_hits_total{model_name="m"} 150.0
+"""
+
+_SGLANG_METRICS = """\
+sglang:token_usage{model="m"} 0.30
+sglang:cache_hit_rate{model="m"} 0.80
+"""
+
+
+def test_parse_cache_metrics_vllm_counters() -> None:
+    from engine.inference.remote.openai_compat import _parse_cache_metrics
+
+    stats = _parse_cache_metrics(_VLLM_METRICS)
+    assert stats is not None
+    assert stats["kv_cache_utilization"] == 0.42
+    # hit rate computed from counters: 150 / 200
+    assert stats["prefix_cache_hit_rate"] == 0.75
+
+
+def test_parse_cache_metrics_sglang_gauges() -> None:
+    from engine.inference.remote.openai_compat import _parse_cache_metrics
+
+    stats = _parse_cache_metrics(_SGLANG_METRICS)
+    assert stats == {"kv_cache_utilization": 0.30, "prefix_cache_hit_rate": 0.80}
+
+
+def test_parse_cache_metrics_none_when_absent() -> None:
+    from engine.inference.remote.openai_compat import _parse_cache_metrics
+
+    assert _parse_cache_metrics("# just comments\n") is None
+    assert _parse_cache_metrics("some_other_metric 1.0\n") is None
+
+
+@pytest.mark.parametrize("backend_cls,expected_name", ADAPTERS)
+def test_capabilities_report_prefix_and_kv_flags(
+    backend_cls: type[OpenAICompatibleRemoteBackend], expected_name: str
+) -> None:
+    fake = FakeOpenAIServer(model=REMOTE_MODEL)
+
+    async def body() -> None:
+        with serve(fake) as url:
+            backend = _backend(backend_cls, url)
+            await backend.load()
+            caps = backend.capabilities()
+            assert caps.supports_prefix_cache is True
+            assert caps.supports_kv_cache_metrics is True
+
+            # Honest gating: flags off in config -> reported False.
+            off = _backend(backend_cls, url, prefix_cache=False, kv_metrics=False)
+            await off.load()
+            off_caps = off.capabilities()
+            assert off_caps.supports_prefix_cache is False
+            assert off_caps.supports_kv_cache_metrics is False
+
+    asyncio.run(body())
+
+
+def test_cache_stats_scrapes_metrics() -> None:
+    fake = FakeOpenAIServer(model=REMOTE_MODEL, metrics_text=_VLLM_METRICS)
+
+    async def body() -> None:
+        with serve(fake) as url:
+            backend = _backend(RemoteVLLMBackend, url)
+            await backend.load()
+            stats = await backend.cache_stats()
+            assert stats is not None
+            assert stats["kv_cache_utilization"] == 0.42
+            assert stats["prefix_cache_hit_rate"] == 0.75
+
+    asyncio.run(body())
+
+
+def test_cache_stats_none_when_metrics_disabled() -> None:
+    fake = FakeOpenAIServer(model=REMOTE_MODEL, metrics_text=_VLLM_METRICS)
+
+    async def body() -> None:
+        with serve(fake) as url:
+            backend = _backend(RemoteVLLMBackend, url, kv_metrics=False)
+            await backend.load()
+            assert await backend.cache_stats() is None  # gated off by config
+
+    asyncio.run(body())
+
+
+def test_cache_stats_none_when_endpoint_missing() -> None:
+    fake = FakeOpenAIServer(model=REMOTE_MODEL, metrics_text=None)  # /metrics 404s
+
+    async def body() -> None:
+        with serve(fake) as url:
+            backend = _backend(RemoteVLLMBackend, url)
+            await backend.load()
+            assert await backend.cache_stats() is None
+
+    asyncio.run(body())

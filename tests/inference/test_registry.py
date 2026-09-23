@@ -25,11 +25,15 @@ class StubBackend(InferenceBackend):
         model_id: str = "m",
         ctx: int = 1024,
         health: bool | Exception | None = None,
+        prefix: bool = False,
+        kv: bool = False,
     ) -> None:
         self._state = state
         self._model_id = model_id
         self._ctx = ctx
         self._health = health
+        self._prefix = prefix
+        self._kv = kv
 
     @property
     def state(self) -> BackendState:
@@ -42,7 +46,13 @@ class StubBackend(InferenceBackend):
         self._state = BackendState.UNLOADED
 
     def capabilities(self) -> Capabilities:
-        return Capabilities(backend="stub", model_id=self._model_id, context_length=self._ctx)
+        return Capabilities(
+            backend="stub",
+            model_id=self._model_id,
+            context_length=self._ctx,
+            supports_prefix_cache=self._prefix,
+            supports_kv_cache_metrics=self._kv,
+        )
 
     async def health(self) -> dict[str, object]:  # pragma: no cover - unused
         return {"state": self._state.value}
@@ -57,7 +67,12 @@ class StubBackend(InferenceBackend):
 
 
 def _entry(
-    name: str, backend: InferenceBackend, *, is_local: bool = False, cap: int = 1
+    name: str,
+    backend: InferenceBackend,
+    *,
+    is_local: bool = False,
+    cap: int = 1,
+    prefix_cache: bool = False,
 ) -> BackendEntry:
     return BackendEntry(
         name=name,
@@ -65,6 +80,7 @@ def _entry(
         is_local=is_local,
         provider=lambda: backend,
         max_in_flight=cap,
+        prefix_cache=prefix_cache,
     )
 
 
@@ -174,3 +190,69 @@ def test_refresh_health_local_uses_state_remote_uses_probe() -> None:
     assert e_up.available is True  # remote probe ok
     assert e_down.available is False  # remote probe returned False
     assert e_err.available is False  # probe raised → unavailable
+
+
+# -- prefix affinity (Block 10, sub-slice 4) ------------------------------
+
+
+def test_affinity_same_key_routes_to_same_backend() -> None:
+    a, b = StubBackend(prefix=True), StubBackend(prefix=True)
+    reg = BackendRegistry(
+        [_entry("a", a, cap=9, prefix_cache=True), _entry("b", b, cap=9, prefix_cache=True)]
+    )
+    first = reg.select(prefix_key="conversation-42")
+    assert first is not None and first.prefix_cache
+    # Same key is sticky regardless of subsequent calls.
+    for _ in range(5):
+        assert reg.select(prefix_key="conversation-42") is first
+
+
+def test_affinity_spreads_across_distinct_keys() -> None:
+    reg = BackendRegistry(
+        [
+            _entry("a", StubBackend(prefix=True), cap=99, prefix_cache=True),
+            _entry("b", StubBackend(prefix=True), cap=99, prefix_cache=True),
+        ]
+    )
+    targets = {reg.select(prefix_key=f"key-{i}").name for i in range(20)}
+    assert targets == {"a", "b"}  # the hash uses both backends
+
+
+def test_affinity_falls_back_to_least_busy_when_target_full() -> None:
+    ea = _entry("a", StubBackend(prefix=True), cap=1, prefix_cache=True)
+    eb = _entry("b", StubBackend(prefix=True), cap=1, prefix_cache=True)
+    reg = BackendRegistry([ea, eb])
+    key = "sticky"
+    target = reg.select(prefix_key=key)
+    assert target is not None
+    target.in_flight = target.max_in_flight  # saturate the affine target
+    fallback = reg.select(prefix_key=key)
+    assert fallback is not None
+    assert fallback is not target
+    assert fallback.has_capacity()
+
+
+def test_affinity_ignored_without_prefix_capable_backend() -> None:
+    ea = _entry("a", StubBackend(), cap=5)  # prefix_cache False
+    eb = _entry("b", StubBackend(), cap=5)
+    reg = BackendRegistry([ea, eb])
+    ea.in_flight = 3
+    eb.in_flight = 1
+    # No capable backend -> key is ignored, pure least-busy.
+    assert reg.select(prefix_key="anything") is eb
+
+
+def test_status_includes_cache_and_capability_flags() -> None:
+    capable = StubBackend(prefix=True, kv=True)
+    plain = StubBackend()
+    e_cap = _entry("cap", capable, prefix_cache=True)
+    e_cap.cache = {"kv_cache_utilization": 0.5, "prefix_cache_hit_rate": 0.9}
+    reg = BackendRegistry([e_cap, _entry("plain", plain)])
+    rows = reg.status()
+    assert rows[0]["supports_prefix_cache"] is True
+    assert rows[0]["supports_kv_cache_metrics"] is True
+    assert rows[0]["cache"] == {"kv_cache_utilization": 0.5, "prefix_cache_hit_rate": 0.9}
+    # Non-capable backend: flags False and no cache block.
+    assert rows[1]["supports_prefix_cache"] is False
+    assert rows[1]["supports_kv_cache_metrics"] is False
+    assert "cache" not in rows[1]

@@ -68,6 +68,8 @@ class RemoteWorkerSpec(BaseModel):
     context_length: int | None = Field(default=None, ge=8, le=1_048_576)
     tls_verify: bool = True
     max_in_flight: int = Field(default=8, ge=1, le=4096)
+    prefix_cache: bool = True  # server maintains a prefix cache (gates affinity)
+    kv_metrics: bool = True  # scrape /metrics for KV/prefix-cache stats
 
 
 class Settings(BaseSettings):
@@ -180,6 +182,8 @@ class Settings(BaseSettings):
     remote_max_prestream_retries: int = Field(default=1, ge=0, le=10)
     remote_context_length: int | None = Field(default=None, ge=8, le=1_048_576)
     remote_tls_verify: bool = True
+    remote_prefix_cache: bool = True  # primary remote maintains a prefix cache
+    remote_kv_metrics: bool = True  # scrape the primary remote's /metrics
 
     # Multi-backend routing (Block 10, sub-slice 3). The primary backend above is
     # entry 0; remote_workers add more OpenAI-compatible backends to the pool.
@@ -190,6 +194,11 @@ class Settings(BaseSettings):
     remote_workers: list[RemoteWorkerSpec] = Field(default_factory=list)
     primary_max_in_flight: int = Field(default=1, ge=1, le=4096)
     backend_health_interval_s: float = Field(default=10.0, ge=0.0, le=3600.0)
+    # Prefix-affinity routing (Block 10.4): route requests sharing the leading
+    # N characters of their prompt to the same prefix-cache-capable backend to
+    # reuse its cache. 0 disables it (pure least-busy). Only affects backends
+    # that report supports_prefix_cache; others always use least-busy.
+    prefix_affinity_chars: int = Field(default=0, ge=0, le=100_000)
 
     # Local inference runtime (Block 1). A single explicitly configured GGUF
     # model. Multiple models, downloads, and GPU auto-tuning are later blocks;

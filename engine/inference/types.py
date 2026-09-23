@@ -178,6 +178,14 @@ class Capabilities:
     #: output. Reported honestly per installed binding; the edge rejects structured
     #: requests when this is False rather than returning unconstrained text.
     supports_structured_output: bool = False
+    #: Whether the backend maintains a prompt/prefix cache whose reuse benefits from
+    #: routing prefix-sharing requests to the same backend (vLLM/SGLang do; the
+    #: local llama.cpp path does not). Gates prefix-affinity routing (Block 10.4).
+    supports_prefix_cache: bool = False
+    #: Whether the backend can report KV-cache utilization / prefix-cache hit rate
+    #: (via its metrics endpoint). Reported honestly; the edge omits a cache block
+    #: for backends that cannot (Block 10.4).
+    supports_kv_cache_metrics: bool = False
     extra: dict[str, object] = field(default_factory=dict)
 
 

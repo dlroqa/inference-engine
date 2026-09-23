@@ -108,3 +108,51 @@ def test_readiness_via_registry_when_primary_unloaded(dual_client) -> None:
     resp = _chat(client)
     assert resp.status_code == 200
     assert resp.json()["choices"][0]["message"]["content"] == "B"
+
+
+# -- KV/prefix-cache surfacing + prefix affinity (Block 10, sub-slice 4) ---
+
+
+def _prefix_dual_app(tmp_path):
+    """A pool of two prefix-cache-capable backends with affinity enabled."""
+    settings = Settings(data_dir=tmp_path / "data", prefix_affinity_chars=8)
+    primary = _loaded(["A"])
+    worker = _loaded(["B"])
+    app = create_app(settings, backend=primary)
+    primary_entry = app.state.backend_registry.entries[0]
+    primary_entry.prefix_cache = True  # pretend the primary is a remote with a cache
+    worker_entry = BackendEntry(
+        name="worker",
+        kind="remote_vllm",
+        is_local=False,
+        provider=lambda: worker,
+        max_in_flight=4,
+        prefix_cache=True,
+    )
+    app.state.backend_registry = BackendRegistry([primary_entry, worker_entry])
+    return app, primary_entry, worker_entry
+
+
+def test_backends_status_surfaces_cache_block(dual_client) -> None:
+    client, _worker, primary_entry = dual_client
+    # Populate the cached stats the background refresh would normally set.
+    primary_entry.prefix_cache = True
+    primary_entry.cache = {"kv_cache_utilization": 0.5, "prefix_cache_hit_rate": 0.9}
+    body = client.get("/admin/backends").json()
+    primary = body["backends"][0]
+    assert primary["supports_prefix_cache"] is True
+    assert primary["cache"] == {"kv_cache_utilization": 0.5, "prefix_cache_hit_rate": 0.9}
+    # The worker had no cache scraped -> no cache block.
+    assert "cache" not in body["backends"][1]
+
+
+def test_prefix_affinity_routes_same_prompt_to_same_backend(tmp_path) -> None:
+    app, _p, _w = _prefix_dual_app(tmp_path)
+    with TestClient(app, client=LOOPBACK) as client:
+        body = {"model": MODEL_ID, "messages": [{"role": "user", "content": "shared-prefix hello"}]}
+        first = client.post("/v1/chat/completions", json=body).json()
+        first_text = first["choices"][0]["message"]["content"]
+        # The same prompt prefix must stick to the same backend across requests.
+        for _ in range(4):
+            again = client.post("/v1/chat/completions", json=body).json()
+            assert again["choices"][0]["message"]["content"] == first_text

@@ -69,6 +69,8 @@ def _build_remote(settings: Settings) -> InferenceBackend:
             max_prestream_retries=settings.remote_max_prestream_retries,
             context_length=settings.remote_context_length,
             tls_verify=settings.remote_tls_verify,
+            prefix_cache=settings.remote_prefix_cache,
+            kv_metrics=settings.remote_kv_metrics,
         )
     )
 
@@ -94,5 +96,7 @@ def build_remote_worker(spec: RemoteWorkerSpec) -> InferenceBackend:
             max_prestream_retries=spec.max_prestream_retries,
             context_length=spec.context_length,
             tls_verify=spec.tls_verify,
+            prefix_cache=spec.prefix_cache,
+            kv_metrics=spec.kv_metrics,
         )
     )

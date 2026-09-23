@@ -94,9 +94,11 @@ async def start_generation(
         )
         raise on_saturated(exc) from exc
 
-    # Placement (Block 10, sub-slice 3): route to the least-busy healthy backend.
+    # Placement (Block 10): prefix-affinity when enabled+supported, else least-busy.
+    affinity_chars = request.app.state.settings.prefix_affinity_chars
+    prefix_key = prompt_text[:affinity_chars] if affinity_chars > 0 else None
     try:
-        registry_lease = registry.acquire()
+        registry_lease = registry.acquire(prefix_key)
     except NoBackendAvailable as exc:
         lease.release()
         access.abort()

@@ -176,6 +176,13 @@ class RemoteBackendConfig:
     max_prestream_retries: int = 1
     context_length: int | None = None
     tls_verify: bool = True
+    #: Whether this server maintains a prompt/prefix cache (vLLM/SGLang do).
+    #: Gates prefix-affinity routing; set False if the deployment disabled it.
+    prefix_cache: bool = True
+    #: Whether to scrape the server's Prometheus /metrics for KV/prefix-cache
+    #: stats. Set False if metrics are not exported (e.g. SGLang without
+    #: --enable-metrics); the backend then reports no cache metrics.
+    kv_metrics: bool = True
     #: Optional httpx transport override, used only by tests to mount a fake
     #: server. Production code leaves this None so httpx opens a real connection.
     transport: Any = field(default=None, repr=False)
@@ -286,6 +293,8 @@ class OpenAICompatibleRemoteBackend(InferenceBackend):
             # later sub-slice; report False so the edge rejects structured requests
             # rather than silently returning unconstrained text.
             supports_structured_output=False,
+            supports_prefix_cache=self._cfg.prefix_cache,
+            supports_kv_cache_metrics=self._cfg.kv_metrics,
             extra={"remote_model": self._cfg.remote_model},
         )
 
@@ -304,6 +313,25 @@ class OpenAICompatibleRemoteBackend(InferenceBackend):
         except Exception:
             return False
         return resp.status_code == 200
+
+    async def cache_stats(self) -> dict[str, float] | None:
+        """Scrape KV/prefix-cache stats from the server's Prometheus ``/metrics``.
+
+        Returns ``{"kv_cache_utilization", "prefix_cache_hit_rate"}`` for whichever
+        the server exports, or ``None`` if metrics are disabled/unreachable/absent.
+        Never raises — a failure just means "no cache stats to show".
+        """
+        if not self._cfg.kv_metrics or self._client is None:
+            return None
+        if self._state not in (BackendState.READY, BackendState.GENERATING):
+            return None
+        try:
+            resp = await self._client.get("/metrics", timeout=5.0)
+        except Exception:
+            return None
+        if resp.status_code != 200:
+            return None
+        return _parse_cache_metrics(resp.text)
 
     async def health(self) -> dict[str, object]:
         # Secret-free by construction: base_url and model only, never the key.
@@ -432,6 +460,51 @@ def _normalize_base_url(base_url: str) -> str:
     if base.endswith("/v1"):
         base = base[: -len("/v1")]
     return base
+
+
+def _parse_cache_metrics(text: str) -> dict[str, float] | None:
+    """Extract KV-cache utilization + prefix-cache hit rate from Prometheus text.
+
+    Understands vLLM and SGLang metric names; prefix-cache hit rate is taken from a
+    direct gauge when present, else computed from hit/query counters. Unknown or
+    missing metrics are simply omitted (honest: no value rather than a fake one).
+    """
+    values: dict[str, list[float]] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        left, _, val = line.rpartition(" ")
+        if not left:
+            continue
+        try:
+            number = float(val)
+        except ValueError:
+            continue
+        name = left.split("{", 1)[0].strip()
+        values.setdefault(name, []).append(number)
+
+    def first(*names: str) -> list[float] | None:
+        for name in names:
+            if values.get(name):
+                return values[name]
+        return None
+
+    out: dict[str, float] = {}
+    kv = first("vllm:gpu_cache_usage_perc", "sglang:token_usage", "sglang:kv_cache_usage")
+    if kv is not None:
+        out["kv_cache_utilization"] = kv[0]
+    hit_rate = first("vllm:prefix_cache_hit_rate", "sglang:cache_hit_rate")
+    if hit_rate is not None:
+        out["prefix_cache_hit_rate"] = hit_rate[0]
+    else:
+        hits = first("vllm:prefix_cache_hits_total")
+        queries = first("vllm:prefix_cache_queries_total")
+        if hits is not None and queries is not None:
+            total = sum(queries)
+            if total > 0:
+                out["prefix_cache_hit_rate"] = sum(hits) / total
+    return out or None
 
 
 def _parse_sse_line(line: str, *, is_chat: bool, outcome: _Outcome) -> list[Any]:
