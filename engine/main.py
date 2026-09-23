@@ -19,6 +19,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -27,6 +28,7 @@ from engine.api import health
 from engine.api.admin_router import router as admin_router
 from engine.api.anthropic_router import router as anthropic_router
 from engine.api.billing_router import router as billing_router
+from engine.api.client_router import router as client_router
 from engine.api.errors import error_response, register_exception_handlers
 from engine.api.models_router import router as models_router
 from engine.api.openai_router import router as openai_router
@@ -501,8 +503,42 @@ def create_app(
     app.include_router(admin_router)
     app.include_router(models_router)
     app.include_router(billing_router)
+    app.include_router(client_router)
     _mount_dashboard(app)
+    _install_openapi_bearer_auth(app)
     return app
+
+
+def _install_openapi_bearer_auth(app: FastAPI) -> None:
+    """Publish an API-key (HTTP bearer) security scheme in the OpenAPI spec.
+
+    Authenticated routes (OpenAI/Anthropic APIs and the client-scoped ``/client/*``
+    contract) take the key as ``Authorization: Bearer <key>``; documenting the
+    scheme makes the published spec self-describing for client SDKs and codegen.
+    The scheme is declared but not force-applied per-route, so the spec stays
+    accurate for the loopback-optional dev mode too.
+    """
+
+    def custom_openapi() -> dict[str, object]:
+        if app.openapi_schema:
+            return app.openapi_schema
+        schema = get_openapi(
+            title=app.title,
+            version=app.version,
+            summary=app.summary,
+            routes=app.routes,
+        )
+        components = schema.setdefault("components", {})
+        schemes = components.setdefault("securitySchemes", {})
+        schemes["bearerAuth"] = {
+            "type": "http",
+            "scheme": "bearer",
+            "description": "API key as a bearer token (also accepted via the x-api-key header).",
+        }
+        app.openapi_schema = schema
+        return schema
+
+    app.openapi = custom_openapi  # type: ignore[method-assign]
 
 
 def _mount_dashboard(app: FastAPI) -> None:
