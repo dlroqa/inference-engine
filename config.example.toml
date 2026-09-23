@@ -107,6 +107,16 @@ log_level = "INFO"
 # Network binding beyond loopback must be opted into explicitly.
 # allow_network_bind  = false   # set true to bind a non-loopback host
 # allow_insecure_bind = false   # set true to allow a network bind with auth off
+#
+# --- gRPC edge (Block 10, sub-slice 6) ---
+# An independently secured gRPC InferenceService on its own port; off by default.
+# Reuses the same API-key auth (via call metadata) and pipeline as HTTP. Requires
+# the 'grpc' extra: pip install "inference-engine[grpc]". See docs/grpc.md.
+# grpc_enabled  = false
+# grpc_host     = "127.0.0.1"     # non-loopback needs allow_network_bind = true
+# grpc_port     = 50051           # 0 = OS-assigned
+# grpc_tls_cert = "/etc/ie/grpc.crt"   # set BOTH for a secure port
+# grpc_tls_key  = "/etc/ie/grpc.key"
 # require_auth         =        # unset = auto (required when not loopback)
 
 # Per-key request limits (0 = unlimited).

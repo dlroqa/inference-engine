@@ -6,7 +6,7 @@ ordered **vertical slices** (Blocks 0–12) per
 Each block must be deployable, testable, documented, and useful before the next
 begins.
 
-> **Current status: Block 10 — Remote scale-out (sub-slices 1–5 + 7: adapters, registry, affinity, auto-models, cost metrics, external spillover).**
+> **Current status: Block 10 — Remote scale-out (sub-slices 1–7: adapters, registry, affinity, auto-models, cost metrics, spillover, gRPC).**
 > Shipped so far: local GGUF inference (Block 1); **OpenAI** `/v1/chat/completions`
 > + **Anthropic** `/v1/messages` with streaming, sampling controls, and
 > capability-gated structured output (Blocks 2, 8); a secure gateway — API keys,
@@ -160,6 +160,12 @@ providers** (`[[external_providers]]`) can serve as **spillover** when the local
 pool is saturated — off by default, egress-allowlisted, secret-safe, metered, and
 chosen only at admission (never a re-route after tokens are sent). See
 [docs/backends.md](docs/backends.md).
+
+**gRPC edge (Block 10.6):** an independently secured gRPC `InferenceService`
+(`Generate` streaming + `ListModels`) can run on its own port — off by default,
+API-key auth via call metadata, optional TLS, reusing the same pipeline as HTTP.
+Enable `grpc_enabled` and install `inference-engine[grpc]`. See
+[docs/grpc.md](docs/grpc.md).
 
 ## OpenAI-compatible API (Block 2)
 

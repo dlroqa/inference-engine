@@ -284,3 +284,16 @@ def test_host_allowed_matching():
     assert _host_allowed("openai.com", ["openai.com"]) is True
     assert _host_allowed("evil-openai.com", ["openai.com"]) is False
     assert _host_allowed("api.together.ai", ["openai.com"]) is False
+
+
+def test_grpc_tls_pair_and_bind_validation(tmp_path):
+    from pydantic import ValidationError
+
+    from engine.config import Settings
+
+    s = Settings(data_dir=tmp_path, grpc_enabled=True, grpc_port=0)
+    assert s.grpc_enabled and s.grpc_port == 0
+    with __import__("pytest").raises(ValidationError):  # cert without key
+        Settings(data_dir=tmp_path, grpc_enabled=True, grpc_tls_cert="/x/c.pem")
+    with __import__("pytest").raises(ValidationError):  # non-loopback without opt-in
+        Settings(data_dir=tmp_path, grpc_enabled=True, grpc_host="0.0.0.0")
