@@ -26,10 +26,15 @@ llama = ["llama-cpp-python>=0.2.90"]
 # Remote inference adapters (Block 10, e.g. vLLM). Pure-Python HTTP client, kept
 # optional so the core install stays minimal; imported lazily by the backend.
 remote = ["httpx>=0.27"]
+# gRPC edge (Block 10.6). Native but prebuilt wheels; imported lazily.
+grpc = ["grpcio>=1.60", "protobuf>=4.25"]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "httpx>=0.27",
+    "grpcio>=1.60",
+    "grpcio-tools>=1.60",
+    "protobuf>=4.25",
     "openai>=1.40",
     "anthropic>=0.34",
     "pip-audit>=2.7",
@@ -48,7 +53,7 @@ include = ["engine*"]
 [tool.setuptools.package-data]
 # The built operator dashboard SPA (engine/static) is produced by the dashboard
 # build and bundled into the wheel; it is absent in a source checkout.
-engine = ["store/migrations/*.sql", "static/*", "static/assets/*"]
+engine = ["store/migrations/*.sql", "static/*", "static/assets/*", "grpc/*.proto"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -57,6 +62,8 @@ addopts = "-ra"
 [tool.coverage.run]
 source = ["engine"]
 branch = true
+# Generated gRPC protobuf stubs are not hand-written and not a test target.
+omit = ["engine/grpc/inference_pb2.py", "engine/grpc/inference_pb2_grpc.py"]
 
 [tool.coverage.report]
 show_missing = true
@@ -67,6 +74,8 @@ fail_under = 90
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# Generated gRPC stubs are not hand-maintained.
+extend-exclude = ["engine/grpc/inference_pb2.py", "engine/grpc/inference_pb2_grpc.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "W"]
@@ -79,3 +88,8 @@ no_implicit_optional = true
 disallow_untyped_defs = true
 ignore_missing_imports = true
 files = ["engine"]
+
+[[tool.mypy.overrides]]
+module = ["engine.grpc.inference_pb2", "engine.grpc.inference_pb2_grpc"]
+ignore_errors = true
+follow_imports = "skip"

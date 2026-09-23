@@ -220,9 +220,31 @@ def create_app(
         if settings.metrics_interval_s > 0:
             telemetry.start(lambda: getattr(app.state, "backend", None))
 
+        # gRPC edge (Block 10.6): an independently secured service on its own port,
+        # sharing this app's state (auth, registry, router, metering).
+        grpc_server = None
+        if settings.grpc_enabled:
+            from engine.grpc.server import create_grpc_server
+
+            grpc_server, bound = await create_grpc_server(
+                app,
+                host=settings.grpc_host,
+                port=settings.grpc_port,
+                tls_cert=settings.grpc_tls_cert,
+                tls_key=settings.grpc_tls_key,
+            )
+            await grpc_server.start()
+            app.state.grpc_port = bound
+            log.info(
+                "grpc_started", extra={"port": bound, "tls": settings.grpc_tls_cert is not None}
+            )
+
         try:
             yield
         finally:
+            if grpc_server is not None:
+                await grpc_server.stop(grace=5.0)
+                log.info("grpc_stopped")
             # Graceful drain (Block 9): stop admitting new work and let bounded
             # in-flight generations finish (or time out) before releasing the model,
             # so a rolling restart never severs active requests.

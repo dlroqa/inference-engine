@@ -136,6 +136,16 @@ class Settings(BaseSettings):
     allow_network_bind: bool = False
     allow_insecure_bind: bool = False
 
+    # gRPC edge (Block 10, sub-slice 6). An independently secured/deployed gRPC
+    # service on its own port, off by default. It reuses the same auth (API key
+    # via call metadata) and pipeline as HTTP. Provide both TLS files for a
+    # secure port; otherwise front it with a TLS-terminating proxy.
+    grpc_enabled: bool = False
+    grpc_host: str = "127.0.0.1"
+    grpc_port: int = Field(default=50051, ge=0, le=65535)  # 0 = OS-assigned (ephemeral)
+    grpc_tls_cert: Path | None = None
+    grpc_tls_key: Path | None = None
+
     # Auth (Block 3). None = auto: required when not loopback-bound.
     require_auth: bool | None = None
 
@@ -350,6 +360,19 @@ class Settings(BaseSettings):
                     f"external provider {prov.name!r} base_url host {host!r} is not in "
                     f"egress_allowlist {self.egress_allowlist}"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_grpc(self) -> Settings:
+        if not self.grpc_enabled:
+            return self
+        if (self.grpc_tls_cert is None) != (self.grpc_tls_key is None):
+            raise ValueError("grpc_tls_cert and grpc_tls_key must be set together")
+        if self.grpc_host not in {"127.0.0.1", "::1", "localhost"} and not self.allow_network_bind:
+            raise ValueError(
+                f"refusing to bind gRPC to non-loopback host {self.grpc_host!r} without "
+                "allow_network_bind=true; review the TLS guidance in docs/grpc.md"
+            )
         return self
 
     def is_loopback_host(self) -> bool:

@@ -21,7 +21,7 @@ from dataclasses import dataclass
 
 from fastapi import Request
 
-from engine.gateway import ApiAccess, Gateway
+from engine.gateway import ApiAccess, Gateway, extract_token
 from engine.inference.base import GenerationStream
 from engine.inference.registry import NoBackendAvailable, RegistryLease
 from engine.inference.router import Router
@@ -70,21 +70,55 @@ async def start_generation(
     request_id: str,
     on_saturated: Callable[[SchedulerSaturated], Exception],
 ) -> Served:
-    """Authenticate, admit, and start a generation; return a :class:`Served`.
+    """HTTP entry point: extract the API token from the request, then serve.
 
-    Raises the dialect's own error type on auth/limit/quota rejection (via
-    ``gateway.authorize``) and on saturation (via ``on_saturated``); on either it
-    leaves no counters or slots held.
+    A thin wrapper over :func:`start_generation_core` so the gRPC edge (Block 10.6)
+    can share the exact same lifecycle with a token from call metadata instead.
     """
-    gateway: Gateway = request.app.state.gateway
-    telemetry: Telemetry = request.app.state.telemetry
-    counters: Counters = request.app.state.counters
-    scheduler: Scheduler = request.app.state.scheduler
-    router: Router = request.app.state.router
-    route_metrics: RouteMetrics = request.app.state.route_metrics
+    return await start_generation_core(
+        request.app,
+        token=extract_token(request),
+        gen_request=gen_request,
+        endpoint=endpoint,
+        model_id=model_id,
+        route_model=route_model,
+        prompt_text=prompt_text,
+        max_tokens=max_tokens,
+        request_id=request_id,
+        on_saturated=on_saturated,
+    )
 
-    access = gateway.authorize(
-        request, prompt_text=prompt_text, max_tokens=max_tokens, endpoint=endpoint
+
+async def start_generation_core(
+    app: object,
+    *,
+    token: str | None,
+    gen_request: GenerationRequest,
+    endpoint: str,
+    model_id: str,
+    route_model: str,
+    prompt_text: str,
+    max_tokens: int,
+    request_id: str,
+    on_saturated: Callable[[SchedulerSaturated], Exception],
+) -> Served:
+    """Authenticate, admit, route, and start a generation; return a :class:`Served`.
+
+    Transport-agnostic: ``app`` supplies the shared state (gateway, scheduler,
+    router, counters, telemetry, route-metrics) and ``token`` the API key. Raises
+    the caller-mapped error on auth/limit/quota rejection and on saturation; on
+    either it leaves no counters or slots held.
+    """
+    state = app.state  # type: ignore[attr-defined]
+    gateway: Gateway = state.gateway
+    telemetry: Telemetry = state.telemetry
+    counters: Counters = state.counters
+    scheduler: Scheduler = state.scheduler
+    router: Router = state.router
+    route_metrics: RouteMetrics = state.route_metrics
+
+    access = gateway.authorize_token(
+        token, prompt_text=prompt_text, max_tokens=max_tokens, endpoint=endpoint
     )
 
     try:
@@ -101,7 +135,7 @@ async def start_generation(
         raise on_saturated(exc) from exc
 
     # Placement (Block 10): prefix-affinity when enabled+supported, else least-busy.
-    affinity_chars = request.app.state.settings.prefix_affinity_chars
+    affinity_chars = state.settings.prefix_affinity_chars
     prefix_key = prompt_text[:affinity_chars] if affinity_chars > 0 else None
     try:
         registry_lease = router.acquire(route_model, prefix_key)

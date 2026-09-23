@@ -1,0 +1,48 @@
+// Inference Engine gRPC service (Block 10, sub-slice 6).
+//
+// Exposes the same serving pipeline as the HTTP edges (auth, admission, routing,
+// generation, metering) over gRPC. Regenerate the stubs with:
+//   python -m grpc_tools.protoc -I engine/grpc \
+//     --python_out=engine/grpc --grpc_python_out=engine/grpc engine/grpc/inference.proto
+// (the generated _pb2 grpc import is then rewritten to be package-relative).
+syntax = "proto3";
+
+package inference.v1;
+
+service InferenceService {
+  // Server-streaming generation: token deltas, then a terminal done chunk.
+  rpc Generate(GenerateRequest) returns (stream GenerateChunk);
+  // The models a client may request (base served id + virtual model names).
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
+}
+
+message Message {
+  string role = 1;
+  string content = 2;
+}
+
+message GenerateRequest {
+  string model = 1;              // base served id or a virtual model name
+  repeated Message messages = 2; // chat input; use EITHER messages OR prompt
+  string prompt = 3;             // completion input
+  int32 max_tokens = 4;
+  float temperature = 5;
+  float top_p = 6;
+  repeated string stop = 7;
+  int32 top_k = 8;
+}
+
+message GenerateChunk {
+  string text = 1;              // token delta (empty on the terminal chunk)
+  bool done = 2;               // true on the terminal chunk
+  string finish_reason = 3;     // set on the terminal chunk
+  int32 prompt_tokens = 4;      // set on the terminal chunk
+  int32 completion_tokens = 5;  // set on the terminal chunk
+  string request_id = 6;
+}
+
+message ListModelsRequest {}
+
+message ListModelsResponse {
+  repeated string models = 1;
+}

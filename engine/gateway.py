@@ -147,7 +147,9 @@ class Gateway:
         self.limiter = Limiter(settings.rate_limit_per_min, settings.max_concurrent_per_key)
 
     def _authenticate(self, request: Request) -> str:
-        token = extract_token(request)
+        return self._authenticate_token(extract_token(request))
+
+    def _authenticate_token(self, token: str | None) -> str:
         required = self.settings.effective_require_auth()
         if token:
             record = self.keys.verify(token)
@@ -201,7 +203,19 @@ class Gateway:
     def authorize(
         self, request: Request, *, prompt_text: str, max_tokens: int, endpoint: str
     ) -> ApiAccess:
-        key_id = self._authenticate(request)
+        """HTTP entry point: extract the token from the request, then authorize."""
+        return self.authorize_token(
+            extract_token(request),
+            prompt_text=prompt_text,
+            max_tokens=max_tokens,
+            endpoint=endpoint,
+        )
+
+    def authorize_token(
+        self, token: str | None, *, prompt_text: str, max_tokens: int, endpoint: str
+    ) -> ApiAccess:
+        """Transport-agnostic authorize (HTTP + gRPC): auth, rate/concurrency, quota."""
+        key_id = self._authenticate_token(token)
         access = ApiAccess(gateway=self, key_id=key_id, endpoint=endpoint)
 
         # Unauthenticated loopback ("local") is attributed but not limited/quota'd.
