@@ -168,6 +168,20 @@ log_level = "INFO"
 # stripe_signature_tolerance_s  = 300             # reject signatures older than this
 # default_plan                  = "free"          # seeded with the CU limits above; entitlement fallback
 
+# --- Outbound Standard Webhooks (Block 11.2) ---
+# Off by default. When enabled, the engine delivers SIGNED billing lifecycle (and
+# optional usage-threshold) events to client-registered endpoints, with
+# retries/backoff, a dead-letter state, a replayable delivery log, and secret
+# rotation. Endpoint URLs must resolve to a host in egress_allowlist (below).
+# See docs/webhooks.md.
+# webhooks_enabled                = true
+# webhook_max_attempts            = 5
+# webhook_backoff_schedule_s      = [30, 120, 600, 1800]   # delay before each retry
+# webhook_poll_interval_s         = 5
+# webhook_delivery_timeout_s      = 10
+# webhook_signing_rotation_grace_s = 86400   # old secret stays valid this long after rotate
+# webhook_usage_threshold_pct     = 0.8     # 0 = off; emit usage.threshold.reached at this fraction of weekly quota
+
 # --- Model lifecycle (Block 6) ---
 # Directory where downloaded/imported GGUF models are stored (default: <data_dir>/models).
 # models_dir = "/var/lib/inference-engine/models"

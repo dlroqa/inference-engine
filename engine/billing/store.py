@@ -244,6 +244,15 @@ class BillingStore:
         finally:
             conn.close()
 
+    def client_id_for_key(self, key_id: str) -> str | None:
+        """Return the client id that owns a key, or None if unowned/unknown."""
+        conn = connect(self._db_path)
+        try:
+            row = conn.execute("SELECT client_id FROM api_keys WHERE id = ?;", (key_id,)).fetchone()
+            return row["client_id"] if row is not None else None
+        finally:
+            conn.close()
+
     def revoke_client_keys(self, client_id: str) -> int:
         """Terminally revoke every live key owned by a client.
 

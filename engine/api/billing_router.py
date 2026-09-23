@@ -19,6 +19,7 @@ import json
 import time
 import uuid
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -28,6 +29,8 @@ from engine.api.deps import require_operator
 from engine.api.errors import error_response
 from engine.billing import stripe as stripe_adapter
 from engine.billing.store import BillingStore
+from engine.billing.webhooks.store import WebhookStore
+from engine.config import _host_allowed
 from engine.logging_setup import get_logger
 from engine.quota.windows import rolling_5h_start, week_start
 
@@ -111,11 +114,39 @@ async def stripe_webhook(request: Request) -> JSONResponse:
         )
 
     billing.mark_event_processed(stripe_adapter.PROVIDER, event_id, result.action)
+    _emit_lifecycle(request, result, event_id)
     _log.info(
         "stripe_webhook_processed",
         extra={"event_id": event_id, "event_type": event_type, "action": result.action},
     )
     return JSONResponse({"status": "processed", "action": result.action})
+
+
+# Map an inbound-lifecycle action to an outbound event type (Block 11.2).
+_LIFECYCLE_EVENT_TYPES = {
+    "activated": "subscription.activated",
+    "plan_changed": "subscription.updated",
+    "suspended": "subscription.suspended",
+    "canceled": "subscription.canceled",
+}
+
+
+def _emit_lifecycle(request: Request, result: Any, source_event_id: str) -> None:
+    """Emit an outbound webhook mirroring a billing lifecycle change, if any."""
+    dispatcher = getattr(request.app.state, "webhook_dispatcher", None)
+    if dispatcher is None or result.client_id is None:
+        return
+    event_type = _LIFECYCLE_EVENT_TYPES.get(result.action)
+    if event_type is None:
+        return
+    # Derive a deterministic event id from the source so a re-processed inbound
+    # event never fans out a duplicate outbound event.
+    dispatcher.emit(
+        client_id=result.client_id,
+        event_type=event_type,
+        data={"client_id": result.client_id, "action": result.action},
+        event_id=f"{source_event_id}.{result.action}",
+    )
 
 
 # --------------------------------------------------------------------------
@@ -253,3 +284,153 @@ def _plan_dict(plan: Any) -> dict[str, Any]:
         "rate_limit_per_min": plan.rate_limit_per_min,
         "allowed_models": list(plan.allowed_models) if plan.allowed_models is not None else None,
     }
+
+
+# --------------------------------------------------------------------------
+# Outbound webhooks (Block 11.2) — operator controls
+# --------------------------------------------------------------------------
+
+
+class EndpointCreate(BaseModel):
+    client_id: str = Field(min_length=1)
+    url: str = Field(min_length=1, max_length=2048)
+    description: str | None = Field(default=None, max_length=512)
+    event_types: list[str] | None = None
+
+
+def _webhooks(request: Request) -> WebhookStore | None:
+    return getattr(request.app.state, "webhook_store", None)
+
+
+def _require_webhooks(request: Request) -> WebhookStore:
+    store = _webhooks(request)
+    assert store is not None, "webhook store not initialized"
+    return store
+
+
+def _endpoint_dict(ep: Any) -> dict[str, Any]:
+    return {
+        "id": ep.id,
+        "client_id": ep.client_id,
+        "url": ep.url,
+        "description": ep.description,
+        "disabled": ep.disabled,
+        "event_types": list(ep.event_types) if ep.event_types is not None else None,
+    }
+
+
+def _delivery_dict(d: Any) -> dict[str, Any]:
+    return {
+        "id": d.id,
+        "endpoint_id": d.endpoint_id,
+        "event_id": d.event_id,
+        "event_type": d.event_type,
+        "status": d.status,
+        "attempts": d.attempts,
+        "next_attempt_at": d.next_attempt_at,
+        "last_status_code": d.last_status_code,
+        "last_error": d.last_error,
+        "created_at": d.created_at,
+        "updated_at": d.updated_at,
+    }
+
+
+@router.post("/admin/billing/webhooks/endpoints")
+def create_endpoint(request: Request, body: EndpointCreate) -> dict[str, Any]:
+    require_operator(request)
+    billing = _require_billing(request)
+    store = _require_webhooks(request)
+    settings = request.app.state.settings
+    if billing.get_client(body.client_id) is None:
+        return error_response(  # type: ignore[return-value]
+            "unknown client", status_code=404, code="client_not_found"
+        )
+    # Egress policy: the destination host must be on the allowlist, and the scheme
+    # must be http(s). This is the same control external providers use.
+    parsed = urlparse(body.url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return error_response(  # type: ignore[return-value]
+            "endpoint url must be an absolute http(s) url",
+            status_code=400,
+            code="invalid_endpoint_url",
+        )
+    if not _host_allowed(parsed.hostname, settings.egress_allowlist):
+        return error_response(  # type: ignore[return-value]
+            "endpoint host is not in egress_allowlist",
+            status_code=400,
+            code="egress_not_allowed",
+        )
+    endpoint, secret = store.create_endpoint(
+        client_id=body.client_id,
+        url=body.url,
+        description=body.description,
+        event_types=body.event_types,
+    )
+    # The signing secret is displayed exactly once, at creation.
+    return {**_endpoint_dict(endpoint), "secret": secret}
+
+
+@router.get("/admin/billing/webhooks/endpoints")
+def list_endpoints(request: Request, client_id: str | None = None) -> dict[str, Any]:
+    require_operator(request)
+    store = _require_webhooks(request)
+    return {"endpoints": [_endpoint_dict(e) for e in store.list_endpoints(client_id)]}
+
+
+@router.post("/admin/billing/webhooks/endpoints/{endpoint_id}/disable")
+def disable_endpoint(request: Request, endpoint_id: str, disabled: bool = True) -> dict[str, Any]:
+    require_operator(request)
+    store = _require_webhooks(request)
+    if not store.set_disabled(endpoint_id, disabled):
+        return error_response(  # type: ignore[return-value]
+            "unknown endpoint", status_code=404, code="endpoint_not_found"
+        )
+    return {"id": endpoint_id, "disabled": disabled}
+
+
+@router.delete("/admin/billing/webhooks/endpoints/{endpoint_id}")
+def delete_endpoint(request: Request, endpoint_id: str) -> dict[str, Any]:
+    require_operator(request)
+    store = _require_webhooks(request)
+    if not store.delete_endpoint(endpoint_id):
+        return error_response(  # type: ignore[return-value]
+            "unknown endpoint", status_code=404, code="endpoint_not_found"
+        )
+    return {"id": endpoint_id, "deleted": True}
+
+
+@router.post("/admin/billing/webhooks/endpoints/{endpoint_id}/rotate-secret")
+def rotate_secret(request: Request, endpoint_id: str) -> dict[str, Any]:
+    require_operator(request)
+    store = _require_webhooks(request)
+    settings = request.app.state.settings
+    if store.get_endpoint(endpoint_id) is None:
+        return error_response(  # type: ignore[return-value]
+            "unknown endpoint", status_code=404, code="endpoint_not_found"
+        )
+    secret = store.rotate_secret(endpoint_id, grace_s=settings.webhook_signing_rotation_grace_s)
+    return {"id": endpoint_id, "secret": secret}
+
+
+@router.get("/admin/billing/webhooks/deliveries")
+def list_deliveries(
+    request: Request,
+    endpoint_id: str | None = None,
+    status: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    require_operator(request)
+    store = _require_webhooks(request)
+    deliveries = store.list_deliveries(endpoint_id=endpoint_id, status=status, limit=limit)
+    return {"deliveries": [_delivery_dict(d) for d in deliveries]}
+
+
+@router.post("/admin/billing/webhooks/deliveries/{delivery_id}/replay")
+def replay_delivery(request: Request, delivery_id: str) -> dict[str, Any]:
+    require_operator(request)
+    store = _require_webhooks(request)
+    if not store.replay(delivery_id):
+        return error_response(  # type: ignore[return-value]
+            "unknown delivery", status_code=404, code="delivery_not_found"
+        )
+    return {"id": delivery_id, "status": "pending"}

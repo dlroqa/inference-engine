@@ -6,7 +6,7 @@ ordered **vertical slices** (Blocks 0–12) per
 Each block must be deployable, testable, documented, and useful before the next
 begins.
 
-> **Current status: Block 11 — Commercial controls (sub-slice 1: Stripe-first billing lifecycle). Block 10 remote scale-out complete (sub-slices 1–7: adapters, registry, affinity, auto-models, cost metrics, spillover, gRPC).**
+> **Current status: Block 11 — Commercial controls (sub-slice 1: Stripe billing lifecycle; sub-slice 2: outbound Standard Webhooks). Block 10 remote scale-out complete (sub-slices 1–7: adapters, registry, affinity, auto-models, cost metrics, spillover, gRPC).**
 > Shipped so far: local GGUF inference (Block 1); **OpenAI** `/v1/chat/completions`
 > + **Anthropic** `/v1/messages` with streaming, sampling controls, and
 > capability-gated structured output (Blocks 2, 8); a secure gateway — API keys,
@@ -14,9 +14,9 @@ begins.
 > telemetry + an operator dashboard (Blocks 4–5); model lifecycle with
 > checksum-verified downloads (Block 6); controlled concurrency with admission
 > control (Block 7); and a Docker deployment path with graceful drain, readiness
-> gating, backup/restore (9a), and a security hardening baseline — trusted-network/IP policy, egress + feature kill switches, and a tamper-evident audit log (9b); and **remote vLLM + SGLang backends** — proxy generation to an external OpenAI-compatible server (one shared adapter core) with explicit model mapping, secure credentials, timeouts, and safe pre-stream-only failover, plus a **backend registry** that routes each request to the least-busy healthy backend across a local+remote pool with a status API (Block 10, sub-slices 1–3). **Not yet:** the rest of Block 11 commercial controls (outbound usage
-> webhooks, the client-scoped `/client/*` contract + SSE, and the Clients UI), and
-> advanced safety tooling (Block 12).
+> gating, backup/restore (9a), and a security hardening baseline — trusted-network/IP policy, egress + feature kill switches, and a tamper-evident audit log (9b); and **remote vLLM + SGLang backends** — proxy generation to an external OpenAI-compatible server (one shared adapter core) with explicit model mapping, secure credentials, timeouts, and safe pre-stream-only failover, plus a **backend registry** that routes each request to the least-busy healthy backend across a local+remote pool with a status API (Block 10, sub-slices 1–3). **Not yet:** the rest of Block 11 commercial controls (the client-scoped
+> `/client/*` contract + SSE, and the Clients UI), and advanced safety tooling
+> (Block 12).
 
 ---
 
@@ -276,6 +276,15 @@ per-request quota, rate, and allowed-model limits the gateway enforces; an
 unowned key keeps using the engine-wide limits above, so this is fully additive.
 Off by default (`billing_provider = "stripe"` + `stripe_webhook_secret`). See
 [docs/billing.md](docs/billing.md).
+
+### Outbound webhooks (Block 11.2)
+
+The engine can also **notify clients** of events (billing lifecycle, and optional
+usage-threshold) using the [Standard Webhooks](https://www.standardwebhooks.com/)
+format: signed deliveries, retries with backoff, a dead-letter state, a replayable
+delivery log, and secret rotation. Destinations are egress-allowlisted; delivery
+runs on a background worker so a slow endpoint never stalls serving. Off by
+default (`webhooks_enabled = true`). See [docs/webhooks.md](docs/webhooks.md).
 
 ### Network binding & TLS
 
@@ -591,6 +600,7 @@ engine/
 ├── models/             # registry, GGUF probe, downloader, host compat, lifecycle service
 ├── auth/ · quota/      # API keys · compute-unit quota
 ├── billing/            # clients, plans, subscriptions, Stripe lifecycle (Block 11)
+│   └── webhooks/       # outbound Standard Webhooks: signing, store, delivery worker (11.2)
 ├── telemetry/          # event bus, counters, resources, power, logs, diagnostics
 ├── static/             # built operator dashboard SPA (build artifact, served at /dashboard)
 └── store/
