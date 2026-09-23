@@ -385,6 +385,17 @@ class WebhookStore:
         finally:
             conn.close()
 
+    def count_by_status(self, status: str) -> int:
+        """Number of deliveries in a given status (e.g. ``dead``), for alerts."""
+        conn = connect(self._db_path)
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM webhook_deliveries WHERE status = ?;", (status,)
+            ).fetchone()
+            return int(row[0])
+        finally:
+            conn.close()
+
     def list_deliveries(
         self,
         *,
