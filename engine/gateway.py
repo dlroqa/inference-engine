@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from fastapi import Request
@@ -124,6 +125,12 @@ class ApiAccess:
                 cu=cu,
                 status=status,
             )
+            hook = self.gateway.on_usage_recorded
+            if hook is not None:
+                try:
+                    hook(self.key_id, self.endpoint, cu)
+                except Exception:  # a webhook problem must never break the request
+                    pass
         finally:
             if self._slot_held:
                 self.gateway.limiter.release(self.key_id)
@@ -156,6 +163,10 @@ class Gateway:
             completion_weight=settings.cu_completion_weight,
         )
         self.limiter = Limiter(settings.rate_limit_per_min, settings.max_concurrent_per_key)
+        # Optional post-record hook (Block 11.2): invoked after each request's usage
+        # is recorded, with (key_id, endpoint, cu). Used to emit usage-threshold
+        # webhooks. Never allowed to break the request path.
+        self.on_usage_recorded: Callable[[str, str, float], None] | None = None
 
     def _authenticate(self, request: Request) -> str:
         return self._authenticate_token(extract_token(request))

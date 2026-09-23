@@ -215,6 +215,23 @@ class Settings(BaseSettings):
     stripe_signature_tolerance_s: int = Field(default=300, ge=0, le=86_400)
     default_plan: str | None = None
 
+    # Outbound Standard Webhooks (Block 11.2). Off by default. When enabled, the
+    # engine delivers signed billing lifecycle (and optional usage-threshold)
+    # events to client-registered endpoints, with retries/backoff, a dead-letter
+    # state, a replayable log, and secret rotation. Endpoint URLs must resolve to a
+    # host in egress_allowlist. See docs/webhooks.md.
+    webhooks_enabled: bool = False
+    webhook_max_attempts: int = Field(default=5, ge=1, le=20)
+    webhook_backoff_schedule_s: list[float] = Field(
+        default_factory=lambda: [30.0, 120.0, 600.0, 1800.0]
+    )
+    webhook_poll_interval_s: float = Field(default=5.0, ge=0.1, le=3600.0)
+    webhook_delivery_timeout_s: float = Field(default=10.0, ge=0.1, le=300.0)
+    webhook_signing_rotation_grace_s: float = Field(default=86_400.0, ge=0.0, le=2_592_000.0)
+    # 0 disables usage-threshold events; otherwise emit usage.threshold.reached when
+    # a client crosses this fraction (0<pct<=1) of a plan quota window.
+    webhook_usage_threshold_pct: float = Field(default=0.0, ge=0.0, le=1.0)
+
     # Observability.
     log_level: LogLevel = "INFO"
 

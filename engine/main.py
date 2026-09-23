@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import ipaddress
 import logging
+import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
@@ -34,6 +35,7 @@ from engine.api.ws_router import router as ws_router
 from engine.audit import AuditLog
 from engine.auth.keys import KeyStore
 from engine.billing.store import BillingStore
+from engine.billing.webhooks import DeliveryWorker, WebhookDispatcher, WebhookStore
 from engine.config import Settings, load_config
 from engine.gateway import Gateway
 from engine.inference.base import InferenceBackend
@@ -46,6 +48,7 @@ from engine.logging_setup import configure_logging, get_logger
 from engine.models.registry import ModelRegistry
 from engine.models.service import ModelService
 from engine.quota.store import UsageStore
+from engine.quota.windows import week_start
 from engine.store.db import connect
 from engine.store.migrations import apply_migrations, migrations_at_head
 from engine.telemetry.counters import Counters
@@ -229,6 +232,19 @@ def create_app(
 
             health_task = asyncio.create_task(_health_loop())
 
+        # Outbound webhook delivery worker (Block 11.2): drains the delivery queue
+        # with retries/backoff. Off unless webhooks are enabled.
+        webhook_task: asyncio.Task[None] | None = None
+        if settings.webhooks_enabled:
+            worker = DeliveryWorker(
+                webhook_store,
+                max_attempts=settings.webhook_max_attempts,
+                backoff_schedule_s=tuple(settings.webhook_backoff_schedule_s),
+                delivery_timeout_s=settings.webhook_delivery_timeout_s,
+            )
+            webhook_task = asyncio.create_task(worker.run_loop(settings.webhook_poll_interval_s))
+            log.info("webhook_worker_started")
+
         # Start the metrics sampler once the loop is running (skip if disabled).
         if settings.metrics_interval_s > 0:
             telemetry.start(lambda: getattr(app.state, "backend", None))
@@ -268,6 +284,10 @@ def create_app(
                 health_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await health_task
+            if webhook_task is not None:
+                webhook_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await webhook_task
             for worker in getattr(app.state, "remote_workers", []):
                 with contextlib.suppress(Exception):
                     await worker.unload()
@@ -371,12 +391,56 @@ def create_app(
         default_plan_id=settings.default_plan,
     )
     app.state.billing = billing_store
-    app.state.gateway = Gateway(
+    gateway = Gateway(
         settings,
         KeyStore(settings.db_path),  # type: ignore[arg-type]
         UsageStore(settings.db_path),  # type: ignore[arg-type]
         billing_store,
     )
+    app.state.gateway = gateway
+
+    # Outbound webhooks (Block 11.2). The store always exists (operator endpoints
+    # work regardless); delivery + emission are gated on webhooks_enabled.
+    webhook_store = WebhookStore(settings.db_path)  # type: ignore[arg-type]
+    app.state.webhook_store = webhook_store
+    webhook_dispatcher = WebhookDispatcher(webhook_store, enabled=settings.webhooks_enabled)
+    app.state.webhook_dispatcher = webhook_dispatcher
+
+    # Usage-threshold events: emit when a client crosses a fraction of its plan's
+    # weekly quota. Off unless webhooks are enabled and a threshold is configured.
+    if settings.webhooks_enabled and settings.webhook_usage_threshold_pct > 0:
+        pct = settings.webhook_usage_threshold_pct
+
+        def _on_usage_recorded(key_id: str, _endpoint: str, _cu: float) -> None:
+            access = billing_store.key_access(key_id)
+            entitlement = access.entitlement
+            if entitlement is None or entitlement.quota_weekly_cu <= 0:
+                return
+            client_id = billing_store.client_id_for_key(key_id)
+            if client_id is None:
+                return
+            now = time.time()
+            window_start = week_start(now)
+            used = billing_store.client_usage_cu(client_id, window_start)
+            if used < pct * entitlement.quota_weekly_cu:
+                return
+            # Deterministic id -> at most one delivery per client/week/threshold.
+            webhook_dispatcher.emit(
+                client_id=client_id,
+                event_type="usage.threshold.reached",
+                data={
+                    "client_id": client_id,
+                    "window": "weekly",
+                    "used_cu": used,
+                    "limit_cu": entitlement.quota_weekly_cu,
+                    "threshold_pct": pct,
+                },
+                event_id=f"usage.threshold.weekly.{client_id}.{int(window_start)}.{pct}",
+                now=now,
+            )
+
+        gateway.on_usage_recorded = _on_usage_recorded
+
     app.state.event_bus = event_bus
     app.state.counters = counters
     app.state.telemetry = telemetry
