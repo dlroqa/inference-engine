@@ -12,7 +12,12 @@ from engine.inference.registry import (
     BackendRegistry,
     NoBackendAvailable,
 )
-from engine.inference.types import BackendState, Capabilities, GenerationRequest
+from engine.inference.types import (
+    BackendState,
+    Capabilities,
+    FeatureUnsupportedError,
+    GenerationRequest,
+)
 
 
 class StubBackend(InferenceBackend):
@@ -27,6 +32,7 @@ class StubBackend(InferenceBackend):
         health: bool | Exception | None = None,
         prefix: bool = False,
         kv: bool = False,
+        structured: bool = False,
     ) -> None:
         self._state = state
         self._model_id = model_id
@@ -34,6 +40,7 @@ class StubBackend(InferenceBackend):
         self._health = health
         self._prefix = prefix
         self._kv = kv
+        self._structured = structured
 
     @property
     def state(self) -> BackendState:
@@ -50,6 +57,7 @@ class StubBackend(InferenceBackend):
             backend="stub",
             model_id=self._model_id,
             context_length=self._ctx,
+            supports_structured_output=self._structured,
             supports_prefix_cache=self._prefix,
             supports_kv_cache_metrics=self._kv,
         )
@@ -74,6 +82,7 @@ def _entry(
     cap: int = 1,
     prefix_cache: bool = False,
     spillover: bool = False,
+    served_model: str | None = None,
 ) -> BackendEntry:
     return BackendEntry(
         name=name,
@@ -83,6 +92,7 @@ def _entry(
         max_in_flight=cap,
         prefix_cache=prefix_cache,
         spillover=spillover,
+        served_model=served_model,
     )
 
 
@@ -311,3 +321,127 @@ def test_status_reports_tier_and_external() -> None:
     rows = reg.status()
     assert rows[0]["tier"] == "primary" and rows[0]["external"] is False
     assert rows[1]["tier"] == "spillover" and rows[1]["external"] is True
+
+
+# -- heterogeneous model eligibility (Block 12.1) --------------------------
+
+
+def _hetero_reg() -> BackendRegistry:
+    """A pool where 'va' serves model-a and 'vb'/'sb' serve model-b."""
+    return BackendRegistry(
+        [
+            _entry("va", StubBackend(model_id="model-a"), cap=5),
+            _entry("vb", StubBackend(model_id="model-b"), cap=5),
+            _entry("sb", StubBackend(model_id="model-b"), cap=5),
+        ]
+    )
+
+
+def test_select_filters_by_model_never_picks_ineligible() -> None:
+    reg = _hetero_reg()
+    assert reg.select(model="model-a").name == "va"
+    # model-b is served by vb (order first) and sb; least-busy within them.
+    assert reg.select(model="model-b").name == "vb"
+    reg.entries[1].in_flight = 3  # vb busier than sb
+    assert reg.select(model="model-b").name == "sb"
+    # A model no backend serves -> nothing selectable.
+    assert reg.select(model="model-z") is None
+
+
+def test_acquire_reason_scoped_to_model_eligible_subset() -> None:
+    reg = _hetero_reg()
+    # model-a's only engine (va) is full -> busy, even though model-b engines idle.
+    reg.entries[0].in_flight = reg.entries[0].max_in_flight
+    with pytest.raises(NoBackendAvailable) as exc:
+        reg.acquire(model="model-a")
+    assert exc.value.reason == "busy"
+    # A known-but-unloaded model -> unloaded (not busy), scoped to that model.
+    reg2 = BackendRegistry([_entry("va", StubBackend(state=BackendState.UNLOADED))])
+    with pytest.raises(NoBackendAvailable) as exc2:
+        reg2.acquire(model="model-a")
+    assert exc2.value.reason == "unloaded"
+
+
+def test_known_models_union_live_and_configured_fallback() -> None:
+    live = StubBackend(model_id="model-a")
+    down = StubBackend(state=BackendState.UNLOADED)
+    reg = BackendRegistry(
+        [
+            _entry("va", live),
+            _entry("vb", down, served_model="model-b"),  # unloaded but configured
+        ]
+    )
+    # Live id from the ready backend + configured fallback from the down one.
+    assert reg.known_models() == {"model-a", "model-b"}
+
+
+def test_representative_for_matches_only_ready_live_model() -> None:
+    reg = _hetero_reg()
+    assert reg.representative_for("model-a").capabilities().model_id == "model-a"
+    assert reg.representative_for("model-z") is None
+    # An unloaded backend never satisfies representative_for, even if configured.
+    down = BackendRegistry(
+        [_entry("vb", StubBackend(state=BackendState.UNLOADED), served_model="model-b")]
+    )
+    assert down.representative_for("model-b") is None
+
+
+def test_homogeneous_default_unchanged() -> None:
+    # Two backends both serving the default id: model filter is a no-op, plain pool.
+    reg = BackendRegistry(
+        [
+            _entry(
+                "primary", StubBackend(model_id="local-model"), cap=1, served_model="local-model"
+            ),
+            _entry("w", StubBackend(model_id="local-model"), cap=1, served_model="local-model"),
+        ]
+    )
+    assert reg.known_models() == {"local-model"}
+    assert reg.select(model="local-model").name == "primary"
+    reg.entries[0].in_flight = 1
+    assert reg.select(model="local-model").name == "w"
+
+
+# -- capability-safe placement (Block 12.1) --------------------------------
+
+FEAT = frozenset({"structured_output"})
+
+
+def _same_model_mixed_features() -> BackendRegistry:
+    """Two engines serving model-a: only 'yes' supports structured output."""
+    return BackendRegistry(
+        [
+            _entry("no", StubBackend(model_id="model-a", structured=False), cap=5),
+            _entry("yes", StubBackend(model_id="model-a", structured=True), cap=5),
+        ]
+    )
+
+
+def test_feature_selects_only_supporting_backend_even_if_busier() -> None:
+    reg = _same_model_mixed_features()
+    reg.entries[1].in_flight = 4  # 'yes' is busier, but it is the only eligible one
+    assert reg.select(model="model-a", required_features=FEAT).name == "yes"
+    # Without the feature, least-busy wins ('no').
+    assert reg.select(model="model-a").name == "no"
+
+
+def test_feature_all_supporting_full_is_busy() -> None:
+    reg = _same_model_mixed_features()
+    reg.entries[1].in_flight = reg.entries[1].max_in_flight  # 'yes' saturated
+    with pytest.raises(NoBackendAvailable) as exc:
+        reg.acquire(model="model-a", required_features=FEAT)
+    assert exc.value.reason == "busy"
+
+
+def test_feature_no_supporting_candidate_raises_feature_unsupported() -> None:
+    reg = BackendRegistry([_entry("no", StubBackend(model_id="model-a", structured=False))])
+    with pytest.raises(FeatureUnsupportedError) as exc:
+        reg.acquire(model="model-a", required_features=FEAT)
+    assert exc.value.features == FEAT and exc.value.model == "model-a"
+
+
+def test_feature_unknown_model_is_unloaded_not_feature_error() -> None:
+    reg = _same_model_mixed_features()
+    with pytest.raises(NoBackendAvailable) as exc:
+        reg.acquire(model="model-z", required_features=FEAT)
+    assert exc.value.reason == "unloaded"

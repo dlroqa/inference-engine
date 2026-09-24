@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from engine.inference.types import (
     BackendBusyError,
     BackendNotReadyError,
+    FeatureUnsupportedError,
     GenerationFailedError,
 )
 from engine.logging_setup import get_logger
@@ -229,6 +230,44 @@ def register_exception_handlers(app: FastAPI) -> None:
             status_code=503,
             type="service_unavailable",
             code="model_not_loaded",
+            headers=_with_request_id(request),
+        )
+
+    @app.exception_handler(FeatureUnsupportedError)
+    async def _handle_feature_unsupported(
+        request: Request, exc: FeatureUnsupportedError
+    ) -> JSONResponse:
+        # Block 12.1: the model has a ready backend but none support a required
+        # feature (currently structured output). A request error (400), decided at
+        # placement so it cannot be raced past the capability check.
+        structured = "structured_output" in exc.features
+        detail = (
+            "structured output (response_format json) is not supported by any engine "
+            "serving this model"
+            if structured
+            else f"required feature(s) {', '.join(sorted(exc.features))} not supported "
+            "by any engine serving this model"
+        )
+        log_request_error(
+            request,
+            category=ErrorCategory.VALIDATION,
+            stage="backend",
+            detail=detail,
+            status_code=400,
+        )
+        if request.url.path.startswith("/v1/messages"):
+            return anthropic_error_response(
+                detail,
+                status_code=400,
+                type="invalid_request_error",
+                headers=_with_request_id(request),
+            )
+        return error_response(
+            detail,
+            status_code=400,
+            type="invalid_request_error",
+            param="response_format" if structured else None,
+            code="structured_output_unsupported" if structured else "feature_unsupported",
             headers=_with_request_id(request),
         )
 

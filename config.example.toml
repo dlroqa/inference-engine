@@ -69,7 +69,12 @@ log_level = "INFO"
 # name          = "vllm-a"
 # kind          = "remote_vllm"      # or "remote_sglang"
 # base_url      = "http://gpu-a:8000/v1"
-# model         = "meta-llama/Meta-Llama-3-8B-Instruct"
+# model         = "meta-llama/Meta-Llama-3-8B-Instruct"   # upstream/provider name
+# model_id      =                    # client-facing name (Block 12.1); omit ->
+#                                    # shared "local-model" (homogeneous pool). Set a
+#                                    # DISTINCT model_id per engine for a heterogeneous
+#                                    # pool where each serves a different model; a
+#                                    # request is placed only on an engine serving it.
 # max_in_flight = 8
 # prefix_cache  = true               # server maintains a prefix cache (gates affinity)
 # kv_metrics    = true               # scrape /metrics for KV/prefix-cache stats

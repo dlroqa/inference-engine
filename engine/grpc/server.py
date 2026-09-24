@@ -28,6 +28,7 @@ from engine.grpc import inference_pb2_grpc as _pb_grpc
 from engine.inference.scheduler import SchedulerSaturated
 from engine.inference.types import (
     BackendNotReadyError,
+    FeatureUnsupportedError,
     GenerationFailedError,
     GenerationRequest,
     Message,
@@ -134,6 +135,7 @@ class InferenceServicer(pb_grpc.InferenceServiceServicer):
                 max_tokens=gen_request.max_tokens or 256,
                 request_id=request_id,
                 on_saturated=_on_saturated,
+                required_features=frozenset(),
             )
         except _Saturated as exc:
             await context.abort(
@@ -147,6 +149,9 @@ class InferenceServicer(pb_grpc.InferenceServiceServicer):
             return
         except BackendNotReadyError as exc:
             await context.abort(grpc.StatusCode.UNAVAILABLE, str(exc))
+            return
+        except FeatureUnsupportedError as exc:  # defensive: gRPC requests no features
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
             return
 
         async for chunk in _stream(served, request_id, context):

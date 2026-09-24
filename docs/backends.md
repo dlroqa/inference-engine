@@ -89,9 +89,10 @@ vLLM/SGLang workers, or several remote workers — and route each request to the
 behaves exactly as before.
 
 The primary backend is whatever `backend_kind` selects; add more with
-`[[remote_workers]]` tables. All workers serve the engine's single `model_id`
-(the pool is homogeneous — heterogeneous pools and routing *policies* are later
-sub-slices):
+`[[remote_workers]]` tables. By default every worker exposes the shared
+`model_id` (a **homogeneous** pool, least-busy routed); to have engines serve
+**different** models, give each an explicit `model_id` — see [Heterogeneous pools
+& model eligibility](#heterogeneous-pools--model-eligibility-block-121) below.
 
 ```toml
 model_path       = "/models/llama3.gguf"   # primary = local llama.cpp
@@ -126,6 +127,63 @@ down is skipped by routing until it recovers. Local backends use their state.
 **Status.** `GET /admin/backends` (operator-gated) returns each backend's name,
 kind, local/remote, state, availability, and in-flight count — secret-free, no
 base URLs with credentials.
+
+### Heterogeneous pools & model eligibility (Block 12.1)
+
+By default a worker's client-facing name is the shared `"local-model"`, so the
+pool is homogeneous. Set a distinct **`model_id`** per worker to run vLLM and
+SGLang as **independent peer pools that serve different models**. `model` remains
+the upstream/provider model name sent to the server; `model_id` is what clients
+request:
+
+```toml
+model_id = "chat-8b"          # the primary (local) serves this client-facing id
+
+[[remote_workers]]
+name     = "vllm-a"
+kind     = "remote_vllm"
+base_url = "http://gpu-a:8000/v1"
+model    = "meta-llama/Meta-Llama-3-8B-Instruct"   # upstream name
+model_id = "chat-8b"          # same id as primary -> a homogeneous sub-pool
+
+[[remote_workers]]
+name     = "sglang-b"
+kind     = "remote_sglang"
+base_url = "http://gpu-b:30000/v1"
+model    = "Qwen/Qwen2.5-Coder-7B"
+model_id = "coder-7b"         # a *different* model -> its own eligible engine
+```
+
+**Eligibility is deterministic.** A request for model `X` is placed only on a
+ready backend whose live `capabilities().model_id` is `X`; an engine that serves a
+different model is never selected. `GET /v1/models` (and gRPC `ListModels`) return
+the **union** of served ids plus any virtual-model names. Placement then applies
+least-busy / prefix affinity *within* the eligible engines, exactly as before.
+
+**Feature eligibility.** A request that needs a feature (currently structured
+output, `response_format`) is placed only on an eligible engine whose live
+capabilities support it — even if a same-model engine without it is less busy.
+This check is bound to placement (it reserves the lease), so it cannot be raced.
+
+**Status codes.** An unknown model is `404` (even when every backend is down). A
+**configured** model with no ready eligible backend is `503` — its id stays
+advertised so clients can discover it. An eligible model whose ready engines are
+all at capacity gets the retriable saturation (`429` OpenAI / `529` Anthropic). A
+model that has a ready engine but none support a required feature is `400
+structured_output_unsupported`.
+
+**Names are unique.** Duplicate backend names, and a virtual-model name that
+collides with a physical model id, are rejected at startup. Loading a local model
+whose id would collide with a configured virtual name is refused (`409`).
+
+**Local fallback is unchanged.** The local llama.cpp backend advertises no prefix
+or KV-cache support and, when configured, keeps serving its `model_id`; disabling
+Block 12 routing leaves the Block 10 deterministic model map in place.
+
+`GET /admin/backends` shows each backend's live `model_id` and its configured
+`served_model` (so operators see why a model stays known while unavailable), and
+`POST /admin/route/plan` accepts `{"model": ..., "required_features": [...]}` to
+dry-run which engines are eligible.
 
 ### Prompt/KV-cache metrics & prefix affinity (sub-slice 4)
 

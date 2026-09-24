@@ -17,6 +17,8 @@ def test_lists_loaded_model(client: TestClient) -> None:
     assert body["data"][0]["object"] == "model"
 
 
-def test_empty_when_no_model(client_no_model: TestClient) -> None:
+def test_lists_configured_model_when_unloaded(client_no_model: TestClient) -> None:
+    # Block 12.1: a configured model stays advertised while unavailable, so clients
+    # discover it and get a 503 (not a 404) until it loads.
     body = client_no_model.get("/v1/models").json()
-    assert body["data"] == []
+    assert [m["id"] for m in body["data"]] == [MODEL_ID]

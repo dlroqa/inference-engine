@@ -61,6 +61,12 @@ class RemoteWorkerSpec(BaseModel):
     kind: Literal["remote_vllm", "remote_sglang"] = "remote_vllm"
     base_url: str
     model: str
+    #: Client-facing model name clients request (Block 12.1). ``None`` keeps the
+    #: shared ``"local-model"`` default, so a pool without explicit ``model_id``
+    #: values stays homogeneous. ``model`` remains the upstream/provider name sent
+    #: to the remote server; set distinct ``model_id`` values for a heterogeneous
+    #: pool where each engine serves a different model.
+    model_id: str | None = None
     api_key: str | None = None
     connect_timeout_s: float = Field(default=10.0, ge=0.1, le=600.0)
     read_timeout_s: float = Field(default=60.0, ge=0.1, le=3600.0)
@@ -72,6 +78,11 @@ class RemoteWorkerSpec(BaseModel):
     kv_metrics: bool = True  # scrape /metrics for KV/prefix-cache stats
     cost_per_1k_input: float = Field(default=0.0, ge=0.0)  # token cost accounting (5b)
     cost_per_1k_output: float = Field(default=0.0, ge=0.0)
+
+    @property
+    def effective_model_id(self) -> str:
+        """The client-facing model id this worker exposes (Block 12.1)."""
+        return self.model_id or "local-model"
 
 
 class VirtualModelSpec(BaseModel):
@@ -399,6 +410,38 @@ class Settings(BaseSettings):
                     f"external provider {prov.name!r} base_url host {host!r} is not in "
                     f"egress_allowlist {self.egress_allowlist}"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_pool_names(self) -> Settings:
+        """Backend names are unique and virtual names never shadow a physical model.
+
+        Block 12.1 makes model names client-facing routing keys, so they must be
+        unambiguous: duplicate backend names would make placement/attribution
+        undefined, and a virtual model whose name equals a configured physical
+        model id would silently shadow that model. Both are rejected at load.
+        """
+        names = [
+            "primary",
+            *(w.name for w in self.remote_workers),
+            *(p.name for p in self.external_providers),
+        ]
+        dupes = sorted({n for n in names if names.count(n) > 1})
+        if dupes:
+            raise ValueError(f"duplicate backend name(s): {', '.join(dupes)}")
+
+        physical = {
+            self.model_id,
+            *(w.effective_model_id for w in self.remote_workers),
+            *(p.effective_model_id for p in self.external_providers),
+        }
+        collisions = sorted(vm.name for vm in self.virtual_models if vm.name in physical)
+        if collisions:
+            raise ValueError(
+                "virtual model name(s) collide with a configured physical model id: "
+                + ", ".join(collisions)
+                + "; rename the virtual model so it does not shadow a physical model"
+            )
         return self
 
     @model_validator(mode="after")

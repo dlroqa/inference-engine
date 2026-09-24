@@ -89,7 +89,8 @@ def build_remote_worker(spec: RemoteWorkerSpec) -> InferenceBackend:
         RemoteBackendConfig(
             base_url=spec.base_url,
             remote_model=spec.model,
-            model_id="local-model",  # the pool serves the engine's single model_id
+            # Client-facing id (Block 12.1); default keeps the homogeneous pool.
+            model_id=spec.effective_model_id,
             api_key=spec.api_key,
             connect_timeout_s=spec.connect_timeout_s,
             read_timeout_s=spec.read_timeout_s,

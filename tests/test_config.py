@@ -233,6 +233,47 @@ def test_virtual_model_policy_validation(tmp_path):
         )
 
 
+def test_worker_model_id_default_and_override(tmp_path):
+    from engine.config import RemoteWorkerSpec
+
+    default = RemoteWorkerSpec(name="w", base_url="http://x/v1", model="org/M")
+    assert default.model_id is None
+    assert default.effective_model_id == "local-model"  # homogeneous default
+    named = RemoteWorkerSpec(name="w", base_url="http://x/v1", model="org/M", model_id="m-b")
+    assert named.effective_model_id == "m-b"
+
+
+def test_duplicate_backend_names_rejected(tmp_path):
+    from pydantic import ValidationError
+
+    from engine.config import Settings
+
+    with __import__("pytest").raises(ValidationError, match="duplicate backend name"):
+        Settings(
+            data_dir=tmp_path,
+            remote_workers=[
+                {"name": "dup", "base_url": "http://a/v1", "model": "m"},
+                {"name": "dup", "base_url": "http://b/v1", "model": "m"},
+            ],
+        )
+
+
+def test_virtual_model_name_colliding_with_physical_rejected(tmp_path):
+    from pydantic import ValidationError
+
+    from engine.config import Settings
+
+    # A virtual model named after a worker's client-facing model id shadows it.
+    with __import__("pytest").raises(ValidationError, match="collide with a configured physical"):
+        Settings(
+            data_dir=tmp_path,
+            remote_workers=[
+                {"name": "w", "base_url": "http://a/v1", "model": "org/M", "model_id": "m-b"}
+            ],
+            virtual_models=[{"name": "m-b", "policy": "route", "backends": ["w"]}],
+        )
+
+
 def test_cost_weights_parse_and_reject_negative(tmp_path):
     from pydantic import ValidationError
 

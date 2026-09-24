@@ -27,7 +27,6 @@ from engine.api.schemas.anthropic import (
     TextBlock,
 )
 from engine.api.serving import Served
-from engine.inference.base import InferenceBackend
 from engine.inference.scheduler import SchedulerSaturated
 from engine.inference.types import FinishReason, GenerationRequest
 
@@ -40,14 +39,6 @@ _STOP_REASON = {FinishReason.STOP: "end_turn", FinishReason.LENGTH: "max_tokens"
 
 def _stop_reason(reason: FinishReason) -> str:
     return _STOP_REASON.get(reason, "end_turn")
-
-
-def _ready_backend(request: Request) -> InferenceBackend:
-    # The pool is homogeneous (one model_id); any ready backend gives capabilities.
-    backend = request.app.state.backend_registry.representative()
-    if backend is None:
-        raise AnthropicError("no model is loaded", status_code=503, type="api_error")
-    return backend
 
 
 def _saturated(exc: SchedulerSaturated) -> AnthropicError:
@@ -66,7 +57,9 @@ def _event(event_type: str, data: dict[str, Any]) -> str:
 
 @router.post("/messages")
 async def messages(request: Request, body: MessagesRequest) -> Response:
-    _ready_backend(request)  # 503 if no backend is ready
+    # Resolve the requested name first so a truly unknown model is 404 even when
+    # every backend is down (Block 12.1); a known model with no ready eligible
+    # backend becomes 503 at placement.
     router = request.app.state.router
     model_id = body.model
     if not router.known_model(model_id):

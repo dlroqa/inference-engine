@@ -330,6 +330,7 @@ def create_app(
         prefix_cache=settings.backend_kind != "llamacpp" and settings.remote_prefix_cache,
         cost_per_1k_input=settings.primary_cost_per_1k_input,
         cost_per_1k_output=settings.primary_cost_per_1k_output,
+        served_model=settings.model_id,
     )
     app.state.remote_workers = []
     _worker_entries = []
@@ -346,6 +347,7 @@ def create_app(
                 prefix_cache=_spec.prefix_cache,
                 cost_per_1k_input=_spec.cost_per_1k_input,
                 cost_per_1k_output=_spec.cost_per_1k_output,
+                served_model=_spec.effective_model_id,
             )
         )
     # External providers (Block 10.7): OpenAI-compatible spillover backends, used
@@ -365,6 +367,7 @@ def create_app(
                 prefix_cache=_spec.prefix_cache,
                 cost_per_1k_input=_spec.cost_per_1k_input,
                 cost_per_1k_output=_spec.cost_per_1k_output,
+                served_model=_spec.effective_model_id,
                 spillover=True,
                 external=True,
             )

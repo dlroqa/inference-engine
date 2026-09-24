@@ -28,6 +28,7 @@ from engine.inference.router import Router
 from engine.inference.scheduler import Scheduler, SchedulerLease, SchedulerSaturated
 from engine.inference.types import (
     BackendNotReadyError,
+    FeatureUnsupportedError,
     FinishReason,
     GenerationRequest,
     GenerationResult,
@@ -69,6 +70,7 @@ async def start_generation(
     max_tokens: int,
     request_id: str,
     on_saturated: Callable[[SchedulerSaturated], Exception],
+    required_features: frozenset[str] = frozenset(),
 ) -> Served:
     """HTTP entry point: extract the API token from the request, then serve.
 
@@ -86,6 +88,7 @@ async def start_generation(
         max_tokens=max_tokens,
         request_id=request_id,
         on_saturated=on_saturated,
+        required_features=required_features,
     )
 
 
@@ -101,6 +104,7 @@ async def start_generation_core(
     max_tokens: int,
     request_id: str,
     on_saturated: Callable[[SchedulerSaturated], Exception],
+    required_features: frozenset[str] = frozenset(),
 ) -> Served:
     """Authenticate, admit, route, and start a generation; return a :class:`Served`.
 
@@ -142,7 +146,14 @@ async def start_generation_core(
     affinity_chars = state.settings.prefix_affinity_chars
     prefix_key = prompt_text[:affinity_chars] if affinity_chars > 0 else None
     try:
-        registry_lease = router.acquire(route_model, prefix_key)
+        registry_lease = router.acquire(route_model, prefix_key, required_features)
+    except FeatureUnsupportedError:
+        # A request error (400), not a capacity shed: the model has a ready backend
+        # but none support the required feature. Bound to placement so it cannot be
+        # bypassed by a time-of-check race. Release admission, don't count a shed.
+        lease.release()
+        access.abort()
+        raise
     except NoBackendAvailable as exc:
         lease.release()
         access.abort()

@@ -6,17 +6,20 @@ import pytest
 
 from engine.inference.registry import BackendEntry, BackendRegistry, NoBackendAvailable
 from engine.inference.router import Router, VirtualModel
-from engine.inference.types import BackendState
+from engine.inference.types import BackendState, FeatureUnsupportedError
 from tests.inference.test_registry import StubBackend
 
 
-def _entry(name: str, backend: StubBackend, *, cap: int = 5) -> BackendEntry:
+def _entry(
+    name: str, backend: StubBackend, *, cap: int = 5, served_model: str | None = None
+) -> BackendEntry:
     return BackendEntry(
         name=name,
         kind="remote_vllm",
         is_local=False,
         provider=lambda: backend,
         max_in_flight=cap,
+        served_model=served_model,
     )
 
 
@@ -107,3 +110,65 @@ def test_plan_shows_cascade_step_fallback() -> None:
     assert plan["chosen"] in {"b", "c"}
     assert plan["chosen_step"] == 1  # first step (primary) was unavailable
     assert plan["steps"][0]["chosen"] is None
+
+
+# -- heterogeneous physical models (Block 12.1) ----------------------------
+
+
+def _hetero_router() -> tuple[BackendRegistry, Router]:
+    reg = BackendRegistry(
+        [
+            _entry("va", StubBackend(model_id="model-a")),
+            _entry("vb", StubBackend(model_id="model-b")),
+            _entry("sb", StubBackend(model_id="model-b")),
+        ]
+    )
+    router = Router(reg, [VirtualModel(name="ab", policy="route", steps=(("va", "vb"),))])
+    return reg, router
+
+
+def test_physical_model_names_are_union_plus_virtual() -> None:
+    _reg, router = _hetero_router()
+    assert router.model_names() == ["model-a", "model-b", "ab"]
+    assert router.known_model("model-a") and router.known_model("model-b")
+    assert router.known_model("ab") and not router.known_model("model-z")
+
+
+def test_physical_acquire_reaches_only_eligible_engine() -> None:
+    _reg, router = _hetero_router()
+    lease = router.acquire("model-a")
+    assert lease.entry.name == "va"  # only engine serving model-a
+    lease.release()
+    for _ in range(4):
+        lease = router.acquire("model-b")
+        assert lease.entry.name in {"vb", "sb"}  # never va
+        lease.release()
+
+
+def test_plan_lists_only_eligible_candidates() -> None:
+    _reg, router = _hetero_router()
+    plan = router.plan("model-b")
+    names = {c["name"] for c in plan["steps"][0]["candidates"]}
+    assert names == {"vb", "sb"}  # va (model-a) excluded
+    assert plan["chosen"] in {"vb", "sb"}
+
+
+def test_virtual_route_applies_feature_eligibility() -> None:
+    # Virtual 'ab' spans two engines serving model-a; only 'yes' supports structured.
+    reg = BackendRegistry(
+        [
+            _entry("no", StubBackend(model_id="model-a", structured=False)),
+            _entry("yes", StubBackend(model_id="model-a", structured=True)),
+        ]
+    )
+    router = Router(reg, [VirtualModel(name="ab", policy="route", steps=(("no", "yes"),))])
+    feat = frozenset({"structured_output"})
+    for _ in range(3):
+        lease = router.acquire("ab", required_features=feat)
+        assert lease.entry.name == "yes"  # feature narrows the virtual route
+        lease.release()
+    # No supporting backend at all -> the virtual route reports the feature error.
+    reg2 = BackendRegistry([_entry("no", StubBackend(model_id="model-a", structured=False))])
+    router2 = Router(reg2, [VirtualModel(name="ab", policy="route", steps=(("no",),))])
+    with pytest.raises(FeatureUnsupportedError):
+        router2.acquire("ab", required_features=feat)

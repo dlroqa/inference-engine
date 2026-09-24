@@ -166,3 +166,24 @@ real model in CI (`scripts/structured_output_smoke.py`).
 Chat messages are rendered with the **model's own chat template** (via
 llama.cpp / GGUF metadata), so output quality depends on the loaded model. Prompt
 token counts are an estimate over the message text; completion counts are exact.
+
+## Model & feature support by route (Block 12.1)
+
+With a heterogeneous pool, model and feature support are **per route**, not
+global. A feature is "supported on a route" only when placement enforces it — a
+request is never sent to an engine that lacks the requested model or feature. The
+matrix below is an example; keep it accurate for your deployment (see
+[backends.md](backends.md#heterogeneous-pools--model-eligibility-block-121)).
+
+| Client model | Policy | Eligible engines | Streaming | Structured output |
+|---|---|---|---|---|
+| `chat-8b` | model map | vLLM + SGLang (homogeneous sub-pool) | ✅ | per engine |
+| `coder-7b` | model map | SGLang only | ✅ | per engine |
+| `<virtual>` | route / cascade | operator-chosen subset | ✅ | only if every selectable engine supports it |
+
+- **Unknown model** → `404 model_not_found` (even when all backends are down).
+- **Known model, no ready engine** → `503 model_not_loaded` (its id still appears
+  in `GET /v1/models`).
+- **Eligible engines all at capacity** → `429`/`529` retriable saturation.
+- **Model served, but no engine supports the required feature** → `400
+  structured_output_unsupported`.

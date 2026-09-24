@@ -36,12 +36,16 @@ def _build_dual_app(settings: Settings):
     app = create_app(settings, backend=primary)
     # Add a second backend to the pool; primary entry (order 0) is reused.
     primary_entry = app.state.backend_registry.entries[0]
+    # Keep the manual pool self-consistent (Block 12.1): both backends serve
+    # MODEL_ID, so the primary's configured fallback must match what it serves.
+    primary_entry.served_model = MODEL_ID
     worker_entry = BackendEntry(
         name="worker",
         kind="remote_vllm",
         is_local=False,
         provider=lambda: worker,
         max_in_flight=4,
+        served_model=MODEL_ID,
     )
     app.state.backend_registry = BackendRegistry([primary_entry, worker_entry])
     app.state.router = Router(app.state.backend_registry, [])

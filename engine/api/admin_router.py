@@ -147,6 +147,9 @@ class RoutePlanRequest(BaseModel):
     model_config = {"extra": "forbid"}
     model: str
     prompt: str | None = None
+    #: Request features to enforce during the dry-run (Block 12.1), e.g.
+    #: ``["structured_output"]``; candidates are narrowed to supporting backends.
+    required_features: list[str] = Field(default_factory=list)
 
 
 @router.post("/route/plan")
@@ -163,7 +166,7 @@ def route_plan(request: Request, body: RoutePlanRequest) -> dict[str, Any]:
     prefix_key = None
     if body.prompt and settings.prefix_affinity_chars > 0:
         prefix_key = body.prompt[: settings.prefix_affinity_chars]
-    return router_.plan(body.model, prefix_key)
+    return router_.plan(body.model, prefix_key, frozenset(body.required_features))
 
 
 @router.get("/routes")

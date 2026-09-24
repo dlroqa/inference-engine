@@ -210,3 +210,20 @@ class BackendBusyError(BackendError):
 
 class GenerationFailedError(BackendError):
     """A generation failed after it had started streaming."""
+
+
+class FeatureUnsupportedError(Exception):
+    """A request required a feature no ready, model-eligible backend supports.
+
+    Raised by placement (Block 12.1) when a known model has a ready backend but
+    none of the model-eligible backends support a required feature (e.g. structured
+    output). It is a *request* error (maps to HTTP 400), distinct from
+    ``BackendNotReadyError`` (503, nothing ready serves the model) and saturation
+    (all feature-capable candidates full). ``features`` names the unmet feature(s).
+    """
+
+    def __init__(self, features: frozenset[str], *, model: str | None = None) -> None:
+        self.features = features
+        self.model = model
+        detail = ", ".join(sorted(features)) or "requested feature"
+        super().__init__(detail)
