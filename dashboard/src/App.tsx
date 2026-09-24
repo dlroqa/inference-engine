@@ -2,16 +2,27 @@ import { useCallback, useEffect, useState, type JSX } from "react";
 import { api, ApiError, setApiKey } from "./lib/api";
 import { Icon, type IconName } from "./components/Icon";
 import { Overview } from "./views/Overview";
+import { Monitoring } from "./views/Monitoring";
+import { Clients } from "./views/Clients";
 import { Models } from "./views/Models";
 import { Logs } from "./views/Logs";
+import { Security } from "./views/Security";
 import { Keys } from "./views/Keys";
 
-type ViewId = "overview" | "models" | "logs" | "keys";
+type ViewId = "overview" | "monitoring" | "clients" | "models" | "logs" | "security" | "keys";
+
+interface NavOpts {
+  logQuery?: string;
+  clientId?: string | null;
+}
 
 const NAV: { id: ViewId; label: string; icon: IconName }[] = [
   { id: "overview", label: "Overview", icon: "gauge" },
+  { id: "monitoring", label: "Monitoring", icon: "activity" },
+  { id: "clients", label: "Clients", icon: "users" },
   { id: "models", label: "Models", icon: "cpu" },
   { id: "logs", label: "Logs", icon: "list" },
+  { id: "security", label: "Security", icon: "shield" },
   { id: "keys", label: "API keys", icon: "key" },
 ];
 
@@ -63,8 +74,14 @@ function ApiKeyGate({ onSubmit, error }: { onSubmit: (key: string) => void; erro
 
 export function App(): JSX.Element {
   const [view, setView] = useState<ViewId>("overview");
+  const [navOpts, setNavOpts] = useState<NavOpts>({});
   const [gate, setGate] = useState<GateState>("checking");
   const [gateError, setGateError] = useState<string | undefined>();
+
+  const navigate = useCallback((next: string, opts: NavOpts = {}) => {
+    setNavOpts(opts);
+    setView(next as ViewId);
+  }, []);
 
   const check = useCallback(() => {
     setGate("checking");
@@ -114,7 +131,7 @@ export function App(): JSX.Element {
             key={item.id}
             className="navbtn"
             aria-current={view === item.id ? "page" : undefined}
-            onClick={() => setView(item.id)}
+            onClick={() => navigate(item.id)}
           >
             <Icon name={item.icon} />
             {item.label}
@@ -123,8 +140,11 @@ export function App(): JSX.Element {
       </nav>
       <main className="main">
         {view === "overview" && <Overview />}
+        {view === "monitoring" && <Monitoring onNavigate={navigate} />}
+        {view === "clients" && <Clients focusClientId={navOpts.clientId} onNavigate={navigate} />}
         {view === "models" && <Models />}
-        {view === "logs" && <Logs />}
+        {view === "logs" && <Logs initialQuery={navOpts.logQuery} />}
+        {view === "security" && <Security />}
         {view === "keys" && <Keys />}
       </main>
     </div>

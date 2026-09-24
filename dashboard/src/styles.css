@@ -542,3 +542,65 @@ button {
   border: 1px dashed var(--color-border-strong);
   border-radius: var(--radius);
 }
+
+/* --- Clients / Monitoring / Security (Block 11.6) --- */
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.segbtn {
+  padding: 8px 12px;
+  min-height: 40px;
+  background: var(--color-muted);
+  color: var(--color-fg-muted);
+  border: none;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.segbtn + .segbtn {
+  border-left: 1px solid var(--color-border-strong);
+}
+.segbtn:hover {
+  background: var(--color-border);
+  color: var(--color-fg);
+}
+.segbtn[aria-pressed="true"] {
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+}
+
+.linkbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  min-height: 28px;
+  background: transparent;
+  border: none;
+  color: var(--color-info);
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.linkbtn:hover {
+  text-decoration: underline;
+}
+
+.clickrow {
+  cursor: pointer;
+}
+.clickrow.selected td {
+  background: var(--color-surface-2);
+  box-shadow: inset 2px 0 0 var(--color-accent);
+}
+
+.detail-h {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-fg-muted);
+  margin: 0 0 var(--space-2);
+}
