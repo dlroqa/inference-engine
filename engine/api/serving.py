@@ -23,7 +23,7 @@ from fastapi import Request
 
 from engine.gateway import ApiAccess, Gateway, extract_token
 from engine.inference.base import GenerationStream
-from engine.inference.registry import NoBackendAvailable, RegistryLease
+from engine.inference.registry import NoBackendAvailable, RegistryLease, RouteDecision
 from engine.inference.router import Router
 from engine.inference.scheduler import Scheduler, SchedulerLease, SchedulerSaturated
 from engine.inference.types import (
@@ -35,7 +35,7 @@ from engine.inference.types import (
 )
 from engine.logging_setup import get_logger
 from engine.telemetry.counters import Counters
-from engine.telemetry.route_metrics import RouteMetrics
+from engine.telemetry.route_metrics import RouteMetrics, output_tps_sample
 from engine.telemetry.service import Telemetry
 from engine.telemetry.taxonomy import classify
 
@@ -177,6 +177,24 @@ async def start_generation_core(
     try:
         stream = registry_lease.backend.generate(gen_request)
     except BaseException as exc:
+        # The route was already selected, so it must be accounted for exactly once
+        # with outcome "error" (Block 12.2a) before the leases are released.
+        _record_route_outcome(
+            route_metrics=route_metrics,
+            decision=registry_lease.decision,
+            request_id=request_id,
+            endpoint=endpoint,
+            model=model_id,
+            backend=registry_lease.entry.name,
+            queue_wait_ms=lease.waited_s * 1000.0,
+            prompt_tokens=0,
+            completion_tokens=0,
+            cost=0.0,
+            total_ms=None,
+            ttft_ms=None,
+            upstream_attempts=0,
+            outcome="error",
+        )
         registry_lease.release()
         lease.release()
         access.abort()
@@ -198,6 +216,75 @@ async def start_generation_core(
         counters=counters,
         telemetry=telemetry,
         scheduler=scheduler,
+    )
+
+
+def _record_route_outcome(
+    *,
+    route_metrics: RouteMetrics,
+    decision: RouteDecision | None,
+    request_id: str,
+    endpoint: str,
+    model: str,
+    backend: str,
+    queue_wait_ms: float | None,
+    prompt_tokens: int,
+    completion_tokens: int,
+    cost: float,
+    ttft_ms: float | None,
+    total_ms: float | None,
+    upstream_attempts: int,
+    outcome: str,
+) -> None:
+    """Record + log one routed terminal outcome (Block 12.2a), used by every path.
+
+    Centralizes route-metrics attribution and the ``route_decision`` structured log
+    so field meanings cannot drift between the normal finish and the synchronous
+    ``generate()`` failure path. Emits **no** prompt/completion content, credentials,
+    headers, or URLs — only the safe routing/latency fields below.
+    """
+    error = outcome == "error"
+    cancelled = outcome == "cancelled"
+    route_metrics.record(
+        model=model,
+        backend=backend,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        cost=cost,
+        total_ms=total_ms,
+        ttft_ms=ttft_ms,
+        error=error,
+        cancelled=cancelled,
+        reason=decision.reason if decision else None,
+        fallbacks=decision.fallbacks if decision else (),
+        policy=decision.policy if decision else None,
+        tier=decision.tier if decision else None,
+        queue_wait_ms=queue_wait_ms,
+        upstream_attempts=upstream_attempts,
+    )
+    output_tps = output_tps_sample(
+        completion_tokens=completion_tokens, total_ms=total_ms, error=error, cancelled=cancelled
+    )
+    _log.info(
+        "route_decision",
+        extra={
+            "request_id": request_id,
+            "endpoint": endpoint,
+            "model": model,
+            "backend": backend,
+            "engine": decision.engine if decision else None,
+            "tier": decision.tier if decision else None,
+            "reason": decision.reason if decision else None,
+            "fallbacks": list(decision.fallbacks) if decision else [],
+            "policy": decision.policy if decision else None,
+            "step": decision.step if decision else None,
+            "queue_wait_ms": round(queue_wait_ms, 1) if queue_wait_ms is not None else None,
+            "ttft_ms": round(ttft_ms, 1) if ttft_ms is not None else None,
+            "output_tps": round(output_tps, 2) if output_tps is not None else None,
+            "total_ms": round(total_ms, 1) if total_ms is not None else None,
+            "upstream_attempts": upstream_attempts,
+            "outcome": outcome,
+        },
     )
 
 
@@ -225,16 +312,22 @@ def finish_generation(served: Served, *, error: BaseException | None) -> Generat
         prompt_tokens / 1000.0 * entry.cost_per_1k_input
         + completion_tokens / 1000.0 * entry.cost_per_1k_output
     )
-    served.route_metrics.record(
+    outcome = "cancelled" if cancelled else ("error" if error is not None else "ok")
+    _record_route_outcome(
+        route_metrics=served.route_metrics,
+        decision=served.registry_lease.decision,
+        request_id=served.request_id,
+        endpoint=served.endpoint,
         model=served.model_id,
         backend=entry.name,
+        queue_wait_ms=served.lease.waited_s * 1000.0,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         cost=cost,
         total_ms=result.timings.total_ms if result else None,
         ttft_ms=result.timings.ttft_ms if result else None,
-        error=error is not None,
-        cancelled=cancelled,
+        upstream_attempts=getattr(served.stream, "upstream_attempts", 0),
+        outcome=outcome,
     )
     served.access.finalize(
         request_id=served.request_id,

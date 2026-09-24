@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Literal
 
 from engine.inference.base import InferenceBackend
 from engine.inference.types import BackendState, FeatureUnsupportedError
@@ -105,6 +106,27 @@ class BackendEntry:
         return live if live is not None else self.served_model
 
 
+@dataclass(frozen=True, slots=True)
+class RouteDecision:
+    """Why a request landed on a backend (Block 12.2a) — observability only.
+
+    ``backend`` is the configured entry name (the current pool identifier reported
+    to operators); ``engine`` is its kind (vLLM/SGLang/local/external). ``reason``
+    names the algorithm that selected the final entry; ``fallbacks`` records extra
+    routing facts without overwriting ``reason`` (deterministic order: cascade
+    escalation first, spillover second). Frozen — rebuild with ``dataclasses.replace``
+    to add router policy context; never mutate a decision attached to a lease.
+    """
+
+    backend: str
+    engine: str
+    tier: Literal["primary", "spillover"]
+    reason: Literal["model_map", "least_busy", "prefix_affinity", "affinity_fallback"]
+    fallbacks: tuple[Literal["cascade_escalation", "spillover"], ...] = ()
+    policy: Literal["base", "route", "cascade"] = "base"
+    step: int | None = None
+
+
 @dataclass(slots=True)
 class RegistryLease:
     """Holds one in-flight slot on a chosen backend; release exactly once."""
@@ -112,6 +134,9 @@ class RegistryLease:
     registry: BackendRegistry
     entry: BackendEntry
     _released: bool = field(default=False)
+    #: Why this lease's backend was chosen (Block 12.2a). Always set for a
+    #: successfully acquired lease; the router may replace it with policy context.
+    decision: RouteDecision | None = None
 
     @property
     def backend(self) -> InferenceBackend:
@@ -231,6 +256,22 @@ class BackendRegistry:
         capable backend, or an unrelated pool — it is plain least-busy among ready,
         not-full backends (identical to sub-slice 3).
         """
+        return self._select_detailed(prefix_key, allowed, model, required_features)[0]
+
+    def _select_detailed(
+        self,
+        prefix_key: str | None,
+        allowed: frozenset[str] | None,
+        model: str | None,
+        required_features: frozenset[str],
+    ) -> tuple[BackendEntry | None, str, str, int]:
+        """``select`` plus attribution: (entry, reason, tier, available_in_tier).
+
+        ``available_in_tier`` is the count of ready, eligible, capacity-available
+        candidates in the *selected* tier before selection; it lets ``acquire``
+        label a single-candidate physical placement ``model_map`` (Block 12.2a).
+        Selection behavior is identical to Block 10/12.1 — this only names it.
+        """
         pool = [
             e
             for e in self._entries
@@ -240,9 +281,24 @@ class BackendRegistry:
         # spillover (e.g. external providers) when no local backend can admit.
         local = [e for e in pool if not e.spillover]
         spill = [e for e in pool if e.spillover]
-        return self._pick(local, prefix_key) or self._pick(spill, prefix_key)
+        entry, reason = self._pick(local, prefix_key)
+        tier = "primary"
+        if entry is None:
+            entry, reason = self._pick(spill, prefix_key)
+            tier = "spillover"
+        if entry is None:
+            return None, "", tier, 0
+        tier_pool = local if tier == "primary" else spill
+        available = sum(1 for e in tier_pool if e.is_ready() and e.has_capacity())
+        # A physical-model request with a single capacity-available candidate is a
+        # deterministic model map, not a least-busy choice among peers.
+        if reason == "least_busy" and available == 1 and model is not None:
+            reason = "model_map"
+        return entry, reason, tier, available
 
-    def _pick(self, pool: list[BackendEntry], prefix_key: str | None) -> BackendEntry | None:
+    def _pick(
+        self, pool: list[BackendEntry], prefix_key: str | None
+    ) -> tuple[BackendEntry | None, str]:
         candidates = [e for e in pool if e.is_ready() and e.has_capacity()]
         if prefix_key:
             capable = sorted(
@@ -253,11 +309,15 @@ class BackendRegistry:
                 digest = hashlib.sha256(prefix_key.encode("utf-8")).hexdigest()
                 target = capable[int(digest, 16) % len(capable)]
                 if target.has_capacity():
-                    return target
+                    return target, "prefix_affinity"
                 # target saturated: fall through to least-busy placement
+                if candidates:
+                    fallback = min(candidates, key=lambda e: (e.in_flight, e.order))
+                    return fallback, "affinity_fallback"
+                return None, ""
         if not candidates:
-            return None
-        return min(candidates, key=lambda e: (e.in_flight, e.order))
+            return None, ""
+        return min(candidates, key=lambda e: (e.in_flight, e.order)), "least_busy"
 
     def acquire(
         self,
@@ -279,7 +339,9 @@ class BackendRegistry:
           :class:`FeatureUnsupportedError` (a 400 request error);
         * no ready backend serves the model at all -> ``NoBackendAvailable("unloaded")``.
         """
-        entry = self.select(prefix_key, allowed, model, required_features)
+        entry, reason, tier, _available = self._select_detailed(
+            prefix_key, allowed, model, required_features
+        )
         if entry is None:
             scope = [e for e in self._entries if allowed is None or e.name in allowed]
             # Ready backends that serve the requested model (ignoring features).
@@ -294,7 +356,14 @@ class BackendRegistry:
             # Feature-capable backends exist but all are at capacity.
             raise NoBackendAvailable("busy")
         entry.in_flight += 1
-        return RegistryLease(registry=self, entry=entry)
+        decision = RouteDecision(
+            backend=entry.name,
+            engine=entry.kind,
+            tier=tier,  # type: ignore[arg-type]
+            reason=reason,  # type: ignore[arg-type]
+            fallbacks=("spillover",) if tier == "spillover" else (),
+        )
+        return RegistryLease(registry=self, entry=entry, decision=decision)
 
     def _release(self, entry: BackendEntry) -> None:
         if entry.in_flight > 0:

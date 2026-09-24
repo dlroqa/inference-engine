@@ -13,7 +13,22 @@ update), so no locking is needed for the single-process engine.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+
+def output_tps_sample(
+    *, completion_tokens: int, total_ms: float | None, error: bool, cancelled: bool
+) -> float | None:
+    """End-to-end output rate (tok/s, incl. TTFT) for a route sample, or None.
+
+    A sample counts only for a successful, non-cancelled request that produced
+    tokens over a positive duration (Block 12.2a). The single definition is shared
+    by :meth:`RouteMetrics.record` and the serving ``route_decision`` log so the
+    metric and the log never disagree.
+    """
+    if error or cancelled or completion_tokens <= 0 or not total_ms or total_ms <= 0:
+        return None
+    return completion_tokens / (total_ms / 1000.0)
 
 
 @dataclass
@@ -26,10 +41,22 @@ class RouteStat:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cost: float = 0.0
+    #: Total upstream generation POSTs attributed to this route (Block 12.2a).
+    upstream_attempts: int = 0
+    #: Last-seen tier for this (model, backend) row (stable: a backend's tier
+    #: does not change within a run).
+    tier: str | None = None
     _total_ms_sum: float = 0.0
     _total_ms_n: int = 0
     _ttft_ms_sum: float = 0.0
     _ttft_ms_n: int = 0
+    _queue_ms_sum: float = 0.0
+    _queue_ms_n: int = 0
+    _output_tps_sum: float = 0.0
+    _output_tps_n: int = 0
+    reasons: dict[str, int] = field(default_factory=dict)
+    fallbacks: dict[str, int] = field(default_factory=dict)
+    policies: dict[str, int] = field(default_factory=dict)
 
     @property
     def success_rate(self) -> float | None:
@@ -45,6 +72,14 @@ class RouteStat:
     def avg_ttft_ms(self) -> float | None:
         return self._ttft_ms_sum / self._ttft_ms_n if self._ttft_ms_n else None
 
+    @property
+    def avg_queue_wait_ms(self) -> float | None:
+        return self._queue_ms_sum / self._queue_ms_n if self._queue_ms_n else None
+
+    @property
+    def avg_output_tps(self) -> float | None:
+        return self._output_tps_sum / self._output_tps_n if self._output_tps_n else None
+
     def as_dict(self) -> dict[str, object]:
         return {
             "requests": self.requests,
@@ -56,6 +91,13 @@ class RouteStat:
             "success_rate": self.success_rate,
             "avg_total_ms": self.avg_total_ms,
             "avg_ttft_ms": self.avg_ttft_ms,
+            "avg_queue_wait_ms": self.avg_queue_wait_ms,
+            "avg_output_tps": self.avg_output_tps,
+            "upstream_attempts": self.upstream_attempts,
+            "tier": self.tier,
+            "reasons": dict(sorted(self.reasons.items())),
+            "fallbacks": dict(sorted(self.fallbacks.items())),
+            "policies": dict(sorted(self.policies.items())),
         }
 
 
@@ -78,16 +120,35 @@ class RouteMetrics:
         ttft_ms: float | None,
         error: bool,
         cancelled: bool,
+        reason: str | None = None,
+        fallbacks: tuple[str, ...] = (),
+        policy: str | None = None,
+        tier: str | None = None,
+        queue_wait_ms: float | None = None,
+        upstream_attempts: int = 0,
     ) -> None:
         stat = self._routes.setdefault((model, backend), RouteStat())
         stat.requests += 1
         stat.prompt_tokens += prompt_tokens
         stat.completion_tokens += completion_tokens
         stat.cost += cost
+        stat.upstream_attempts += upstream_attempts
+        if tier is not None:
+            stat.tier = tier
+        if reason is not None:
+            stat.reasons[reason] = stat.reasons.get(reason, 0) + 1
+        for fb in fallbacks:
+            stat.fallbacks[fb] = stat.fallbacks.get(fb, 0) + 1
+        if policy is not None:
+            stat.policies[policy] = stat.policies.get(policy, 0) + 1
         if error:
             stat.errors += 1
         if cancelled:
             stat.cancelled += 1
+        # Queue wait is measured for every routed request (even errors/cancels).
+        if queue_wait_ms is not None:
+            stat._queue_ms_sum += queue_wait_ms
+            stat._queue_ms_n += 1
         # Latency is only meaningful for a request that actually produced tokens.
         if not error and not cancelled:
             if total_ms is not None:
@@ -96,6 +157,12 @@ class RouteMetrics:
             if ttft_ms is not None:
                 stat._ttft_ms_sum += ttft_ms
                 stat._ttft_ms_n += 1
+        tps = output_tps_sample(
+            completion_tokens=completion_tokens, total_ms=total_ms, error=error, cancelled=cancelled
+        )
+        if tps is not None:
+            stat._output_tps_sum += tps
+            stat._output_tps_n += 1
 
     def record_shed(self, model: str) -> None:
         """A request that was never admitted (saturation / no backend available)."""

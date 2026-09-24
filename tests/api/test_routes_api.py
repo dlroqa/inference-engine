@@ -58,6 +58,20 @@ def test_routes_records_cost_tokens_and_latency(priced_client: TestClient) -> No
     assert snap["totals"]["requests"] == 1
 
 
+def test_routes_exposes_enriched_decision_fields(priced_client: TestClient) -> None:
+    # Block 12.2a: a single-candidate physical request is a model_map on the
+    # primary tier, and the snapshot surfaces the new observability fields.
+    assert _chat(priced_client).status_code == 200
+    row = priced_client.get("/admin/routes").json()["routes"][0]
+    assert row["tier"] == "primary"
+    assert row["reasons"] == {"model_map": 1}
+    assert row["policies"] == {"base": 1}
+    assert row["fallbacks"] == {}
+    assert row["avg_queue_wait_ms"] is not None  # measured for every routed request
+    assert row["avg_output_tps"] is not None  # a successful token-producing request
+    assert row["upstream_attempts"] == 0  # local backend has no upstream POSTs
+
+
 def test_routes_records_shed_when_backend_full(priced_client: TestClient) -> None:
     # Saturate the only backend's capacity so admission sheds the request.
     entry = priced_client.app.state.backend_registry.entries[0]

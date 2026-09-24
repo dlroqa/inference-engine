@@ -74,6 +74,9 @@ class _Outcome:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     usage_seen: bool = False
+    #: Number of upstream generation POSTs made, including the first (Block 12.2a):
+    #: a successful first call records 1; one pre-stream retry records 2.
+    upstream_attempts: int = 0
 
 
 class RemoteGenerationStream(GenerationStream):
@@ -161,6 +164,12 @@ class RemoteGenerationStream(GenerationStream):
         # Remote usage is only known once the terminal usage chunk arrives, so
         # this is 0 until then (honest: the base contract allows 0 = unavailable).
         return self._outcome.prompt_tokens if self._outcome.usage_seen else 0
+
+    @property
+    def upstream_attempts(self) -> int:
+        """Upstream generation POSTs made so far (Block 12.2a); shared with the
+        producer generator, so it is accurate after streaming completes."""
+        return self._outcome.upstream_attempts
 
 
 @dataclass(slots=True)
@@ -413,6 +422,7 @@ class OpenAICompatibleRemoteBackend(InferenceBackend):
         yielded_any = False
         while True:
             try:
+                outcome.upstream_attempts += 1  # count every POST, including the first
                 async with self._client.stream("POST", path, json=body, headers=headers) as resp:
                     if resp.status_code != 200:
                         await resp.aread()

@@ -171,12 +171,15 @@ def route_plan(request: Request, body: RoutePlanRequest) -> dict[str, Any]:
 
 @router.get("/routes")
 def routes(request: Request) -> dict[str, Any]:
-    """Per-route cost + performance (Block 10, sub-slice 5b), secret-free.
+    """Per-route cost + performance (Block 10.5b + 12.2a), secret-free.
 
-    Rows are keyed by (virtual-model, backend) with request/error/cancel counts,
-    tokens, token cost, success rate, and average total/first-token latency; plus
-    per-model admission sheds and overall totals. Measurement only — it does not
-    change routing (see docs/backends.md).
+    Rows are keyed by (model, backend) with request/error/cancel counts, tokens,
+    token cost, success rate, average total/first-token latency, and — added in
+    Block 12.2a — average queue wait, average end-to-end output rate (tok/s),
+    total upstream attempts, the backend tier, and count maps of the route
+    ``reasons``/``fallbacks``/``policies`` seen; plus per-model admission sheds and
+    overall totals. Measurement only — it does not change routing, and it never
+    exposes prompts, completions, credentials, or headers (see docs/backends.md).
     """
     require_operator(request)
     return request.app.state.route_metrics.snapshot()
