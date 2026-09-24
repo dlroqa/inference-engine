@@ -326,6 +326,10 @@ affinity, spillover, admission, retry, or public contract. The `route_decision`
 log and `/admin/routes` **never** contain prompts, completions, credentials,
 authorization or other sensitive headers, or remote URLs.
 
+The reproducible benchmark harness that consumes these signals and gates a
+candidate policy against a baseline (RFC §8.1/§8.2) is documented in
+[benchmarks.md](benchmarks.md) (`python -m engine.bench`).
+
 ### External-provider spillover (sub-slice 7)
 
 The pool can include **external providers** — OpenAI-compatible endpoints
