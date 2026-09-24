@@ -73,3 +73,54 @@ def test_empty_snapshot() -> None:
     snap = RouteMetrics().snapshot()
     assert snap["routes"] == []
     assert snap["totals"]["requests"] == 0
+
+
+# -- Block 12.2a enrichment ------------------------------------------------
+
+
+def test_queue_wait_average_over_all_requests() -> None:
+    m = RouteMetrics()
+    _record(m, queue_wait_ms=10.0, total_ms=100.0, completion_tokens=5)
+    _record(m, queue_wait_ms=30.0, error=True)  # queue wait counts even for errors
+    row = m.snapshot()["routes"][0]
+    assert row["avg_queue_wait_ms"] == 20.0
+
+
+def test_output_tps_only_valid_samples() -> None:
+    m = RouteMetrics()
+    _record(m, completion_tokens=10, total_ms=1000.0)  # 10 tok/s (valid)
+    _record(m, completion_tokens=0, total_ms=1000.0)  # zero tokens: no sample
+    _record(m, completion_tokens=5, total_ms=1000.0, cancelled=True)  # cancelled: no sample
+    _record(m, completion_tokens=5, total_ms=1000.0, error=True)  # error: no sample
+    _record(m, completion_tokens=5, total_ms=0.0)  # non-positive duration: no sample
+    row = m.snapshot()["routes"][0]
+    assert row["avg_output_tps"] == 10.0  # only the first request contributed
+
+
+def test_reasons_fallbacks_policies_tier_and_attempts() -> None:
+    m = RouteMetrics()
+    _record(m, reason="model_map", policy="base", tier="primary", upstream_attempts=1)
+    _record(
+        m,
+        reason="least_busy",
+        fallbacks=("cascade_escalation", "spillover"),
+        policy="cascade",
+        tier="spillover",
+        upstream_attempts=2,
+    )
+    row = m.snapshot()["routes"][0]
+    assert row["reasons"] == {"least_busy": 1, "model_map": 1}
+    assert row["fallbacks"] == {"cascade_escalation": 1, "spillover": 1}
+    assert row["policies"] == {"base": 1, "cascade": 1}
+    assert row["tier"] == "spillover"  # last-seen, stable per backend in practice
+    assert row["upstream_attempts"] == 3
+
+
+def test_old_fields_remain_compatible() -> None:
+    # Recording without any new kwargs still works and old fields are unchanged.
+    m = RouteMetrics()
+    _record(m, prompt_tokens=100, completion_tokens=50, cost=0.15, total_ms=200.0, ttft_ms=40.0)
+    row = m.snapshot()["routes"][0]
+    assert row["avg_total_ms"] == 200.0 and row["avg_ttft_ms"] == 40.0
+    assert row["avg_queue_wait_ms"] is None and row["avg_output_tps"] == 250.0
+    assert row["reasons"] == {} and row["tier"] is None

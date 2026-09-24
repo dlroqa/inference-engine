@@ -275,7 +275,10 @@ totals:
   "routes": [
     {"model": "fast", "backend": "vllm-a", "requests": 120, "errors": 1,
      "prompt_tokens": 30000, "completion_tokens": 8000, "cost": 0.114,
-     "success_rate": 0.9917, "avg_total_ms": 240.0, "avg_ttft_ms": 38.0}
+     "success_rate": 0.9917, "avg_total_ms": 240.0, "avg_ttft_ms": 38.0,
+     "avg_queue_wait_ms": 5.2, "avg_output_tps": 34.1, "upstream_attempts": 121,
+     "tier": "primary", "reasons": {"model_map": 118, "least_busy": 2},
+     "fallbacks": {}, "policies": {"base": 120}}
   ],
   "sheds": {"fast": 3},
   "totals": {"requests": 120, "errors": 1, "cost": 0.114, "sheds": 3}
@@ -292,6 +295,36 @@ routing is a later refinement) — and it does not attempt a "quality" score, wh
 needs evaluation harnesses (Block 12). Latency is recorded only for requests that
 actually produced tokens (errors/cancellations are counted but excluded from the
 averages). External-provider spillover is sub-slice 7.
+
+#### Route-decision observability (Block 12.2a)
+
+Every routed request also records *why* it landed where it did — the substrate the
+Block 12.2b benchmarks and 12.3 policy evaluation report on. `/admin/routes` rows
+gain these fields, and one secret-free `route_decision` JSON log (logger
+`engine.request`) is emitted per terminal outcome:
+
+| Field | Meaning |
+| --- | --- |
+| `backend` | configured backend name — the current **pool identifier** for operators |
+| `engine` | backend kind (`llamacpp` local, `remote_vllm`, `remote_sglang`, external) |
+| `tier` | `primary` or `spillover` (not an engine/pool id) |
+| `reason` | the algorithm that chose the final entry: `model_map` (one ready eligible candidate for a physical model), `least_busy` (fewest in-flight among several), `prefix_affinity` (prefix-cache target), `affinity_fallback` (affinity target full → least-busy) |
+| `fallbacks` | extra facts, deterministic order: `cascade_escalation` (a virtual cascade selected a step after step 0), then `spillover` (the entry is in the spillover tier) |
+| `policy` / `step` | router policy (`base`/`route`/`cascade`) and the cascade step index |
+| `queue_wait_ms` | scheduler admission wait (recorded for every routed request) |
+| `ttft_ms`, `total_ms` | time-to-first-token and end-to-end latency (token-producing requests) |
+| `output_tps` | **end-to-end** output rate `completion_tokens / (total_ms/1000)`, incl. TTFT; sampled only for successful, token-producing requests |
+| `upstream_attempts` | remote generation POSTs made, **including the first** (1 = first-try success; 2 = one pre-stream retry); 0 for a local backend |
+| `outcome` | `ok`, `error`, or `cancelled` (an explicit error wins over cancellation) |
+
+`/admin/routes` additionally aggregates per-route `avg_queue_wait_ms`,
+`avg_output_tps`, total `upstream_attempts`, the stable `tier`, and count maps of
+the `reasons`/`fallbacks`/`policies` seen.
+
+This is **measurement only** and changes no routing outcome, eligibility,
+affinity, spillover, admission, retry, or public contract. The `route_decision`
+log and `/admin/routes` **never** contain prompts, completions, credentials,
+authorization or other sensitive headers, or remote URLs.
 
 ### External-provider spillover (sub-slice 7)
 

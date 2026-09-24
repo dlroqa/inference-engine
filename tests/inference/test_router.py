@@ -172,3 +172,60 @@ def test_virtual_route_applies_feature_eligibility() -> None:
     router2 = Router(reg2, [VirtualModel(name="ab", policy="route", steps=(("no",),))])
     with pytest.raises(FeatureUnsupportedError):
         router2.acquire("ab", required_features=feat)
+
+
+# -- route-decision policy context (Block 12.2a) ---------------------------
+
+
+def test_decision_physical_is_base_policy() -> None:
+    _reg, router = _hetero_router()
+    d = router.acquire("model-a").decision
+    assert d.policy == "base" and d.step is None and d.fallbacks == ()
+
+
+def test_decision_virtual_route_is_step_zero() -> None:
+    _reg, router = _hetero_router()  # virtual 'ab' route over va,vb
+    d = router.acquire("ab").decision
+    assert d.policy == "route" and d.step == 0
+
+
+def test_decision_cascade_escalation_records_step_and_fallback() -> None:
+    reg = BackendRegistry(
+        [
+            _entry("primary", StubBackend(model_id="m")),
+            _entry("b", StubBackend(model_id="m")),
+        ]
+    )
+    router = Router(
+        reg, [VirtualModel(name="tiered", policy="cascade", steps=(("primary",), ("b",)))]
+    )
+    reg.entries[0].provider = lambda: StubBackend(state=BackendState.UNLOADED)  # step 0 down
+    d = router.acquire("tiered").decision
+    assert d.policy == "cascade" and d.step == 1
+    assert d.fallbacks == ("cascade_escalation",)
+
+
+def test_decision_cascade_escalation_then_spillover_preserves_order() -> None:
+    primary = BackendEntry(
+        name="primary",
+        kind="remote_vllm",
+        is_local=False,
+        provider=lambda: StubBackend(state=BackendState.UNLOADED),
+        max_in_flight=5,
+    )
+    ext = BackendEntry(
+        name="ext",
+        kind="remote_vllm",
+        is_local=False,
+        provider=lambda: StubBackend(model_id="m"),
+        max_in_flight=5,
+        spillover=True,
+    )
+    reg = BackendRegistry([primary, ext])
+    router = Router(
+        reg, [VirtualModel(name="tiered", policy="cascade", steps=(("primary",), ("ext",)))]
+    )
+    d = router.acquire("tiered").decision
+    # Step 1 landed on a spillover backend: cascade escalation first, spillover second.
+    assert d.step == 1 and d.tier == "spillover"
+    assert d.fallbacks == ("cascade_escalation", "spillover")

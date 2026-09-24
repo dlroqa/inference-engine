@@ -20,7 +20,7 @@ answers the same question without reserving anything (the dry-run explanation).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from engine.inference.registry import (
     BackendEntry,
@@ -90,20 +90,26 @@ class Router:
         the edge to map to a 400.
         """
         if not self._is_virtual(name):
-            return self._registry.acquire(
+            lease = self._registry.acquire(
                 prefix_key, model=name, required_features=required_features
             )
+            return _with_policy(lease, policy="base", step=None)
         # Cascade across steps; keep the most actionable failure if none take it.
         saw_busy = saw_feature = False
-        for scope in self._scopes(name):
+        policy = self._vmodels[name].policy
+        for i, scope in enumerate(self._scopes(name)):
             try:
-                return self._registry.acquire(
+                lease = self._registry.acquire(
                     prefix_key, allowed=scope, required_features=required_features
                 )
             except NoBackendAvailable as exc:
                 saw_busy = saw_busy or exc.reason == "busy"
+                continue
             except FeatureUnsupportedError:
                 saw_feature = True
+                continue
+            # Only a step that actually acquired the lease records escalation.
+            return _with_policy(lease, policy=policy, step=i, escalated=i > 0)
         if saw_busy:  # a valid placement existed momentarily; retriable
             raise NoBackendAvailable("busy")
         if saw_feature:
@@ -151,6 +157,21 @@ class Router:
             "chosen_step": chosen_step,
             "steps": steps_out,
         }
+
+
+def _with_policy(
+    lease: RegistryLease, *, policy: str, step: int | None, escalated: bool = False
+) -> RegistryLease:
+    """Add router policy context to a lease's (frozen) decision (Block 12.2a).
+
+    Prepends ``cascade_escalation`` ahead of any ``spillover`` fallback the registry
+    already recorded, preserving the deterministic order (escalation first).
+    """
+    decision = lease.decision
+    if decision is not None:
+        fallbacks = ("cascade_escalation", *decision.fallbacks) if escalated else decision.fallbacks
+        lease.decision = replace(decision, policy=policy, step=step, fallbacks=fallbacks)  # type: ignore[arg-type]
+    return lease
 
 
 def _candidate_row(entry: BackendEntry) -> dict[str, object]:

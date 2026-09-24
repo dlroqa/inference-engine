@@ -427,3 +427,73 @@ def test_cache_stats_none_when_endpoint_missing() -> None:
             assert await backend.cache_stats() is None
 
     asyncio.run(body())
+
+
+# -- upstream attempt counting (Block 12.2a) ------------------------------
+
+
+@pytest.mark.parametrize("backend_cls,expected_name", ADAPTERS)
+def test_upstream_attempts_first_post_counts_one(
+    backend_cls: type[OpenAICompatibleRemoteBackend], expected_name: str
+) -> None:
+    fake = FakeOpenAIServer(model=REMOTE_MODEL)
+
+    async def body() -> None:
+        with serve(fake) as url:
+            backend = _backend(backend_cls, url)
+            await backend.load()
+            stream = backend.generate(_chat_req())
+            await _drain(stream)
+            assert stream.upstream_attempts == 1  # a successful first POST
+
+    asyncio.run(body())
+
+
+@pytest.mark.parametrize("backend_cls,expected_name", ADAPTERS)
+def test_upstream_attempts_one_retry_counts_two(
+    backend_cls: type[OpenAICompatibleRemoteBackend], expected_name: str
+) -> None:
+    fake = FakeOpenAIServer(model=REMOTE_MODEL, mode="prestream_error", fail_times=1)
+
+    async def body() -> None:
+        with serve(fake) as url:
+            backend = _backend(backend_cls, url, max_prestream_retries=1)
+            await backend.load()
+            stream = backend.generate(_chat_req())
+            await _drain(stream)
+            assert stream.upstream_attempts == 2  # one failed POST + one success
+
+    asyncio.run(body())
+
+
+@pytest.mark.parametrize("backend_cls,expected_name", ADAPTERS)
+def test_upstream_attempts_report_actual_posts_on_failure(
+    backend_cls: type[OpenAICompatibleRemoteBackend], expected_name: str
+) -> None:
+    # Exhausted retries: initial POST + one retry = 2 POSTs before failing.
+    fake = FakeOpenAIServer(model=REMOTE_MODEL, mode="prestream_error", fail_times=5)
+
+    async def body() -> None:
+        with serve(fake) as url:
+            backend = _backend(backend_cls, url, max_prestream_retries=1)
+            await backend.load()
+            stream = backend.generate(_chat_req())
+            with pytest.raises(GenerationFailedError):
+                await _drain(stream)
+            assert stream.upstream_attempts == 2
+
+    asyncio.run(body())
+
+    # Non-retriable 4xx: exactly one POST, never retried.
+    fake400 = FakeOpenAIServer(model=REMOTE_MODEL, mode="http_400")
+
+    async def body400() -> None:
+        with serve(fake400) as url:
+            backend = _backend(backend_cls, url, max_prestream_retries=3)
+            await backend.load()
+            stream = backend.generate(_chat_req())
+            with pytest.raises(GenerationFailedError):
+                await _drain(stream)
+            assert stream.upstream_attempts == 1
+
+    asyncio.run(body400())

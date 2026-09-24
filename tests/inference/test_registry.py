@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import FrozenInstanceError
 
 import pytest
 
@@ -11,6 +12,7 @@ from engine.inference.registry import (
     BackendEntry,
     BackendRegistry,
     NoBackendAvailable,
+    RouteDecision,
 )
 from engine.inference.types import (
     BackendState,
@@ -445,3 +447,57 @@ def test_feature_unknown_model_is_unloaded_not_feature_error() -> None:
     with pytest.raises(NoBackendAvailable) as exc:
         reg.acquire(model="model-z", required_features=FEAT)
     assert exc.value.reason == "unloaded"
+
+
+# -- route-decision attribution (Block 12.2a) ------------------------------
+
+
+def test_decision_least_busy_multi_candidate() -> None:
+    reg = BackendRegistry(
+        [
+            _entry("a", StubBackend(model_id="m"), cap=5),
+            _entry("b", StubBackend(model_id="m"), cap=5),
+        ]
+    )
+    # No model filter -> not model_map even with the pool; two candidates -> least_busy.
+    lease = reg.acquire()
+    d = lease.decision
+    assert d is not None
+    assert d.reason == "least_busy" and d.tier == "primary" and d.fallbacks == ()
+    assert d.backend == "a" and d.engine == "remote_vllm"
+
+
+def test_decision_model_map_single_physical_candidate() -> None:
+    reg = _hetero_reg()  # va serves model-a alone; vb/sb serve model-b
+    assert reg.acquire(model="model-a").decision.reason == "model_map"
+    # model-b has two eligible candidates -> least_busy, not model_map.
+    assert reg.acquire(model="model-b").decision.reason == "least_busy"
+
+
+def test_decision_prefix_affinity_and_fallback() -> None:
+    ea = _entry("a", StubBackend(prefix=True), cap=1, prefix_cache=True)
+    eb = _entry("b", StubBackend(prefix=True), cap=1, prefix_cache=True)
+    reg = BackendRegistry([ea, eb])
+    first = reg.acquire(prefix_key="sticky")
+    assert first.decision.reason == "prefix_affinity"
+    target = first.decision.backend
+    # Saturate the affine target; the next same-key request falls back to least-busy.
+    second = reg.acquire(prefix_key="sticky")
+    assert second.decision.reason == "affinity_fallback"
+    assert second.decision.backend != target
+
+
+def test_decision_spillover_tier_and_fallback() -> None:
+    e_local = _entry("local", StubBackend(model_id="m"), cap=1)
+    e_ext = _entry("ext", StubBackend(model_id="m"), cap=5, spillover=True)
+    reg = BackendRegistry([e_local, e_ext])
+    e_local.in_flight = e_local.max_in_flight  # force spillover
+    d = reg.acquire().decision
+    assert d.backend == "ext" and d.tier == "spillover"
+    assert d.fallbacks == ("spillover",)
+
+
+def test_route_decision_is_frozen() -> None:
+    d = RouteDecision(backend="a", engine="remote_vllm", tier="primary", reason="least_busy")
+    with pytest.raises(FrozenInstanceError):
+        d.reason = "model_map"  # type: ignore[misc]
