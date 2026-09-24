@@ -168,7 +168,10 @@ A rule that clears §8.1 but violates §8.2 stays disabled.
 
 ## 9. Baseline data (Block 10 topology)
 
-_Produced by the 12.2 harness; pasted here before 12.3 enables any rule._
+_Produced by the 12.2b harness (`python -m engine.bench run`, see
+[../benchmarks.md](../benchmarks.md)); this table stays a **template** until an
+operator records real target-hardware runs, then paste the safe command,
+hardware/config identity, and measured values._
 
 | Metric | Value | Harness command | Hardware / config id |
 |---|---|---|---|
@@ -204,7 +207,8 @@ Delivered in slice 12.1: model eligibility, feature-safe placement, the
 |---|---|---|---|
 | 12.0 | This RFC + metric definitions | no | **this document** |
 | 12.1 | Heterogeneous model eligibility (deterministic) | no | buildable + fully testable |
-| 12.2 | Observability enrichment + reproducible benchmark harness | harness runs on fakes in CI, real numbers on GPU | buildable + CI-testable |
+| 12.2a | Route-decision observability enrichment | no | done (merged) |
+| 12.2b | Reproducible benchmark harness + §8.1/§8.2 comparison gate ([benchmarks.md](../benchmarks.md)) | harness runs on fakes in CI, real numbers on GPU | buildable + CI-testable |
 | 12.3 | Measured workload-aware routing rules (disabled by default) | **enablement** gated on §8 benchmarks | scaffolding + unit tests buildable; enablement operator-gated |
 | 12.4 | Per-engine pool data-plane router | yes (multi-worker GPU) | RFC + `DEFERRED` |
 | 12.5 | Topology evolution (multi-GPU/k8s/multi-region/disaggregation) | yes | separate RFC(s) + `DEFERRED` |
