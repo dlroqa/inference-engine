@@ -6,7 +6,7 @@ ordered **vertical slices** (Blocks 0–12) per
 Each block must be deployable, testable, documented, and useful before the next
 begins.
 
-> **Current status: Block 11 — Commercial controls (sub-slice 1: Stripe billing lifecycle; sub-slice 2: outbound Standard Webhooks; sub-slice 4: client account API; sub-slice 5: client event stream). Block 10 remote scale-out complete (sub-slices 1–7: adapters, registry, affinity, auto-models, cost metrics, spillover, gRPC).**
+> **Current status: Block 11 — Commercial controls (sub-slice 1: Stripe billing lifecycle; sub-slice 2: outbound Standard Webhooks; sub-slice 4: client account API; sub-slice 5: client event stream; sub-slice 6: clients / live-monitoring UI). Block 10 remote scale-out complete (sub-slices 1–7: adapters, registry, affinity, auto-models, cost metrics, spillover, gRPC).**
 > Shipped so far: local GGUF inference (Block 1); **OpenAI** `/v1/chat/completions`
 > + **Anthropic** `/v1/messages` with streaming, sampling controls, and
 > capability-gated structured output (Blocks 2, 8); a secure gateway — API keys,
@@ -14,9 +14,8 @@ begins.
 > telemetry + an operator dashboard (Blocks 4–5); model lifecycle with
 > checksum-verified downloads (Block 6); controlled concurrency with admission
 > control (Block 7); and a Docker deployment path with graceful drain, readiness
-> gating, backup/restore (9a), and a security hardening baseline — trusted-network/IP policy, egress + feature kill switches, and a tamper-evident audit log (9b); and **remote vLLM + SGLang backends** — proxy generation to an external OpenAI-compatible server (one shared adapter core) with explicit model mapping, secure credentials, timeouts, and safe pre-stream-only failover, plus a **backend registry** that routes each request to the least-busy healthy backend across a local+remote pool with a status API (Block 10, sub-slices 1–3). **Not yet:** the Block 11 Clients/Live-Monitoring UI (11.6; additional
-> payment providers 11.3 are deferred until a business need is confirmed), and
-> advanced safety tooling (Block 12).
+> gating, backup/restore (9a), and a security hardening baseline — trusted-network/IP policy, egress + feature kill switches, and a tamper-evident audit log (9b); and **remote vLLM + SGLang backends** — proxy generation to an external OpenAI-compatible server (one shared adapter core) with explicit model mapping, secure credentials, timeouts, and safe pre-stream-only failover, plus a **backend registry** that routes each request to the least-busy healthy backend across a local+remote pool with a status API (Block 10, sub-slices 1–3). **Not yet:** additional payment providers (Block 11.3, deferred until a business
+> need is confirmed) and advanced safety tooling (Block 12).
 
 ---
 
@@ -446,7 +445,7 @@ summary.
 ## Operator dashboard (Block 5)
 
 A small React/Vite single-page app — the local operator UI — is served by the
-engine at **`/dashboard`** (the root path redirects there). Four views, all driven
+engine at **`/dashboard`** (the root path redirects there). Seven views, all driven
 by the typed admin API and the Block 4 WebSocket feeds:
 
 - **Overview** — health, loaded model + state, uptime, request/token counters
@@ -462,6 +461,16 @@ by the typed admin API and the Block 4 WebSocket feeds:
 - **Logs** — recent request/log events filtered by level and free-text (request
   id, model, error category), with per-row category and stage.
 - **API keys** — create (with a label), copy the new secret **once**, and revoke.
+- **Monitoring** (Block 11.6) — live operator monitoring: an **alerts** list
+  (suspended/canceled clients, usage-threshold crossings, dead-lettered webhooks,
+  unhealthy backends), an **error-taxonomy** breakdown, per-**key attribution**
+  (requests/tokens/CU/errors over a 5h or weekly window), and the live feed with a
+  one-click **cross-link into Logs** by request id.
+- **Clients** (Block 11.6) — commercial clients with status and aggregated usage;
+  a row opens a detail panel with the client's keys, webhook endpoints, and recent
+  deliveries.
+- **Security** (Block 11.6) — the tamper-evident operator/security **audit log**
+  with an on-demand hash-chain **integrity check**.
 
 **Access:** the SPA is served to anyone who can reach the route, but every data
 endpoint it calls is gated (loopback dev use or a valid operator API key), so the

@@ -78,3 +78,17 @@ export function stateTone(state: string): ToneName {
   if (state === "loading") return "warn";
   return "neutral";
 }
+
+export function alertTone(severity: string): ToneName {
+  if (severity === "critical") return "danger";
+  if (severity === "warning") return "warn";
+  return "neutral";
+}
+
+export function statusTone(status: string): ToneName {
+  if (status === "active" || status === "succeeded") return "ok";
+  if (status === "suspended" || status === "pending") return "warn";
+  if (status === "canceled" || status === "revoked" || status === "dead" || status === "failed")
+    return "danger";
+  return "neutral";
+}

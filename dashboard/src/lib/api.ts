@@ -222,6 +222,87 @@ export interface FeedEvent {
   retry_after_s?: number;
 }
 
+// --- Commercial / monitoring (Block 11) ---
+
+export interface ClientRow {
+  id: string;
+  external_ref: string | null;
+  email: string | null;
+  status: string;
+}
+
+export interface KeyAttribution {
+  key_id: string;
+  key_prefix: string | null;
+  key_label: string | null;
+  client_id: string | null;
+  requests: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cu: number;
+  errors: number;
+  last_ts: number | null;
+}
+
+export interface AttributionPage {
+  window: string;
+  since: number;
+  keys: KeyAttribution[];
+}
+
+export interface TaxonomyPage {
+  window: string;
+  since: number;
+  categories: Record<string, number>;
+  total: number;
+}
+
+export interface Alert {
+  severity: "info" | "warning" | "critical";
+  kind: string;
+  message: string;
+  target_type: string | null;
+  target_id: string | null;
+}
+
+export interface WebhookEndpointRow {
+  id: string;
+  client_id: string;
+  url: string;
+  description: string | null;
+  disabled: boolean;
+  event_types: string[] | null;
+}
+
+export interface DeliveryRow {
+  id: string;
+  endpoint_id: string;
+  event_id: string;
+  event_type: string;
+  status: string;
+  attempts: number;
+  next_attempt_at: number;
+  last_status_code: number | null;
+  last_error: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface AuditEvent {
+  id: number;
+  ts: number;
+  actor: string | null;
+  action: string;
+  target: string | null;
+  detail: Record<string, unknown> | null;
+  hash: string;
+}
+
+export interface AuditPage {
+  events: AuditEvent[];
+  verify?: { ok: boolean; count: number; first_bad_id: number | null };
+}
+
 // --- Endpoints ---
 
 export const api = {
@@ -259,6 +340,33 @@ export const api = {
     request<{ result: string; model: ModelInfo }>(`/admin/models/${id}/unload`, { method: "POST" }),
   deleteModel: (id: string) =>
     request<{ deleted: boolean; id: string }>(`/admin/models/${id}`, { method: "DELETE" }),
+
+  // Commercial / monitoring (Block 11)
+  listClients: () => request<{ clients: ClientRow[] }>("/admin/billing/clients"),
+  usageAttribution: (window: "5h" | "week" = "5h") =>
+    request<AttributionPage>(`/admin/usage/attribution?window=${window}`),
+  errorTaxonomy: (window: "5h" | "week" = "5h") =>
+    request<TaxonomyPage>(`/admin/errors/taxonomy?window=${window}`),
+  alerts: () => request<{ alerts: Alert[] }>("/admin/alerts"),
+  listWebhookEndpoints: (clientId?: string) =>
+    request<{ endpoints: WebhookEndpointRow[] }>(
+      `/admin/billing/webhooks/endpoints${clientId ? `?client_id=${encodeURIComponent(clientId)}` : ""}`,
+    ),
+  listDeliveries: (params: { endpoint_id?: string; status?: string; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (params.endpoint_id) q.set("endpoint_id", params.endpoint_id);
+    if (params.status) q.set("status", params.status);
+    if (params.limit) q.set("limit", String(params.limit));
+    const qs = q.toString();
+    return request<{ deliveries: DeliveryRow[] }>(`/admin/billing/webhooks/deliveries${qs ? `?${qs}` : ""}`);
+  },
+  audit: (params: { limit?: number; verify?: boolean } = {}) => {
+    const q = new URLSearchParams();
+    if (params.limit) q.set("limit", String(params.limit));
+    if (params.verify) q.set("verify", "true");
+    const qs = q.toString();
+    return request<AuditPage>(`/admin/audit${qs ? `?${qs}` : ""}`);
+  },
 };
 
 export function wsUrl(path: string): string {

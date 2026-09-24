@@ -1,4 +1,4 @@
-import { useMemo, useState, type JSX } from "react";
+import { useEffect, useMemo, useState, type JSX } from "react";
 import { api, type LogEvent } from "../lib/api";
 import { useAsync } from "../hooks/useAsync";
 import { AsyncBoundary } from "../components/Panel";
@@ -14,9 +14,14 @@ function levelTone(level: string): "danger" | "warn" | "neutral" {
   return "neutral";
 }
 
-export function Logs(): JSX.Element {
+export function Logs({ initialQuery }: { initialQuery?: string } = {}): JSX.Element {
   const [level, setLevel] = useState("");
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(initialQuery ?? "");
+
+  // Apply a cross-linked filter (e.g. a request id from Monitoring) when it changes.
+  useEffect(() => {
+    if (initialQuery !== undefined) setQuery(initialQuery);
+  }, [initialQuery]);
   const { status, data, error, reload } = useAsync(
     () => api.logs({ limit: 200, level: level || undefined }),
     [level],
