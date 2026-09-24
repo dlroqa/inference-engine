@@ -31,7 +31,6 @@ from engine.api.schemas.openai import (
     Usage,
 )
 from engine.api.serving import Served
-from engine.inference.base import InferenceBackend
 from engine.inference.scheduler import SchedulerSaturated
 from engine.inference.types import (
     FinishReason,
@@ -52,20 +51,6 @@ def _finish_reason(reason: FinishReason) -> str:
     return _FINISH.get(reason, "stop")
 
 
-def _ready_backend(request: Request) -> InferenceBackend:
-    # The pool is homogeneous (one model_id); any ready backend gives capabilities.
-    registry = request.app.state.backend_registry
-    backend = registry.representative()
-    if backend is None:
-        raise OpenAIError(
-            "no model is loaded",
-            status_code=503,
-            type="service_unavailable",
-            code="model_not_loaded",
-        )
-    return backend
-
-
 def _saturated(exc: SchedulerSaturated) -> OpenAIError:
     return OpenAIError(
         "the engine is at capacity; please retry shortly",
@@ -84,8 +69,9 @@ def list_models(request: Request) -> ModelList:
 
 @router.post("/chat/completions")
 async def chat_completions(request: Request, body: ChatCompletionRequest) -> Response:
-    backend = _ready_backend(request)
-    caps = backend.capabilities()
+    # Resolve the requested name first so a truly unknown model is 404 even when
+    # every backend is down (Block 12.1). Per-backend capability (structured output)
+    # is enforced at placement, not against an arbitrary representative.
     router = request.app.state.router
     model_id = body.model
     if not router.known_model(model_id):
@@ -97,8 +83,9 @@ async def chat_completions(request: Request, body: ChatCompletionRequest) -> Res
             code="model_not_found",
         )
 
-    # Structured output (Block 8): honored via constrained decoding when the backend
-    # supports it; otherwise rejected clearly (never silently unconstrained text).
+    # Structured output (Block 8): honored via constrained decoding when the placed
+    # backend supports it; a backend that lacks it is never selected (Block 12.1),
+    # and a model with no supporting engine is rejected clearly at placement (400).
     mode, schema = body.structured_output()
     if mode != "none" and not request.app.state.settings.allow_structured_output:
         raise OpenAIError(
@@ -108,14 +95,7 @@ async def chat_completions(request: Request, body: ChatCompletionRequest) -> Res
             param="response_format",
             code="structured_output_disabled",
         )
-    if mode != "none" and not caps.supports_structured_output:
-        raise OpenAIError(
-            "structured output (response_format json) is not supported by the loaded backend",
-            status_code=400,
-            type="invalid_request_error",
-            param="response_format",
-            code="structured_output_unsupported",
-        )
+    required_features = frozenset({"structured_output"}) if mode != "none" else frozenset()
     if mode == "json_schema" and not schema:
         raise OpenAIError(
             "response_format json_schema requires a non-empty 'schema'",
@@ -153,6 +133,7 @@ async def chat_completions(request: Request, body: ChatCompletionRequest) -> Res
         max_tokens=body.effective_max_tokens() or 256,
         request_id=request_id,
         on_saturated=_saturated,
+        required_features=required_features,
     )
 
     base_headers = {"x-request-id": request_id, **served.access.headers}

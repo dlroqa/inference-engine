@@ -72,16 +72,22 @@ def readyz(request: Request) -> JSONResponse:
         ready = False
 
     # Inference availability is reported separately from service readiness: the
-    # service can be ready (DB + migrations) without a model loaded.
-    backend: InferenceBackend | None = getattr(request.app.state, "backend", None)
-    model_loaded = backend is not None and backend.state in (
-        BackendState.READY,
-        BackendState.GENERATING,
+    # service can be ready (DB + migrations) without a model loaded. Availability
+    # is pool-wide (Block 12.1): any ready backend — a remote worker, even while the
+    # primary is unloaded — counts, so readiness matches what can actually serve.
+    registry = getattr(request.app.state, "backend_registry", None)
+    representative: InferenceBackend | None = (
+        registry.representative() if registry is not None else None
     )
+    backend: InferenceBackend | None = getattr(request.app.state, "backend", None)
+    model_loaded = representative is not None or (
+        backend is not None and backend.state in (BackendState.READY, BackendState.GENERATING)
+    )
+    ready_backend = representative if representative is not None else backend
     inference: dict[str, object] = {"available": model_loaded}
-    if backend is not None and model_loaded:
-        inference["model_id"] = backend.capabilities().model_id
-        inference["state"] = backend.state.value
+    if model_loaded and ready_backend is not None:
+        inference["model_id"] = ready_backend.capabilities().model_id
+        inference["state"] = ready_backend.state.value
     else:
         inference["reason"] = INFERENCE_NOTE
 

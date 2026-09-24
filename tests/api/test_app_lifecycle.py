@@ -20,7 +20,9 @@ def test_app_starts_when_model_load_fails(tmp_path: Path) -> None:
     app = create_app(settings)
     with TestClient(app) as client:
         assert client.get("/healthz").status_code == 200
-        assert client.get("/v1/models").json()["data"] == []
+        # Block 12.1: the configured model stays advertised even though its load
+        # failed, so clients see it (and get a 503) rather than a bare empty list.
+        assert [m["id"] for m in client.get("/v1/models").json()["data"]] == [settings.model_id]
         body = client.get("/readyz").json()
         assert body["status"] == "ready"  # service ready; model just absent
         assert body["inference"]["available"] is False

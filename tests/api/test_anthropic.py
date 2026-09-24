@@ -135,7 +135,10 @@ def test_model_not_found(client: TestClient) -> None:
 
 
 def test_no_model_loaded(tmp_settings: Settings) -> None:
-    with TestClient(create_app(tmp_settings)) as client:
+    # Configured for MODEL_ID but unloaded: known model, no ready backend -> 503
+    # (Block 12.1). A truly unknown model would be 404.
+    settings = tmp_settings.model_copy(update={"model_id": MODEL_ID})
+    with TestClient(create_app(settings)) as client:
         resp = client.post("/v1/messages", json=_msg())
     assert resp.status_code == 503
     assert resp.json()["error"]["type"] == "api_error"

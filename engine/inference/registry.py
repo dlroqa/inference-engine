@@ -20,12 +20,17 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from engine.inference.base import InferenceBackend
-from engine.inference.types import BackendState
+from engine.inference.types import BackendState, FeatureUnsupportedError
 from engine.logging_setup import get_logger
 
 _log = get_logger("engine.inference.registry")
 
 _READYISH = (BackendState.READY, BackendState.GENERATING)
+
+#: Request-feature name -> the ``Capabilities`` attribute that gates it (Block
+#: 12.1). A feature is eligible on a backend only when this attribute is true on
+#: its *live* capabilities. Extend as feature-aware routing grows.
+_FEATURE_ATTR = {"structured_output": "supports_structured_output"}
 
 
 @dataclass
@@ -63,6 +68,11 @@ class BackendEntry:
     #: request. ``external`` marks off-premise providers (informational/status).
     spillover: bool = False
     external: bool = False
+    #: Configured client-facing model id (Block 12.1). Used *only* as a fallback in
+    #: :meth:`current_model` while the backend is unloaded/unhealthy, so a
+    #: configured model stays "known" (→ 503) rather than looking unknown (→ 404).
+    #: Live placement always uses the backend's own ``capabilities().model_id``.
+    served_model: str | None = None
 
     def backend(self) -> InferenceBackend | None:
         return self.provider()
@@ -76,6 +86,23 @@ class BackendEntry:
 
     def has_capacity(self) -> bool:
         return self.in_flight < self.max_in_flight
+
+    def live_model(self) -> str | None:
+        """The model this backend serves *right now*, or None if not ready.
+
+        The placement source of truth: read from live capabilities only when the
+        entry is ready (health-probe included), so a failed remote is excluded.
+        """
+        if self.is_ready():
+            backend = self.backend()
+            if backend is not None:
+                return backend.capabilities().model_id
+        return None
+
+    def current_model(self) -> str | None:
+        """Live model when ready, else the configured ``served_model`` fallback."""
+        live = self.live_model()
+        return live if live is not None else self.served_model
 
 
 @dataclass(slots=True)
@@ -128,7 +155,7 @@ class BackendRegistry:
         return any(e.is_ready() for e in self._entries)
 
     def representative(self) -> InferenceBackend | None:
-        """A ready backend to read capabilities/model_id from (pool is homogeneous)."""
+        """A ready backend to read capabilities from (any model; diagnostic only)."""
         for entry in self._entries:
             if entry.is_ready():
                 backend = entry.backend()
@@ -136,13 +163,66 @@ class BackendRegistry:
                     return backend
         return None
 
+    def representative_for(self, model: str) -> InferenceBackend | None:
+        """The first ready backend whose *live* model id matches (Block 12.1).
+
+        Convenience/diagnostic only — it is not a licence to validate a request
+        against a different backend from the one that will be leased; capability
+        eligibility is enforced in :meth:`select`/:meth:`acquire`.
+        """
+        for entry in self._entries:
+            if entry.live_model() == model:
+                backend = entry.backend()
+                if backend is not None:
+                    return backend
+        return None
+
+    def known_models(self) -> set[str]:
+        """Every client-facing model id the pool serves or is configured to serve.
+
+        Union of live ready ids and configured ``served_model`` fallbacks, so a
+        configured-but-currently-down model stays known (→ 503, not 404).
+        """
+        return {m for e in self._entries if (m := e.current_model()) is not None}
+
+    def eligible(
+        self,
+        entry: BackendEntry,
+        model: str | None,
+        required_features: frozenset[str],
+    ) -> bool:
+        """Whether ``entry`` may serve a request for ``model`` with these features.
+
+        Placement eligibility only — uses the entry's *live* model/capabilities, so
+        an unready or wrong-model backend is never eligible. Readiness/capacity are
+        still applied separately by :meth:`_pick`.
+        """
+        if model is not None and entry.live_model() != model:
+            return False
+        if required_features:
+            backend = entry.backend() if entry.is_ready() else None
+            if backend is None:
+                return False
+            caps = backend.capabilities()
+            if not all(getattr(caps, _FEATURE_ATTR[f], False) for f in required_features):
+                return False
+        return True
+
     def select(
-        self, prefix_key: str | None = None, allowed: frozenset[str] | None = None
+        self,
+        prefix_key: str | None = None,
+        allowed: frozenset[str] | None = None,
+        model: str | None = None,
+        required_features: frozenset[str] = frozenset(),
     ) -> BackendEntry | None:
         """Pick a backend: prefix-affinity first (when applicable), else least-busy.
 
         ``allowed`` restricts the candidates to those backend names (used by the
         router to scope a virtual model's route/cascade step); None = whole pool.
+        ``model`` restricts to backends whose *live* model id matches (Block 12.1),
+        and ``required_features`` to backends whose live capabilities support every
+        named feature. Both filters are applied *before* spillover tiers, prefix
+        affinity, and least-busy selection, so an ineligible engine is never chosen.
 
         With a ``prefix_key`` and at least one ready prefix-cache-capable backend, a
         consistent hash of the key maps the request to one such backend so its
@@ -151,7 +231,11 @@ class BackendRegistry:
         capable backend, or an unrelated pool — it is plain least-busy among ready,
         not-full backends (identical to sub-slice 3).
         """
-        pool = [e for e in self._entries if allowed is None or e.name in allowed]
+        pool = [
+            e
+            for e in self._entries
+            if (allowed is None or e.name in allowed) and self.eligible(e, model, required_features)
+        ]
         # Two-tier (Block 10.7): prefer non-spillover (local) backends; only use
         # spillover (e.g. external providers) when no local backend can admit.
         local = [e for e in pool if not e.spillover]
@@ -176,16 +260,39 @@ class BackendRegistry:
         return min(candidates, key=lambda e: (e.in_flight, e.order))
 
     def acquire(
-        self, prefix_key: str | None = None, allowed: frozenset[str] | None = None
+        self,
+        prefix_key: str | None = None,
+        allowed: frozenset[str] | None = None,
+        model: str | None = None,
+        required_features: frozenset[str] = frozenset(),
     ) -> RegistryLease:
-        """Reserve an in-flight slot on the selected backend, or raise."""
-        entry = self.select(prefix_key, allowed)
+        """Reserve an in-flight slot on the selected backend, or raise.
+
+        Binds capability validation to placement (Block 12.1): the same call that
+        reserves the lease also decides feature eligibility, so there is no
+        time-of-check/time-of-placement gap. When nothing can serve the request it
+        raises, distinguishing three cases over the model-eligible subset:
+
+        * a feature-capable backend is ready but full -> ``NoBackendAvailable("busy")``
+          (retriable saturation);
+        * the model has a ready backend but none support a required feature ->
+          :class:`FeatureUnsupportedError` (a 400 request error);
+        * no ready backend serves the model at all -> ``NoBackendAvailable("unloaded")``.
+        """
+        entry = self.select(prefix_key, allowed, model, required_features)
         if entry is None:
-            # Distinguish "nothing loaded/healthy" from "all healthy ones full",
-            # scoped to the allowed set so a cascade step reports honestly.
-            pool = [e for e in self._entries if allowed is None or e.name in allowed]
-            reason = "busy" if any(e.is_ready() for e in pool) else "unloaded"
-            raise NoBackendAvailable(reason)
+            scope = [e for e in self._entries if allowed is None or e.name in allowed]
+            # Ready backends that serve the requested model (ignoring features).
+            model_ready = [
+                e for e in scope if e.is_ready() and (model is None or e.live_model() == model)
+            ]
+            if not model_ready:
+                raise NoBackendAvailable("unloaded")
+            feature_ready = [e for e in model_ready if self.eligible(e, model, required_features)]
+            if not feature_ready:
+                raise FeatureUnsupportedError(required_features, model=model)
+            # Feature-capable backends exist but all are at capacity.
+            raise NoBackendAvailable("busy")
         entry.in_flight += 1
         return RegistryLease(registry=self, entry=entry)
 
@@ -217,6 +324,7 @@ class BackendRegistry:
                 "in_flight": entry.in_flight,
                 "max_in_flight": entry.max_in_flight,
                 "model_id": model_id,
+                "served_model": entry.served_model,
                 "context_length": context_length,
                 "supports_prefix_cache": entry.prefix_cache,
                 "supports_kv_cache_metrics": supports_kv_metrics,

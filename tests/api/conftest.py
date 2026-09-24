@@ -80,6 +80,8 @@ def client(tmp_settings: Settings, fake_backend: FakeBackend) -> Iterator[TestCl
 
 @pytest.fixture
 def client_no_model(tmp_settings: Settings) -> Iterator[TestClient]:
-    app = create_app(tmp_settings)  # no backend, no model_path
+    # Configured to serve MODEL_ID but nothing loaded: the model stays *known*
+    # (Block 12.1) so a request for it is 503 (model_not_loaded), not 404.
+    app = create_app(tmp_settings.model_copy(update={"model_id": MODEL_ID}))
     with TestClient(app) as c:
         yield c

@@ -208,6 +208,18 @@ async def load_model(request: Request, model_id: str) -> dict[str, Any]:
             type="invalid_request_error",
             code="model_not_ready",
         )
+    # Loading makes the primary serve ``record.name`` as its client-facing model id
+    # (Block 12.1). Reject a load that would collide with a configured virtual model
+    # name, rather than let virtual routing silently shadow a physical model.
+    router = getattr(request.app.state, "router", None)
+    if router is not None and record.name in router.virtual_model_names():
+        raise OpenAIError(
+            f"cannot load model {record.name!r}: its id collides with a configured "
+            "virtual model name",
+            status_code=409,
+            type="invalid_request_error",
+            code="model_name_conflict",
+        )
     service = _service(request)
     backend = service.build_backend(record)
     try:

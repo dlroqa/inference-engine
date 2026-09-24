@@ -25,7 +25,10 @@ def _loaded_fake() -> FakeBackend:
 
 @pytest.fixture
 def admin_client(tmp_settings: Settings) -> Iterator[TestClient]:
-    app = create_app(tmp_settings, backend=_loaded_fake())
+    # Config matches the served model id (Block 12.1) so that after an unload the
+    # model stays known and requests return 503 (model_not_loaded), not 404.
+    settings = tmp_settings.model_copy(update={"model_id": MODEL_ID})
+    app = create_app(settings, backend=_loaded_fake())
     with TestClient(app, client=LOOPBACK) as c:
         yield c
 
