@@ -627,6 +627,25 @@ def test_publish_verifies_downloaded_archive_before_push_or_attest() -> None:
     assert download < verify < min(pushes + attests)
 
 
+def test_registry_credentials_reach_skopeo_and_the_attest_actions() -> None:
+    # actions/attest pushes attestations with Docker credentials only; a
+    # `skopeo login` (containers auth.json) left them without any (v0.1.0 run).
+    steps = _steps("publish")
+    login = _step_index(steps, lambda st: "login ghcr.io" in st.get("run", ""))
+    logout = _step_index(steps, lambda st: "logout ghcr.io" in st.get("run", ""))
+    assert steps[login]["run"].startswith('echo "$TOKEN" | docker login ghcr.io')
+    assert "--password-stdin" in steps[login]["run"]
+    assert "skopeo login" not in (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
+    registry = [
+        i
+        for i, st in enumerate(steps)
+        if "skopeo" in st.get("run", "") or "attest" in st.get("uses", "")
+    ]
+    assert login < min(registry) and max(registry) < logout
+    assert steps[logout]["run"] == "docker logout ghcr.io || true"
+    assert steps[logout]["if"] == "always()"
+
+
 def test_stable_tags_only_after_both_attestations() -> None:
     steps = _steps("publish")
     provenance = _step_index(steps, lambda st: st.get("id") == "provenance")
