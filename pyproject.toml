@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "inference-engine"
-version = "0.0.0"
+dynamic = ["version"]
 description = "Self-hosted, cross-platform inference engine — Block 0 foundation."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -50,6 +50,10 @@ dev = [
 
 [project.scripts]
 inference-engine = "engine.cli:main"
+
+[tool.setuptools.dynamic]
+# engine/__init__.py is the one version source; see docs/releasing.md.
+version = { attr = "engine.__version__" }
 
 [tool.setuptools.packages.find]
 include = ["engine*"]

@@ -17,6 +17,13 @@ begins.
 > gating, backup/restore (9a), and a security hardening baseline — trusted-network/IP policy, egress + feature kill switches, and a tamper-evident audit log (9b); and **remote vLLM + SGLang backends** — proxy generation to an external OpenAI-compatible server (one shared adapter core) with explicit model mapping, secure credentials, timeouts, and safe pre-stream-only failover, plus a **backend registry** that routes each request to the least-busy healthy backend across a local+remote pool with a status API (Block 10, sub-slices 1–3). **Not yet:** additional payment providers (Block 11.3, deferred until a business
 > need is confirmed) and advanced safety tooling (Block 12).
 
+**Deploy a release:** the supported server deployment is the prebuilt CPU image
+`ghcr.io/dlroqa/inference-engine@sha256:<digest>` (Linux x86-64 with AVX2) with
+[`deploy/compose.yaml`](deploy/compose.yaml) — no Python, Node, or native builds on
+the host. See [docs/deployment.md](docs/deployment.md) and the digest in each
+[GitHub release](https://github.com/dlroqa/inference-engine/releases); maintainers
+cut releases per [docs/releasing.md](docs/releasing.md).
+
 ---
 
 ## Requirements
@@ -338,10 +345,10 @@ Example:
 
 ```bash
 curl -s http://127.0.0.1:8000/healthz
-# {"status":"ok","version":"0.0.0"}
+# {"status":"ok","version":"0.1.0"}
 
 curl -s http://127.0.0.1:8000/readyz
-# {"status":"ready","version":"0.0.0","checks":{"database":"ok","migrations":"applied"},
+# {"status":"ready","version":"0.1.0","checks":{"database":"ok","migrations":"applied"},
 #  "inference":{"available":true,"model_id":"my-model","state":"ready"}}
 ```
 
@@ -505,16 +512,22 @@ A control-plane smoke test drives the whole operator flow (model load → genera
 python scripts/dashboard_smoke.py --base-url http://127.0.0.1:8000 [--api-key sk-ie-…]
 ```
 
-## Deployment (Block 9)
+## Deployment (Block 9 + release pipeline)
 
-A supported, reproducible deployment path via Docker, with graceful shutdown,
-readiness gating, and backup/restore. Full details — volumes, reverse-proxy/TLS,
-upgrades, the supported-platform matrix, and supply-chain basics — are in
-[docs/deployment.md](docs/deployment.md).
+The supported deployment is the **prebuilt, digest-pinned CPU image** published
+by the release workflow (llama.cpp backend + dashboard included; models are never
+baked in). Full details — install, upgrade, rollback, volumes, reverse-proxy/TLS,
+and the support boundary — are in [docs/deployment.md](docs/deployment.md).
 
 ```bash
-docker compose up --build      # or: docker build -t inference-engine . && docker run ...
+export IMAGE="ghcr.io/dlroqa/inference-engine@sha256:<published-digest>"
+docker compose -f deploy/compose.yaml pull
+docker compose -f deploy/compose.yaml up -d
+docker compose -f deploy/compose.yaml exec inference-engine \
+  inference-engine keys create --label owner   # printed once — save it
 ```
+
+Building from source (`docker compose up --build`) remains the development path.
 
 - **Graceful drain:** on `SIGTERM` the engine stops admitting work, lets in-flight
   generations finish (up to `drain_timeout_s`), then releases the model — so
@@ -529,8 +542,10 @@ docker compose up --build      # or: docker build -t inference-engine . && docke
   inference-engine restore --from /backups/inference-engine-backup-*.tar.gz
   ```
 
-- **Supply chain:** `/version` reports the build commit/date; every model records a
-  SHA-256; generate an SBOM with `python scripts/generate_sbom.py --out sbom.json`.
+- **Supply chain:** releases are built once and promoted by digest, with an SPDX
+  SBOM, a grype critical-vulnerability gate, and GitHub-OIDC-signed provenance
+  ([docs/releasing.md](docs/releasing.md)); `/version` and `inference-engine version`
+  report the version, commit, and build date; every model records a SHA-256.
 
 ## Security (Block 9b)
 
@@ -645,7 +660,9 @@ engine/
     ├── migrations.py   # migration runner
     └── migrations/     # NNNN_*.sql migration files
 dashboard/              # React/Vite operator UI source (builds into engine/static)
-scripts/                # CI smokes (real-model SDK, dashboard control-plane)
+deploy/                 # owner Compose template, env example, vulnerability exceptions
+requirements/           # hash-locked runtime deps for the release image
+scripts/                # CI smokes, release tooling (release.py, release_image_e2e.py)
 tests/                  # pytest suite
 ```
 

@@ -8,6 +8,13 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch: # allow manual runs (e.g. AVX/real-model verification on demand)
+  # The release workflow reuses these gates verbatim (docs/releasing.md). It
+  # builds its own single candidate image, so it skips the container smoke here.
+  workflow_call:
+    inputs:
+      skip-container:
+        type: boolean
+        default: false
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -339,6 +346,11 @@ jobs:
           python -m pip install --upgrade pip build
           python -m build
 
+      - name: Verify release version + dashboard bundled in the wheel
+        run: |
+          VERSION=$(python scripts/release.py check-version)
+          python scripts/release.py verify-wheel dist/*.whl --expect-version "$VERSION"
+
       - name: Install the built wheel in a clean environment
         run: |
           python -m venv /tmp/verify
@@ -411,12 +423,14 @@ jobs:
     name: Docker image (build + start smoke)
     runs-on: ubuntu-latest
     needs: test
+    if: ${{ !inputs.skip-container }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build image (CPU, no llama backend)
+      - name: Build image (CPU, llama.cpp backend included)
         run: |
           docker build \
+            --build-arg IE_VERSION="$(python3 scripts/release.py check-version)" \
             --build-arg IE_BUILD_SHA="${GITHUB_SHA::7}" \
             --build-arg IE_BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -t inference-engine:ci .
@@ -440,6 +454,8 @@ jobs:
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/dashboard/)" = "200"
           # Runs as a non-root user.
           test "$(docker exec ie id -u)" != "0"
+          # The CPU llama.cpp backend is always present in the image.
+          docker exec ie python -c "import llama_cpp; print('llama_cpp', llama_cpp.__version__)"
 
       - name: Graceful stop
         run: |
@@ -462,11 +478,16 @@ jobs:
           echo "integration-llama: ${{ needs.integration-llama.result }}"
           echo "build:             ${{ needs.build.result }}"
           echo "container:         ${{ needs.container.result }}"
+          CONTAINER="${{ needs.container.result }}"
+          # Only a release (workflow_call with skip-container) may skip it.
+          if [ "$CONTAINER" = "skipped" ] && [ "${{ inputs.skip-container }}" = "true" ]; then
+            CONTAINER=success
+          fi
           if [ "${{ needs.test.result }}" != "success" ] \
              || [ "${{ needs.dashboard.result }}" != "success" ] \
              || [ "${{ needs.integration-llama.result }}" != "success" ] \
              || [ "${{ needs.build.result }}" != "success" ] \
-             || [ "${{ needs.container.result }}" != "success" ]; then
+             || [ "$CONTAINER" != "success" ]; then
             echo "::error::one or more CI jobs did not succeed"
             exit 1
           fi

@@ -30,3 +30,8 @@ engine/static/
 
 # Node
 node_modules/
+
+# Local deployment secrets (copy deploy/inference-engine.env.example)
+deploy/*.env
+*.env
+!*.env.example
