@@ -313,7 +313,19 @@ def release_notes(
 
 ## Install
 
-Download `compose.yaml` and `inference-engine.env.example` from this release, then:
+One-command bootstrap (the installer verifies `compose.yaml` and
+`inference-engine.env.example` against this release's `SHA256SUMS`):
+
+```bash
+curl --fail --location --proto '=https' --tlsv1.2 \\
+  https://github.com/dlroqa/inference-engine/releases/download/v{version}/install.sh \\
+  | bash -s -- v{version}
+```
+
+For a separately verified installer download, download `install.sh` and `SHA256SUMS`,
+verify `install.sh` with `sha256sum --strict --check --ignore-missing SHA256SUMS`, then
+run `bash install.sh v{version}`. To install manually, download `compose.yaml` and
+`inference-engine.env.example` from this release, then:
 
 ```bash
 cp inference-engine.env.example inference-engine.env   # keep secrets out of git

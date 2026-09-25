@@ -605,6 +605,27 @@ def test_sbom_attestation_uses_supported_pinned_action() -> None:
     assert "steps.sbom.outputs.attestation-url" in assembly["run"]
 
 
+def test_release_packages_checksum_verifying_installer() -> None:
+    assembly = next(st for st in _steps("publish") if st.get("name") == "Assemble release assets")
+    create = next(st for st in _steps("publish") if st.get("name") == "Create the GitHub release")
+    assert "deploy/install.sh" in assembly["run"]
+    assert "out/install.sh" in create["run"]
+    assert "sha256sum -- * > SHA256SUMS" in assembly["run"]
+
+
+def test_release_installer_verifies_assets_before_docker_pull() -> None:
+    installer = (ROOT / "deploy" / "install.sh").read_text(encoding="utf-8")
+    assert 'readonly REPOSITORY="dlroqa/inference-engine"' in installer
+    assert "download SHA256SUMS" in installer
+    for asset in ("compose.yaml", "inference-engine.env.example"):
+        assert f"download {asset}" in installer
+    assert "download install.sh" not in installer
+    verify = installer.index("sha256sum --strict --check --ignore-missing SHA256SUMS")
+    pull = installer.index('docker compose -f "${INSTALL_DIR}/compose.yaml" pull')
+    assert verify < pull
+    assert "grep -qw avx2 /proc/cpuinfo" in installer
+
+
 def test_image_e2e_is_given_the_candidate_metadata() -> None:
     step = next(st for st in _steps("candidate") if "release_image_e2e.py" in st.get("run", ""))
     for flag in (

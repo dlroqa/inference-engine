@@ -344,7 +344,7 @@ jobs:
           set -euo pipefail
           mkdir -p out
           python3 scripts/release.py render-compose --image "$IMAGE_REPO@$DIGEST" --out out/compose.yaml
-          cp deploy/inference-engine.env.example sbom.spdx.json out/
+          cp deploy/inference-engine.env.example deploy/install.sh sbom.spdx.json out/
           cp grype.json out/vulnerability-scan.grype.json
           cp "${{ steps.provenance.outputs.bundle-path }}" out/provenance.sigstore.json
           cp "${{ steps.sbom.outputs.bundle-path }}" out/sbom-attestation.sigstore.json
@@ -370,7 +370,7 @@ jobs:
           gh release create "v$VERSION" --verify-tag \
             --title "Inference Engine v$VERSION" \
             --notes-file out/release-notes.md \
-            out/compose.yaml out/inference-engine.env.example out/sbom.spdx.json \
+            out/compose.yaml out/inference-engine.env.example out/install.sh out/sbom.spdx.json \
             out/vulnerability-scan.grype.json out/provenance.sigstore.json \
             out/sbom-attestation.sigstore.json out/provenance-reference.json \
             out/release-notes.md out/SHA256SUMS

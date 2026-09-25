@@ -14,6 +14,13 @@ First published prebuilt image. `v0.1.0` was tagged, but its publish job stopped
 before any versioned image tag or GitHub release was created, so 0.1.1 is the
 first release to deploy; it contains everything listed under 0.1.0 below.
 
+### Added
+
+- A release `install.sh` asset for Linux x86-64 AVX2 hosts. It verifies the
+  release Compose file and settings template against `SHA256SUMS` before pulling
+  and starting the digest-pinned prebuilt image; the documented separate-download
+  path also verifies the installer itself before execution.
+
 ### Fixed
 
 - Release publishing: the registry login now uses `docker login`, so the

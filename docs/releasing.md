@@ -15,8 +15,8 @@ should read [deployment.md](deployment.md) instead.
 
 For every `vX.Y.Z` the workflow publishes: the image digest, tags `vX.Y.Z` / `X.Y` /
 `X` / `latest` (applied only to the tested, attested digest), `sha-<commit>` for
-traceability, and a GitHub release with the digest-pinned `compose.yaml`, the env
-template, the SPDX SBOM, the grype report, Sigstore bundles for the provenance and
+traceability, and a GitHub release with the digest-pinned `compose.yaml`, the
+checksum-verifying `install.sh`, the env template, the SPDX SBOM, the grype report, Sigstore bundles for the provenance and
 SBOM attestations, a provenance reference, the notes, and `SHA256SUMS`.
 
 `X.Y`, `X`, and `latest` only move when the release is the highest version in that

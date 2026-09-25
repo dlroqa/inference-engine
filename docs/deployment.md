@@ -28,6 +28,7 @@ Every stable release `vX.Y.Z` (see its GitHub release page) publishes:
 | `ghcr.io/dlroqa/inference-engine@sha256:<digest>` | The immutable image. **Deploy by digest.** |
 | Tags `vX.Y.Z`, `X.Y`, `X`, `latest` | Convenience pointers to a tested digest — do not deploy by tag |
 | `compose.yaml` | `deploy/compose.yaml` rendered with the release digest |
+| `install.sh` | One-command Linux installer; verifies downloaded deployment assets against `SHA256SUMS` |
 | `inference-engine.env.example` | Template for your local, uncommitted settings/secrets file |
 | `sbom.spdx.json`, `SHA256SUMS`, attestations | Supply-chain verification |
 
@@ -37,8 +38,25 @@ dashboard at `/dashboard`. It contains **no models**.
 ## Initial installation
 
 1. **Host:** Linux x86-64 with AVX2, Docker Engine, and the Docker Compose plugin.
-2. **Files:** download `compose.yaml` and `inference-engine.env.example` from the
-   release, then create your local settings file (never commit it):
+2. **One-command install:** for a published `vX.Y.Z`, run the release installer:
+
+   ```bash
+   curl --fail --location --proto '=https' --tlsv1.2 \
+     https://github.com/dlroqa/inference-engine/releases/download/vX.Y.Z/install.sh \
+     | bash -s -- vX.Y.Z
+   ```
+
+   It verifies the downloaded Compose file and settings template against the
+   release's `SHA256SUMS`, then pulls and starts the digest-pinned image. Set
+   `IE_INSTALL_DIR=/srv/inference-engine` before the command to choose the
+   deployment directory. The initial owner-key command is printed after startup.
+
+   For a separately verified bootstrap, download `install.sh` and `SHA256SUMS`, run
+   `sha256sum --strict --check --ignore-missing SHA256SUMS`, and then run
+   `bash install.sh vX.Y.Z`.
+
+3. **Manual files:** download `compose.yaml` and `inference-engine.env.example`
+   from the release, then create your local settings file (never commit it):
 
    ```bash
    cp inference-engine.env.example inference-engine.env
@@ -51,21 +69,21 @@ dashboard at `/dashboard`. It contains **no models**.
    export IMAGE="ghcr.io/dlroqa/inference-engine@sha256:<published-digest>"
    ```
 
-3. **Start:**
+4. **Start:**
 
    ```bash
    docker compose -f deploy/compose.yaml pull
    docker compose -f deploy/compose.yaml up -d
    ```
 
-4. **Create the owner key** and save it somewhere safe — it is printed **once**:
+5. **Create the owner key** and save it somewhere safe — it is printed **once**:
 
    ```bash
    docker compose -f deploy/compose.yaml exec inference-engine \
      inference-engine keys create --label owner
    ```
 
-5. **Add a model:** open `http://127.0.0.1:8000/dashboard`, enter the owner key,
+6. **Add a model:** open `http://127.0.0.1:8000/dashboard`, enter the owner key,
    and on **Models** download a GGUF (Hugging Face repo + file, or URL, with its
    SHA-256) or import one from a path under `/data/models`. To use models you
    already have on the host, uncomment the `/srv/models:/data/models` mount in
@@ -75,7 +93,7 @@ dashboard at `/dashboard`. It contains **no models**.
    curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8000/readyz   # 200
    ```
 
-6. **Before public exposure,** put the service behind TLS (below) or a private
+7. **Before public exposure,** put the service behind TLS (below) or a private
    network boundary. The Compose file publishes only on `127.0.0.1:8000`.
 
 (The examples use `-f deploy/compose.yaml`; with the release's `compose.yaml`
