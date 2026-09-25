@@ -5,26 +5,31 @@ on a fresh persistent volume and proves the artifact — not the source checkout
 works: health, not-ready-before-model, dashboard, auth over the network path,
 owner key via the container CLI, checksum-verified GGUF import + load, streamed
 OpenAI generation, operator API with the key, persistence across restart, and a
-clean drain on stop. Stdlib only; needs Docker + the Compose plugin.
+clean drain on stop. ``/version`` must report exactly the candidate's release
+version, commit, and build date. Stdlib only; needs Docker + the Compose plugin.
 
 The owner key is never printed (it is masked in GitHub Actions logs).
 
 Usage:
     python scripts/release_image_e2e.py --image ghcr.io/dlroqa/inference-engine:candidate \
         --expect-image-id sha256:<config digest> --model ~/models/tiny.gguf \
-        --model-sha256 <hex>
+        --model-sha256 <hex> --expect-version 0.1.0 --expect-commit <40-hex sha> \
+        --expect-built-at 2026-09-24T00:00:00Z
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -33,10 +38,52 @@ SERVICE = "inference-engine"
 BASE = "http://127.0.0.1:8000"
 MODEL_IN_CONTAINER = "/data/models/e2e-tiny.gguf"
 MODEL_NAME = "e2e-tiny"
+VERSION_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+# The release build date form (validate job: `date -u +%Y-%m-%dT%H:%M:%SZ`).
+BUILT_AT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
 
 class E2EFailure(Exception):
     pass
+
+
+def _matching(pattern: re.Pattern[str], what: str) -> Callable[[str], str]:
+    def parse(value: str) -> str:
+        if not pattern.match(value):
+            raise argparse.ArgumentTypeError(f"not a {what}: {value!r}")
+        return value
+
+    return parse
+
+
+release_version = _matching(VERSION_RE, "MAJOR.MINOR.PATCH release version")
+commit_sha = _matching(COMMIT_RE, "40-character lowercase commit SHA")
+_built_at_form = _matching(BUILT_AT_RE, "UTC RFC 3339 build timestamp (YYYY-MM-DDTHH:MM:SSZ)")
+
+
+def built_at(value: str) -> str:
+    """An RFC 3339 UTC timestamp (``YYYY-MM-DDTHH:MM:SSZ``) that is a real instant."""
+    _built_at_form(value)
+    try:
+        dt.datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid build timestamp {value!r}: {exc}") from exc
+    return value
+
+
+def version_mismatches(body: Any, expected: dict[str, str]) -> list[str]:
+    """Fields of a ``/version`` JSON body that differ from the candidate metadata.
+
+    Every expected field must be present and exactly equal; extra fields are fine.
+    """
+    if not isinstance(body, dict):
+        return [f"/version body is not a JSON object: {body!r}"]
+    return [
+        f"{field}={body.get(field)!r} (expected {want!r})"
+        for field, want in expected.items()
+        if body.get(field) != want
+    ]
 
 
 def http(
@@ -154,7 +201,7 @@ def read_stream(key: str) -> tuple[list[str], str | None, bool]:
     return pieces, finish, done_after_finish
 
 
-def main() -> int:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", required=True, help="Local image reference to test.")
     parser.add_argument(
@@ -164,11 +211,29 @@ def main() -> int:
     )
     parser.add_argument("--model", type=Path, required=True, help="Checksum-verified GGUF.")
     parser.add_argument("--model-sha256", required=True)
+    parser.add_argument(
+        "--expect-version", type=release_version, required=True, help="Release version."
+    )
+    parser.add_argument(
+        "--expect-commit", type=commit_sha, required=True, help="Tag commit SHA (40 hex)."
+    )
+    parser.add_argument(
+        "--expect-built-at", type=built_at, required=True, help="UTC RFC 3339 build date."
+    )
     parser.add_argument("--compose", type=Path, default=ROOT / "deploy" / "compose.yaml")
     parser.add_argument("--project", default="ie-release-e2e")
     parser.add_argument("--grace-seconds", type=float, default=40.0)
     parser.add_argument("--keep", action="store_true", help="Leave the stack + volume up.")
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def main() -> int:
+    args = parse_args()
+    expected_version = {
+        "version": args.expect_version,
+        "commit": args.expect_commit,
+        "built_at": args.expect_built_at,
+    }
 
     compose = Compose(args.compose, args.project, args.image)
     failures: list[str] = []
@@ -192,6 +257,13 @@ def main() -> int:
         check("persistent named volume at /data", "volume:/data" in volumes, volumes)
 
         check("/healthz 200", wait_status("/healthz", 200, 120) == 200)
+        status, body = http_json("GET", "/version")
+        wrong = version_mismatches(body, expected_version) if status == 200 else []
+        check(
+            "/version reports the candidate version, commit, and build date",
+            status == 200 and not wrong,
+            f"status={status} {'; '.join(wrong)}".strip(),
+        )
         status, _ = http("GET", "/readyz")
         check("/readyz not ready before a model is loaded", status == 503, f"status={status}")
         status, raw = http("GET", "/dashboard/")

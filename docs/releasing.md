@@ -29,12 +29,15 @@ line, so a patch to an older line never drags `latest` backwards.
    - move `[Unreleased]` entries under a new `## [X.Y.Z] - YYYY-MM-DD` heading in
      `CHANGELOG.md`, and call out any **new database migration** (it makes a
      rollback require a backup restore) under "Upgrade notes";
-   - if runtime dependencies changed, regenerate the lock (below).
+   - if runtime dependencies or build tools changed, regenerate the locks (below).
 2. **Dry run** (optional but recommended): Actions → *Release* → *Run workflow*
    on `main`. Everything up to the vulnerability gate runs against the real image,
    and the step summary shows the rendered release notes. Nothing is pushed. Pull
-   requests that touch release inputs (`Dockerfile`, `deploy/`, `requirements/`,
-   the release scripts or workflow) run the same dry run automatically.
+   requests that change a release image input run the same dry run automatically:
+   anything copied into the image build context (`Dockerfile`, `.dockerignore`,
+   `engine/`, `dashboard/`, `requirements/`, `pyproject.toml`, `CHANGELOG.md`,
+   `deploy/`), the release scripts, and the `release.yml`/`ci.yml` workflows.
+   Ordinary branch pushes never run it, and only a `vX.Y.Z` tag on `main` publishes.
 3. **Tag** the merge commit on `main` and push the tag:
 
    ```bash
@@ -67,12 +70,14 @@ line, so a patch to an older line never drags `latest` backwards.
    the archive's. Then: image inspection (non-root, version/commit/date, package
    version, `llama_cpp` import, dashboard files, no toolchain, OCI labels); the
    image-level E2E (`scripts/release_image_e2e.py`) through `deploy/compose.yaml`
-   on a fresh volume; SPDX SBOM (syft); grype scan + gate.
+   on a fresh volume, including `GET /version` returning exactly the candidate's
+   version, commit, and build date; SPDX SBOM (syft); grype scan + gate.
 4. **publish** (tags only; `packages`/`attestations`/`id-token`/`contents` write)
    — re-verifies the archive checksum and digest, pushes it with
    `skopeo copy --preserve-digests` as `sha-<commit>` and checks the registry digest,
-   creates SLSA provenance and SBOM attestations signed through GitHub OIDC
-   (Sigstore; no stored signing key), applies stable tags by digest, then creates
+   creates SLSA provenance (`actions/attest-build-provenance`) and SBOM
+   (`actions/attest` with `sbom-path`) attestations for that digest, signed through
+   GitHub OIDC (Sigstore; no stored signing key), applies stable tags by digest, then creates
    the GitHub release.
 
 Nothing is rebuilt after testing: every later step references the same digest.
@@ -98,7 +103,28 @@ Nothing is rebuilt after testing: every later step references the same digest.
   The image build installs only from this file (`--require-hashes
   --only-binary=:all:`) and runs `pip check`. The `pyproject.toml` floors stay for
   development installs.
-- **Workflow actions** — pinned by commit SHA in `release.yml`.
+- **Wheel-build tools** — `requirements/release-build.txt`, hash-locked `pip`,
+  `build`, `setuptools`, `wheel` and their dependencies, compiled from
+  `requirements/release-build.in`. Without it the build stage would fetch whatever
+  `pip`/`build` were newest and let PEP 517 isolation resolve pyproject's floating
+  `setuptools>=68`, so the same source could be built by different tools. The
+  build stage installs it with `--require-hashes --only-binary=:all:` and runs
+  `python -m build --no-isolation`, so exactly these tools build the wheel. They
+  stay in the discarded build stage; the runtime image never contains them.
+  Regenerate (e.g. to take a setuptools fix) with:
+
+  ```bash
+  uv pip compile requirements/release-build.in --python-version 3.12 \
+    --python-platform x86_64-manylinux_2_28 --generate-hashes \
+    --emit-index-url --no-header -o requirements/release-build.txt
+  ```
+
+  This locks every build input under repository control; it does not by itself
+  make the image byte-for-byte reproducible (timestamps, base-image apt state).
+- **Workflow actions** — every third-party action reachable from a release
+  (`release.yml` and the `ci.yml` gates it calls) is pinned by full commit SHA with
+  a version comment; `tests/test_release_tooling.py` fails on a moving tag. To bump
+  one, resolve the release tag to its commit and update the SHA and comment together.
 
 ## Vulnerability gate
 

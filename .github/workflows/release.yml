@@ -14,14 +14,21 @@ on:
     tags: ["v*.*.*"]
   workflow_dispatch:
   pull_request:
+    # Every input that is copied into the image build context or that decides
+    # release eligibility (the reusable ci.yml gates).
     paths:
       - Dockerfile
       - .dockerignore
-      - deploy/**
+      - engine/**
+      - dashboard/**
       - requirements/**
+      - pyproject.toml
+      - CHANGELOG.md
+      - deploy/**
       - scripts/release.py
       - scripts/release_image_e2e.py
       - .github/workflows/release.yml
+      - .github/workflows/ci.yml
 
 permissions:
   contents: read
@@ -192,6 +199,7 @@ jobs:
             --image "$CANDIDATE" \
             --expect-image-id "${{ steps.build.outputs.image_id }}" \
             --model "$HOME/models/tiny.gguf" --model-sha256 "$MODEL_SHA256" \
+            --expect-version "$VERSION" --expect-commit "$COMMIT" --expect-built-at "$CREATED" \
             | tee e2e.txt
           { echo "### Image E2E"; echo '```'; cat e2e.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
@@ -301,12 +309,16 @@ jobs:
 
       - name: Attest SBOM (GitHub OIDC)
         id: sbom
-        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        # actions/attest directly (the deprecated attest-sbom was a wrapper over it).
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        env:
+          NODE_OPTIONS: "--max-http-header-size=32768" # as the attest-sbom wrapper set
         with:
           subject-name: ${{ env.IMAGE_REPO }}
           subject-digest: ${{ env.DIGEST }}
           sbom-path: sbom.spdx.json
           push-to-registry: true
+          create-storage-record: false # organization-only feature
 
       - name: Apply stable tags to the attested digest
         id: tags

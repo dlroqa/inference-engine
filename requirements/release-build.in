@@ -1,0 +1,6 @@
+# Tools that build the application wheel in the release Dockerfile's build stage.
+# Compiled (with hashes) into release-build.txt — see docs/releasing.md.
+pip
+build
+setuptools>=68
+wheel

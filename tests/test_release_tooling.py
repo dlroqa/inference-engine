@@ -7,12 +7,15 @@ import hashlib
 import importlib.util
 import io
 import json
+import re
 import sys
 import tarfile
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import pytest
+import yaml
 
 import engine
 
@@ -22,6 +25,13 @@ assert _spec and _spec.loader
 release = importlib.util.module_from_spec(_spec)
 sys.modules["release_tool"] = release
 _spec.loader.exec_module(release)
+_e2e_spec = importlib.util.spec_from_file_location(
+    "release_image_e2e", ROOT / "scripts" / "release_image_e2e.py"
+)
+assert _e2e_spec and _e2e_spec.loader
+e2e = importlib.util.module_from_spec(_e2e_spec)
+sys.modules["release_image_e2e"] = e2e
+_e2e_spec.loader.exec_module(e2e)
 
 DIGEST = "sha256:" + "a" * 64
 REPO = "ghcr.io/dlroqa/inference-engine"
@@ -390,3 +400,372 @@ def test_saved_config_digest_requires_manifest() -> None:
     buf.seek(0)
     with pytest.raises(release.ReleaseError):
         release.saved_config_digest(buf)
+
+
+# --- locked wheel-build tooling -------------------------------------------------
+
+DOCKERFILE = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+LOCKED_INSTALL = (
+    "pip install --no-cache-dir --require-hashes --only-binary=:all: -r /tmp/release-build.txt"
+)
+
+
+def _stages(dockerfile: str) -> dict[str, str]:
+    parts = re.split(r"^FROM \S+ AS (\w+)\s*$", dockerfile, flags=re.M)
+    return dict(zip(parts[1::2], parts[2::2], strict=True))
+
+
+def test_dockerfile_builds_the_wheel_with_locked_tools_only() -> None:
+    build = _stages(DOCKERFILE)["build"]
+    assert "COPY requirements/release-build.txt /tmp/release-build.txt" in build
+    assert LOCKED_INSTALL in build
+    # PEP 517 isolation would resolve pyproject's floating setuptools from PyPI.
+    assert "python -m build --no-isolation --wheel" in build
+    assert "--upgrade pip" not in DOCKERFILE
+    # Every pip install reads a hash-locked file or installs the just-built wheel.
+    for cmd in re.findall(r"pip install[^\n&]*", DOCKERFILE):
+        assert "--require-hashes" in cmd or "--no-deps /tmp/*.whl" in cmd, cmd
+
+
+def test_build_tools_stay_out_of_the_runtime_image() -> None:
+    assert "release-build" not in _stages(DOCKERFILE)["runtime"]
+
+
+def _locked_requirements(path: Path) -> dict[str, list[str]]:
+    """``name -> hashes`` of a pip ``--require-hashes`` file; asserts its syntax."""
+    text = path.read_text(encoding="utf-8").replace("\\\n", " ")
+    out: dict[str, list[str]] = {}
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line or line.startswith("--index-url") or line.startswith("--extra-index-url"):
+            continue
+        req, *opts = line.split()
+        m = re.fullmatch(r"([A-Za-z0-9][A-Za-z0-9._-]*)==([0-9][A-Za-z0-9.+!-]*)", req)
+        assert m, f"not an exact pin: {req!r}"
+        hashes = [o.removeprefix("--hash=") for o in opts]
+        assert all(o.startswith("--hash=sha256:") for o in opts), f"bad option in {line!r}"
+        assert hashes and all(re.fullmatch(r"sha256:[0-9a-f]{64}", h) for h in hashes), req
+        out[m[1].lower().replace("_", "-")] = hashes
+    return out
+
+
+def test_build_lock_pins_every_build_tool_with_hashes() -> None:
+    locked = _locked_requirements(ROOT / "requirements" / "release-build.txt")
+    assert {"pip", "build", "setuptools", "wheel", "packaging", "pyproject-hooks"} <= set(locked)
+    # The wheel build backend itself must satisfy pyproject's build-system floor.
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'requires = ["setuptools>=68", "wheel"]' in pyproject
+    text = (ROOT / "requirements" / "release-build.txt").read_text(encoding="utf-8")
+    setuptools = re.search(r"^setuptools==(\d+)\.", text, re.M)
+    assert setuptools and int(setuptools[1]) >= 68
+
+
+def test_runtime_lock_is_hash_locked_too() -> None:
+    assert "llama-cpp-python" in _locked_requirements(ROOT / "requirements" / "release-cpu.txt")
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["pip>=26 \\\n    --hash=sha256:" + "a" * 64, "pip==26.0", "pip==26.0 --hash=md5:abc"],
+)
+def test_lock_syntax_check_rejects_unpinned_or_unhashed(tmp_path: Path, bad: str) -> None:
+    path = tmp_path / "lock.txt"
+    path.write_text(bad + "\n", encoding="utf-8")
+    with pytest.raises(AssertionError):
+        _locked_requirements(path)
+
+
+# --- release-reachable workflows ------------------------------------------------
+
+WORKFLOWS = ROOT / ".github" / "workflows"
+RELEASE_WORKFLOWS = ("release.yml", "ci.yml")
+USES_RE = re.compile(r"^\s*(?:-\s+)?uses:\s*['\"]?([^\s'\"#]+)", re.M)
+SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def unpinned_actions(workflow_text: str) -> list[str]:
+    """Third-party ``uses:`` refs that are not a full commit SHA (local ``./`` actions
+    and reusable workflows in this repo are exempt)."""
+    bad = []
+    for ref in USES_RE.findall(workflow_text):
+        if ref.startswith("./"):
+            continue
+        _, _, version = ref.partition("@")
+        if not SHA_RE.match(version):
+            bad.append(ref)
+    return bad
+
+
+def _workflow(name: str) -> dict[Any, Any]:
+    return dict(yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8")))
+
+
+def _triggers(name: str) -> dict[str, Any]:
+    wf = _workflow(name)
+    return dict(wf["on"] if "on" in wf else wf[True])  # YAML 1.1 reads bare `on:` as True
+
+
+def _steps(job: str) -> list[dict[str, Any]]:
+    return list(_workflow("release.yml")["jobs"][job]["steps"])
+
+
+def _step_index(steps: list[dict[str, Any]], predicate: Any) -> int:
+    return next(i for i, st in enumerate(steps) if predicate(st))
+
+
+@pytest.mark.parametrize("name", RELEASE_WORKFLOWS)
+def test_release_reachable_workflows_pin_actions_by_sha(name: str) -> None:
+    text = (WORKFLOWS / name).read_text(encoding="utf-8")
+    assert USES_RE.findall(text), f"{name}: no uses: found — scanner broken?"
+    assert unpinned_actions(text) == []
+    # Every pin carries a human-readable version comment.
+    for line in text.splitlines():
+        if re.search(r"uses:\s*[^.\s]", line):
+            assert re.search(r"@[0-9a-f]{40} # v\d", line), line
+    _workflow(name)  # still valid YAML
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "      - uses: actions/checkout@v4",
+        "        uses: actions/cache@v4.3.0 # v4.3.0",
+        "        uses: 'docker/setup-buildx-action@main'",
+        "      - uses: actions/checkout@11d5960a",
+        "      - uses: actions/checkout@" + "A" * 40,
+        "      - uses: actions/checkout",
+    ],
+)
+def test_unpinned_action_scanner_flags_moving_refs(line: str) -> None:
+    assert unpinned_actions(f"steps:\n{line}\n")
+
+
+def test_unpinned_action_scanner_accepts_sha_and_local() -> None:
+    text = (
+        "      - uses: actions/checkout@" + "0" * 40 + " # v4.4.0\n"
+        "    uses: ./.github/workflows/ci.yml\n"
+        "      - uses: ./.github/actions/setup\n"
+    )
+    assert unpinned_actions(text) == []
+
+
+RELEASE_INPUT_PATHS = {
+    "Dockerfile",
+    ".dockerignore",
+    "engine/**",
+    "dashboard/**",
+    "requirements/**",
+    "pyproject.toml",
+    "CHANGELOG.md",
+    "deploy/**",
+    "scripts/release.py",
+    "scripts/release_image_e2e.py",
+    ".github/workflows/release.yml",
+    ".github/workflows/ci.yml",
+}
+
+
+def test_release_dry_run_covers_every_image_input() -> None:
+    on = _triggers("release.yml")
+    assert RELEASE_INPUT_PATHS <= set(on["pull_request"]["paths"])
+
+
+def test_release_workflow_never_runs_on_branch_pushes() -> None:
+    on = _triggers("release.yml")
+    assert set(on) == {"push", "workflow_dispatch", "pull_request"}
+    assert on["push"] == {"tags": ["v*.*.*"]}  # tags only; no branches
+    assert on["workflow_dispatch"] is None  # no inputs => cannot request publish
+
+
+def test_only_a_release_tag_on_main_sets_publish() -> None:
+    script = _steps("validate")[1]["run"]
+    tag_branch, other_branch = script.split("else", 1)
+    assert 'if [ "$GITHUB_EVENT_NAME" = "push" ]' in tag_branch
+    assert "check-version --tag" in tag_branch and "origin/main" in tag_branch
+    assert "PUBLISH=true" in tag_branch
+    assert "PUBLISH=false" in other_branch.split("fi", 1)[0]
+    assert "PUBLISH=true" not in other_branch
+
+
+def test_sbom_attestation_uses_supported_pinned_action() -> None:
+    text = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
+    assert "actions/attest-sbom@" not in text
+    step = next(st for st in _steps("publish") if st.get("id") == "sbom")
+    action, _, sha = step["uses"].partition("@")
+    assert action == "actions/attest" and SHA_RE.match(sha)
+    assert step["with"] == {
+        "subject-name": "${{ env.IMAGE_REPO }}",  # untagged repository
+        "subject-digest": "${{ env.DIGEST }}",  # the tested candidate digest
+        "sbom-path": "sbom.spdx.json",
+        "push-to-registry": True,
+        "create-storage-record": False,
+    }
+    assembly = next(st for st in _steps("publish") if st.get("name") == "Assemble release assets")
+    assert "steps.sbom.outputs.bundle-path" in assembly["run"]
+    assert "steps.sbom.outputs.attestation-url" in assembly["run"]
+
+
+def test_image_e2e_is_given_the_candidate_metadata() -> None:
+    step = next(st for st in _steps("candidate") if "release_image_e2e.py" in st.get("run", ""))
+    for flag in (
+        '--expect-version "$VERSION"',
+        '--expect-commit "$COMMIT"',
+        '--expect-built-at "$CREATED"',
+    ):
+        assert flag in step["run"]
+
+
+def test_publish_verifies_downloaded_archive_before_push_or_attest() -> None:
+    steps = _steps("publish")
+    download = _step_index(steps, lambda st: "download-artifact" in st.get("uses", ""))
+    verify = _step_index(steps, lambda st: "sha256sum -c" in st.get("run", ""))
+    assert "oci-digests candidate.oci.tar" in steps[verify]["run"]
+    assert '= "$DIGEST"' in steps[verify]["run"]
+    pushes = [i for i, st in enumerate(steps) if "skopeo copy" in st.get("run", "")]
+    attests = [i for i, st in enumerate(steps) if "attest" in st.get("uses", "")]
+    assert pushes and attests
+    assert download < verify < min(pushes + attests)
+
+
+def test_stable_tags_only_after_both_attestations() -> None:
+    steps = _steps("publish")
+    provenance = _step_index(steps, lambda st: st.get("id") == "provenance")
+    sbom = _step_index(steps, lambda st: st.get("id") == "sbom")
+    tags = _step_index(steps, lambda st: st.get("id") == "tags")
+    assert "stable-tags" in steps[tags]["run"]
+    assert max(provenance, sbom) < tags
+    # The only earlier registry write is the traceability sha-<commit> tag.
+    earlier = [st["run"] for st in steps[:tags] if "skopeo copy" in st.get("run", "")]
+    assert len(earlier) == 1 and '$IMAGE_REPO:$SHA_TAG"' in earlier[0]
+
+
+# --- generated release artifacts ------------------------------------------------
+
+IMMUTABLE_REF_RE = re.compile(r"[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}")
+
+
+def test_rendered_compose_has_exactly_one_immutable_image(tmp_path: Path) -> None:
+    ref = f"{REPO}@sha256:{'0123456789abcdef' * 4}"
+    out = tmp_path / "compose.yaml"
+    assert release._cmd(["render-compose", "--image", ref, "--out", str(out)]) == 0
+    rendered = out.read_text(encoding="utf-8")
+    images = re.findall(r"^\s*image:\s*(\S+)\s*$", rendered, re.M)
+    assert images == [ref]
+    assert IMMUTABLE_REF_RE.findall(rendered) == [ref]
+    service = yaml.safe_load(rendered)["services"]["inference-engine"]
+    assert service["image"] == ref
+
+
+def test_release_notes_carry_the_same_image_and_digest(tmp_path: Path) -> None:
+    digest = "sha256:" + "0123456789abcdef" * 4
+    ref = f"{REPO}@{digest}"
+    compose = release.render_compose(
+        (ROOT / "deploy" / "compose.yaml").read_text(encoding="utf-8"), ref
+    )
+    notes = release.release_notes(
+        version="0.1.0",
+        commit="c" * 40,
+        created="2026-09-24T00:00:00Z",
+        image_repo=REPO,
+        digest=digest,
+        changes="- x",
+        scan_summary="ok",
+        tags=["v0.1.0"],
+        provenance_url="p",
+        sbom_url="s",
+    )
+    assert set(IMMUTABLE_REF_RE.findall(notes)) == set(IMMUTABLE_REF_RE.findall(compose)) == {ref}
+    assert f"| Digest | `{digest}` |" in notes
+
+
+@pytest.mark.parametrize(
+    "ref", [f"{REPO}:v0.1.0", f"{REPO}:latest", f"{REPO}:sha-0123456789ab", f"{REPO}@sha256:AB"]
+)
+def test_cli_refuses_to_render_a_mutable_compose(tmp_path: Path, ref: str) -> None:
+    out = tmp_path / "compose.yaml"
+    assert release._cmd(["render-compose", "--image", ref, "--out", str(out)]) == 1
+    assert not out.exists()
+
+
+# --- image E2E: /version contract -----------------------------------------------
+
+E2E_BASE_ARGS = ["--image", "img", "--expect-image-id", "sha256:x", "--model", "m.gguf"]
+E2E_BASE_ARGS += ["--model-sha256", "h"]
+GOOD_META = {
+    "--expect-version": "0.1.0",
+    "--expect-commit": "0123456789abcdef0123456789abcdef01234567",
+    "--expect-built-at": "2026-09-24T12:34:56Z",
+}
+
+
+def _e2e_argv(**override: str) -> list[str]:
+    meta = {**GOOD_META, **{f"--{k.replace('_', '-')}": v for k, v in override.items()}}
+    return [*E2E_BASE_ARGS, *(x for kv in meta.items() for x in kv)]
+
+
+def test_e2e_accepts_candidate_metadata() -> None:
+    args = e2e.parse_args(_e2e_argv())
+    assert (args.expect_version, args.expect_commit, args.expect_built_at) == tuple(
+        GOOD_META.values()
+    )
+
+
+@pytest.mark.parametrize("missing", list(GOOD_META))
+def test_e2e_requires_all_release_metadata(missing: str) -> None:
+    argv = [*E2E_BASE_ARGS]
+    for flag, value in GOOD_META.items():
+        if flag != missing:
+            argv += [flag, value]
+    with pytest.raises(SystemExit):
+        e2e.parse_args(argv)
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"expect_version": "v0.1.0"},
+        {"expect_version": "0.1"},
+        {"expect_version": ""},
+        {"expect_commit": "0123abc"},
+        {"expect_commit": "0123456789ABCDEF0123456789ABCDEF01234567"},
+        {"expect_built_at": "2026-09-24"},
+        {"expect_built_at": "2026-09-24T12:34:56+00:00"},
+        {"expect_built_at": "2026-13-24T12:34:56Z"},
+        {"expect_built_at": ""},
+    ],
+)
+def test_e2e_rejects_malformed_release_metadata(override: dict[str, str]) -> None:
+    with pytest.raises(SystemExit):
+        e2e.parse_args(_e2e_argv(**override))
+
+
+EXPECTED_VERSION = {
+    "version": "0.1.0",
+    "commit": "0123456789abcdef0123456789abcdef01234567",
+    "built_at": "2026-09-24T12:34:56Z",
+}
+
+
+def test_version_response_matching_passes() -> None:
+    assert e2e.version_mismatches(dict(EXPECTED_VERSION), EXPECTED_VERSION) == []
+    assert e2e.version_mismatches({**EXPECTED_VERSION, "extra": 1}, EXPECTED_VERSION) == []
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("version", "0.1.1"),
+        ("commit", "0123456"),
+        ("commit", None),
+        ("built_at", "2026-09-24T12:34:57Z"),
+        ("built_at", None),
+    ],
+)
+def test_version_response_mismatch_fails(field: str, value: Any) -> None:
+    wrong = e2e.version_mismatches({**EXPECTED_VERSION, field: value}, EXPECTED_VERSION)
+    assert len(wrong) == 1 and wrong[0].startswith(f"{field}=")
+
+
+@pytest.mark.parametrize("body", [None, [], "0.1.0", {}])
+def test_version_response_missing_fields_fails(body: Any) -> None:
+    assert e2e.version_mismatches(body, EXPECTED_VERSION)

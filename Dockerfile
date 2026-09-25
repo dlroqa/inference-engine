@@ -27,11 +27,17 @@ RUN npm run build
 FROM python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9 AS build
 ENV PIP_RETRIES=5 PIP_DEFAULT_TIMEOUT=60
 WORKDIR /src
-RUN pip install --no-cache-dir --upgrade pip build
+# Wheel-build tooling (pip, build, setuptools, wheel + deps) is hash-locked like
+# the runtime deps, so a rebuild of the same source uses the same build tools.
+COPY requirements/release-build.txt /tmp/release-build.txt
+RUN pip install --no-cache-dir --require-hashes --only-binary=:all: -r /tmp/release-build.txt
 COPY . .
 # Bring in the SPA produced by the dashboard stage so it is packaged in the wheel.
 COPY --from=dashboard /app/engine/static/ /src/engine/static/
-RUN python -m build --wheel --outdir /dist \
+# --no-isolation: build with the locked setuptools/wheel installed above instead
+# of letting PEP 517 isolation resolve pyproject's floating `setuptools>=68` from
+# PyPI. This stage is discarded; only the wheel reaches the runtime image.
+RUN python -m build --no-isolation --wheel --outdir /dist \
     && python scripts/release.py verify-wheel /dist/*.whl \
          --expect-version "$(python scripts/release.py check-version)"
 
