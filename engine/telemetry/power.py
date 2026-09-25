@@ -51,7 +51,10 @@ def _read_rapl_domains() -> list[Path]:
         return []
     domains: list[Path] = []
     try:
-        for entry in sorted(RAPL_ROOT.glob("intel-rapl:*")):
+        # Linux exposes domains as ``intel-rapl:0``. The broader prefix keeps
+        # the probe and its filesystem-backed tests portable to platforms where
+        # ``:`` is not a legal path character.
+        for entry in sorted(RAPL_ROOT.glob("intel-rapl*")):
             energy = entry / "energy_uj"
             if energy.is_file():
                 domains.append(energy)

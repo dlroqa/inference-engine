@@ -21,7 +21,9 @@ def test_no_rapl_probe_reports_unavailable(monkeypatch, tmp_path: Path) -> None:
 
 def _make_rapl(tmp_path: Path, uj: int) -> Path:
     root = tmp_path / "powercap"
-    domain = root / "intel-rapl:0"
+    # Windows cannot create a path containing ``:``. Discovery accepts the
+    # portable RAPL prefix as well as Linux's real ``intel-rapl:0`` name.
+    domain = root / "intel-rapl-0"
     domain.mkdir(parents=True)
     (domain / "energy_uj").write_text(str(uj))
     return root
@@ -39,7 +41,7 @@ def test_rapl_baseline_then_measured(monkeypatch, tmp_path: Path) -> None:
     assert first.reason == "establishing baseline"
 
     # Advance the counter by 2 J over 1 s -> 2 W measured.
-    (root / "intel-rapl:0" / "energy_uj").write_text(str(1_000_000 + 2_000_000))
+    (root / "intel-rapl-0" / "energy_uj").write_text(str(1_000_000 + 2_000_000))
     second = probe.sample(now=101.0)
     assert second.state == "measured"
     assert second.watts is not None
@@ -53,7 +55,7 @@ def test_counter_wrap_is_not_fabricated(monkeypatch, tmp_path: Path) -> None:
     probe = PowerProbe()
     probe.sample(now=0.0)  # baseline
     # Counter goes backwards (wrap): we must not invent a negative/huge wattage.
-    (root / "intel-rapl:0" / "energy_uj").write_text("10")
+    (root / "intel-rapl-0" / "energy_uj").write_text("10")
     reading = probe.sample(now=1.0)
     assert reading.state == "unavailable"
     assert reading.watts is None
