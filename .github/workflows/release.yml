@@ -26,6 +26,11 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    # Explicit bash => `bash -eo pipefail`: a failing test piped to tee fails the step.
+    shell: bash
+
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

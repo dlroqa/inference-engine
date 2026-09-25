@@ -17,7 +17,9 @@ on:
         default: false
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # Include the workflow name: when release.yml calls this file, github.workflow
+  # is "Release", so the two runs for one PR never cancel each other.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 # Make network-bound dependency installs resilient to transient PyPI / wheel-index
@@ -158,6 +160,10 @@ jobs:
     name: llama.cpp integration (real GGUF, AVX)
     runs-on: ubuntu-latest
     needs: test
+    defaults:
+      run:
+        # Explicit bash => `-eo pipefail`, so `smoke | tee` fails when the smoke does.
+        shell: bash
     env:
       # SmolLM2-135M-Instruct-Q4_K_M.gguf — pinned for supply-chain integrity.
       MODEL_URL: "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q4_K_M.gguf"

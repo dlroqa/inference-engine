@@ -207,13 +207,6 @@ def main() -> int:
         ):
             status, _ = http(method, path)
             check(f"unauthenticated {method} {path} -> 401", status == 401, f"status={status}")
-        status, _ = http_json(
-            "POST",
-            "/v1/chat/completions",
-            body={"model": MODEL_NAME, "messages": [{"role": "user", "content": "hi"}]},
-        )
-        check("unauthenticated generation -> 401", status == 401, f"status={status}")
-
         created = compose.run(
             "exec", "-T", SERVICE, "inference-engine", "keys", "create", "--label", "owner"
         )
@@ -250,6 +243,12 @@ def main() -> int:
         status, _ = http_json("POST", f"/admin/models/{model_id}/load", key=key, timeout=300)
         check("model load", status == 200, f"status={status}")
         check("/readyz 200 once the model is loaded", wait_status("/readyz", 200, 120) == 200)
+        status, _ = http_json(
+            "POST",
+            "/v1/chat/completions",
+            body={"model": MODEL_NAME, "messages": [{"role": "user", "content": "hi"}]},
+        )
+        check("unauthenticated generation -> 401", status == 401, f"status={status}")
 
         pieces, finish, done = read_stream(key)
         check(
