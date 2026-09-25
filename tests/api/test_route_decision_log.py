@@ -134,3 +134,39 @@ def test_route_decision_logged_on_sync_generate_error(tmp_path) -> None:
     assert len(recs) == 1
     assert recs[0].outcome == "error" and recs[0].backend == "primary"  # type: ignore[attr-defined]
     assert app.state.backend_registry.entries[0].in_flight == 0  # accounted once
+
+
+def test_workload_rule_log_remains_privacy_safe(tmp_path) -> None:
+    prompt_marker = "WORKLOAD-PROMPT-MARKER"
+    key_marker = "WORKLOAD-KEY-MARKER"
+    fake = _loaded(supports_structured_output=True)
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        model_id=MODEL_ID,
+        workload_routing_enabled=True,
+        workload_routing_rules=[
+            {
+                "name": "json-primary",
+                "kind": "structured_output_preference",
+                "model": MODEL_ID,
+                "preferred_backends": ["primary"],
+                "enabled": True,
+            }
+        ],
+    )
+    app = create_app(settings, backend=fake)
+    with TestClient(app, client=LOOPBACK) as c, _capture_route_decisions() as records:
+        response = c.post(
+            "/v1/chat/completions",
+            headers={"authorization": f"Bearer {key_marker}"},
+            json={
+                "model": MODEL_ID,
+                "messages": [{"role": "user", "content": prompt_marker}],
+                "response_format": {"type": "json_object"},
+            },
+        )
+        assert response.status_code == 200
+    rec = _decisions(records)[0]
+    blob = json.dumps(dict(rec.__dict__), default=str)
+    assert rec.workload_rule == "json-primary"  # type: ignore[attr-defined]
+    assert prompt_marker not in blob and key_marker not in blob

@@ -261,6 +261,7 @@ def _record_route_outcome(
         tier=decision.tier if decision else None,
         queue_wait_ms=queue_wait_ms,
         upstream_attempts=upstream_attempts,
+        workload_rule=decision.workload_rule if decision else None,
     )
     output_tps = output_tps_sample(
         completion_tokens=completion_tokens, total_ms=total_ms, error=error, cancelled=cancelled
@@ -278,6 +279,7 @@ def _record_route_outcome(
             "fallbacks": list(decision.fallbacks) if decision else [],
             "policy": decision.policy if decision else None,
             "step": decision.step if decision else None,
+            "workload_rule": decision.workload_rule if decision else None,
             "queue_wait_ms": round(queue_wait_ms, 1) if queue_wait_ms is not None else None,
             "ttft_ms": round(ttft_ms, 1) if ttft_ms is not None else None,
             "output_tps": round(output_tps, 2) if output_tps is not None else None,

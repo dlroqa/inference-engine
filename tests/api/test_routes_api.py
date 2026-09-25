@@ -87,3 +87,42 @@ def test_routes_requires_operator(tmp_path) -> None:
     app = create_app(Settings(data_dir=tmp_path / "data"))
     with TestClient(app, client=REMOTE) as remote:
         assert remote.get("/admin/routes").status_code == 401
+
+
+def test_routes_and_plan_expose_matched_workload_rule(tmp_path) -> None:
+    fake = FakeBackend(tokens=["{}"], model_id=MODEL_ID, supports_structured_output=True)
+    asyncio.run(fake.load())
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        model_id=MODEL_ID,
+        workload_routing_enabled=True,
+        workload_routing_rules=[
+            {
+                "name": "json-primary",
+                "kind": "structured_output_preference",
+                "model": MODEL_ID,
+                "preferred_backends": ["primary"],
+                "enabled": True,
+            }
+        ],
+    )
+    with TestClient(create_app(settings, backend=fake), client=LOOPBACK) as client:
+        plan = client.post(
+            "/admin/route/plan",
+            json={"model": MODEL_ID, "required_features": ["structured_output"]},
+        ).json()
+        assert plan["workload_rule"] == "json-primary"
+        assert plan["workload_rule_preferred_targets"] == ["primary"]
+        assert plan["chosen"] == "primary"
+
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": MODEL_ID,
+                "messages": [{"role": "user", "content": "safe prompt"}],
+                "response_format": {"type": "json_object"},
+            },
+        )
+        assert response.status_code == 200
+        row = client.get("/admin/routes").json()["routes"][0]
+        assert row["workload_rules"] == {"json-primary": 1}

@@ -126,6 +126,30 @@ class VirtualModelSpec(BaseModel):
         return [list(self.backends)] if self.policy == "route" else [list(g) for g in self.steps]
 
 
+class WorkloadRoutingRuleSpec(BaseModel):
+    """One narrowly scoped, opt-in workload-routing preference (Block 12.3)."""
+
+    model_config = {"extra": "forbid"}
+
+    name: str
+    kind: Literal["structured_output_preference"]
+    model: str
+    preferred_backends: list[str]
+    enabled: bool = False
+
+    @model_validator(mode="after")
+    def _validate_shape(self) -> WorkloadRoutingRuleSpec:
+        if not self.name.strip() or not self.model.strip():
+            raise ValueError("workload routing rule name and model must be non-empty")
+        if not self.preferred_backends or any(not name.strip() for name in self.preferred_backends):
+            raise ValueError(f"workload routing rule {self.name!r} needs preferred_backends")
+        if len(set(self.preferred_backends)) != len(self.preferred_backends):
+            raise ValueError(
+                f"workload routing rule {self.name!r} has duplicate preferred_backends"
+            )
+        return self
+
+
 class Settings(BaseSettings):
     """Validated engine settings for the Block 0 foundation.
 
@@ -298,6 +322,10 @@ class Settings(BaseSettings):
     # Named virtual auto-models (Block 10, sub-slice 5a): map a client-facing
     # model name to a route/cascade policy over the pool. See docs/backends.md.
     virtual_models: list[VirtualModelSpec] = Field(default_factory=list)
+    # Block 12.3 routing preferences. Both defaults keep CPU/RAM-only deployments
+    # on the existing deterministic model map until explicitly enabled.
+    workload_routing_enabled: bool = False
+    workload_routing_rules: list[WorkloadRoutingRuleSpec] = Field(default_factory=list)
     # External-provider spillover (Block 10, sub-slice 7). External providers are
     # OpenAI-compatible endpoints used ONLY as overflow when the local pool cannot
     # admit a request. Egress is off by default: enable allow_external_providers
@@ -442,6 +470,44 @@ class Settings(BaseSettings):
                 + ", ".join(collisions)
                 + "; rename the virtual model so it does not shadow a physical model"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_workload_routing_rules(self) -> Settings:
+        """Keep an opt-in preference inside the configured primary pool.
+
+        This is deliberately configuration-time validation only. A configured
+        mapping is not evidence that a backend is currently ready or supports a
+        feature; those remain live registry checks at placement time.
+        """
+        names = [rule.name for rule in self.workload_routing_rules]
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        if duplicates:
+            raise ValueError("duplicate workload routing rule name(s): " + ", ".join(duplicates))
+
+        # Disabled rules are inert configuration templates. Enabled rules must
+        # be complete now, even if the global rollback switch remains off.
+        physical_models = {
+            self.model_id,
+            *(worker.effective_model_id for worker in self.remote_workers),
+            *(provider.effective_model_id for provider in self.external_providers),
+        }
+        primary_backends = {"primary", *(worker.name for worker in self.remote_workers)}
+        virtual_models = {model.name for model in self.virtual_models}
+        for rule in self.workload_routing_rules:
+            if not rule.enabled:
+                continue
+            if rule.model in virtual_models or rule.model not in physical_models:
+                raise ValueError(
+                    f"enabled workload routing rule {rule.name!r} references non-physical "
+                    f"or unknown model {rule.model!r}"
+                )
+            unknown = sorted(set(rule.preferred_backends) - primary_backends)
+            if unknown:
+                raise ValueError(
+                    f"enabled workload routing rule {rule.name!r} references unknown or "
+                    "non-primary backend(s): " + ", ".join(unknown)
+                )
         return self
 
     @model_validator(mode="after")

@@ -5,13 +5,18 @@ from __future__ import annotations
 import pytest
 
 from engine.inference.registry import BackendEntry, BackendRegistry, NoBackendAvailable
-from engine.inference.router import Router, VirtualModel
+from engine.inference.router import Router, VirtualModel, WorkloadRoutingRule
 from engine.inference.types import BackendState, FeatureUnsupportedError
 from tests.inference.test_registry import StubBackend
 
 
 def _entry(
-    name: str, backend: StubBackend, *, cap: int = 5, served_model: str | None = None
+    name: str,
+    backend: StubBackend,
+    *,
+    cap: int = 5,
+    served_model: str | None = None,
+    spillover: bool = False,
 ) -> BackendEntry:
     return BackendEntry(
         name=name,
@@ -20,6 +25,7 @@ def _entry(
         provider=lambda: backend,
         max_in_flight=cap,
         served_model=served_model,
+        spillover=spillover,
     )
 
 
@@ -174,6 +180,131 @@ def test_virtual_route_applies_feature_eligibility() -> None:
         router2.acquire("ab", required_features=feat)
 
 
+def test_workload_rule_is_opt_in_and_feature_safe() -> None:
+    reg = BackendRegistry(
+        [
+            _entry("preferred", StubBackend(model_id="model-a", structured=True)),
+            _entry("other", StubBackend(model_id="model-a", structured=True)),
+        ]
+    )
+    rule = WorkloadRoutingRule(
+        name="json-preferred",
+        kind="structured_output_preference",
+        model="model-a",
+        preferred_backends=("preferred",),
+        enabled=True,
+    )
+    disabled = Router(reg, [], [rule], workload_routing_enabled=False)
+    assert (
+        disabled.acquire("model-a", required_features=frozenset({"structured_output"})).entry.name
+        == "preferred"
+    )
+    enabled = Router(reg, [], [rule], workload_routing_enabled=True)
+    lease = enabled.acquire("model-a", required_features=frozenset({"structured_output"}))
+    assert lease.entry.name == "preferred"
+    assert lease.decision is not None and lease.decision.workload_rule == "json-preferred"
+    lease.release()
+
+
+def test_workload_rule_falls_back_to_baseline_when_preference_cannot_serve() -> None:
+    reg = BackendRegistry(
+        [
+            _entry("preferred", StubBackend(model_id="model-a", structured=False)),
+            _entry("other", StubBackend(model_id="model-a", structured=True)),
+        ]
+    )
+    rule = WorkloadRoutingRule(
+        name="json-preferred",
+        kind="structured_output_preference",
+        model="model-a",
+        preferred_backends=("preferred",),
+        enabled=True,
+    )
+    router = Router(reg, [], [rule], workload_routing_enabled=True)
+    lease = router.acquire("model-a", required_features=frozenset({"structured_output"}))
+    assert lease.entry.name == "other"
+    assert lease.decision is not None and lease.decision.workload_rule is None
+    lease.release()
+
+
+def test_workload_rule_full_preference_falls_back_to_baseline_candidate() -> None:
+    reg = BackendRegistry(
+        [
+            _entry("preferred", StubBackend(model_id="model-a", structured=True), cap=1),
+            _entry("other", StubBackend(model_id="model-a", structured=True)),
+        ]
+    )
+    reg.entries[0].in_flight = 1
+    rule = WorkloadRoutingRule(
+        name="json-preferred",
+        kind="structured_output_preference",
+        model="model-a",
+        preferred_backends=("preferred",),
+        enabled=True,
+    )
+    lease = Router(reg, [], [rule], workload_routing_enabled=True).acquire(
+        "model-a", required_features=frozenset({"structured_output"})
+    )
+    assert lease.entry.name == "other"
+    assert lease.decision is not None and lease.decision.workload_rule is None
+    lease.release()
+
+
+def test_workload_rule_preserves_baseline_feature_and_saturation_errors() -> None:
+    rule = WorkloadRoutingRule(
+        name="json-preferred",
+        kind="structured_output_preference",
+        model="model-a",
+        preferred_backends=("preferred",),
+        enabled=True,
+    )
+    unsupported = BackendRegistry(
+        [_entry("preferred", StubBackend(model_id="model-a", structured=False))]
+    )
+    with pytest.raises(FeatureUnsupportedError):
+        Router(unsupported, [], [rule], workload_routing_enabled=True).acquire(
+            "model-a", required_features=frozenset({"structured_output"})
+        )
+
+    saturated = BackendRegistry(
+        [_entry("preferred", StubBackend(model_id="model-a", structured=True), cap=1)]
+    )
+    saturated.entries[0].in_flight = 1
+    with pytest.raises(NoBackendAvailable, match="busy"):
+        Router(saturated, [], [rule], workload_routing_enabled=True).acquire(
+            "model-a", required_features=frozenset({"structured_output"})
+        )
+
+
+def test_workload_rule_primary_miss_uses_normal_spillover_fallback() -> None:
+    reg = BackendRegistry(
+        [
+            _entry("preferred", StubBackend(model_id="model-a", structured=True), cap=1),
+            _entry(
+                "spillover",
+                StubBackend(model_id="model-a", structured=True),
+                spillover=True,
+            ),
+        ]
+    )
+    reg.entries[0].in_flight = 1
+    rule = WorkloadRoutingRule(
+        name="json-preferred",
+        kind="structured_output_preference",
+        model="model-a",
+        preferred_backends=("preferred",),
+        enabled=True,
+    )
+    lease = Router(reg, [], [rule], workload_routing_enabled=True).acquire(
+        "model-a", required_features=frozenset({"structured_output"})
+    )
+    assert lease.entry.name == "spillover"
+    assert lease.decision is not None
+    assert lease.decision.workload_rule is None
+    assert lease.decision.tier == "spillover" and "spillover" in lease.decision.fallbacks
+    lease.release()
+
+
 # -- route-decision policy context (Block 12.2a) ---------------------------
 
 
@@ -229,3 +360,42 @@ def test_decision_cascade_escalation_then_spillover_preserves_order() -> None:
     # Step 1 landed on a spillover backend: cascade escalation first, spillover second.
     assert d.step == 1 and d.tier == "spillover"
     assert d.fallbacks == ("cascade_escalation", "spillover")
+
+
+def test_workload_plan_models_preference_then_baseline_without_reserving() -> None:
+    reg = BackendRegistry(
+        [
+            _entry("preferred", StubBackend(model_id="model-a", structured=True)),
+            _entry("other", StubBackend(model_id="model-a", structured=True)),
+        ]
+    )
+    rule = WorkloadRoutingRule(
+        name="json-preferred",
+        kind="structured_output_preference",
+        model="model-a",
+        preferred_backends=("preferred",),
+        enabled=True,
+    )
+    router = Router(reg, [], [rule], workload_routing_enabled=True)
+    before = [entry.in_flight for entry in reg.entries]
+    plan = router.plan("model-a", required_features=frozenset({"structured_output"}))
+    assert plan["workload_rule"] == "json-preferred"
+    assert plan["workload_rule_preferred_targets"] == ["preferred"]
+    assert plan["chosen"] == "preferred"
+    assert plan["steps"][0]["targets"] == ["preferred"]
+    assert [entry.in_flight for entry in reg.entries] == before
+
+
+def test_workload_plan_omits_rule_for_non_matching_request() -> None:
+    reg = BackendRegistry([_entry("preferred", StubBackend(model_id="model-a", structured=True))])
+    rule = WorkloadRoutingRule(
+        name="json-preferred",
+        kind="structured_output_preference",
+        model="model-a",
+        preferred_backends=("preferred",),
+        enabled=True,
+    )
+    plan = Router(reg, [], [rule], workload_routing_enabled=True).plan("model-a")
+    assert plan["workload_rule"] is None
+    assert plan["workload_rule_preferred_targets"] is None
+    assert plan["steps"][0]["targets"] == ["*all*"]

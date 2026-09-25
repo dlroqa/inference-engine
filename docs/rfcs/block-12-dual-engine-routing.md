@@ -209,7 +209,7 @@ Delivered in slice 12.1: model eligibility, feature-safe placement, the
 | 12.1 | Heterogeneous model eligibility (deterministic) | no | buildable + fully testable |
 | 12.2a | Route-decision observability enrichment | no | done (merged) |
 | 12.2b | Reproducible benchmark harness + §8.1/§8.2 comparison gate ([benchmarks.md](../benchmarks.md)) | harness runs on fakes in CI, real numbers on GPU | buildable + CI-testable |
-| 12.3 | Measured workload-aware routing rules (disabled by default) | **enablement** gated on §8 benchmarks | scaffolding + unit tests buildable; enablement operator-gated |
+| 12.3 | Measured workload-aware routing rules (disabled by default) | **enablement** gated on §8 benchmarks | implemented with startup safety validation, dry-run attribution, and CI tests; enablement operator-gated pending target-hardware evidence |
 | 12.4 | Per-engine pool data-plane router | yes (multi-worker GPU) | RFC + `DEFERRED` |
 | 12.5 | Topology evolution (multi-GPU/k8s/multi-region/disaggregation) | yes | separate RFC(s) + `DEFERRED` |
 
