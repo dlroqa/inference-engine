@@ -100,8 +100,20 @@ jobs:
       - name: Build distribution
         run: python -m pip wheel --no-deps --wheel-dir dist .
 
-      - name: Run portable test suite
-        run: python -m pytest -q
+      - name: Install built wheel
+        # Keep the test dependencies from the editable install, but replace the
+        # application itself with the artifact produced above. This catches
+        # missing package data and build-only regressions without a second
+        # dependency resolution on the more expensive macOS and Windows runners.
+        run: |
+          python -c "from pathlib import Path; Path(r'${{ runner.temp }}/wheel-test').mkdir(parents=True, exist_ok=True)"
+          python -c "from pathlib import Path; import subprocess, sys; wheel = next(Path('dist').glob('*.whl')); subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--force-reinstall', '--no-deps', str(wheel)])"
+
+      - name: Run portable test suite against built wheel
+        # Running outside the checkout ensures imports resolve to the installed
+        # wheel rather than the source tree.
+        working-directory: ${{ runner.temp }}/wheel-test
+        run: python -m pytest -q ${{ github.workspace }}/tests
 
   dashboard:
     name: Operator dashboard (build + tests)
