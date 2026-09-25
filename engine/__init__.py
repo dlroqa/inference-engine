@@ -8,4 +8,4 @@ endpoints. No inference runtime exists yet (see Block 1).
 
 # Single source of release version truth: pyproject reads it via setuptools
 # dynamic metadata, and the release workflow requires the ``vX.Y.Z`` tag to match.
-__version__ = "0.1.0"
+__version__ = "0.1.1"

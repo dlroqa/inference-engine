@@ -8,6 +8,22 @@ release notes and refuses to publish without it (see `docs/releasing.md`).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-25
+
+First published prebuilt image. `v0.1.0` was tagged, but its publish job stopped
+before any versioned image tag or GitHub release was created, so 0.1.1 is the
+first release to deploy; it contains everything listed under 0.1.0 below.
+
+### Fixed
+
+- Release publishing: the registry login now uses `docker login`, so the
+  provenance and SBOM attestations can be pushed to GHCR alongside the image
+  (a `skopeo login` left the attest actions without registry credentials).
+
+### Upgrade notes
+
+- No new database migrations; migrations `0001`–`0008` remain forward-only.
+
 ## [0.1.0] - 2026-09-24
 
 First prebuilt release. Supported deployment: the `linux/amd64` CPU image on a
