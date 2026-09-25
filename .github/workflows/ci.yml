@@ -8,9 +8,18 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch: # allow manual runs (e.g. AVX/real-model verification on demand)
+  # The release workflow reuses these gates verbatim (docs/releasing.md). It
+  # builds its own single candidate image, so it skips the container smoke here.
+  workflow_call:
+    inputs:
+      skip-container:
+        type: boolean
+        default: false
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # Include the workflow name: when release.yml calls this file, github.workflow
+  # is "Release", so the two runs for one PR never cancel each other.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 # Make network-bound dependency installs resilient to transient PyPI / wheel-index
@@ -29,10 +38,10 @@ jobs:
         python-version: ["3.11", "3.12"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -65,7 +74,7 @@ jobs:
       - name: Upload reports
         if: always()
         continue-on-error: true # never fail the job if artifact storage quota is full
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: reports-py${{ matrix.python-version }}
           path: |
@@ -84,10 +93,10 @@ jobs:
         python-version: ["3.12"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -119,10 +128,10 @@ jobs:
     name: Operator dashboard (build + tests)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
           cache: npm
@@ -151,12 +160,16 @@ jobs:
     name: llama.cpp integration (real GGUF, AVX)
     runs-on: ubuntu-latest
     needs: test
+    defaults:
+      run:
+        # Explicit bash => `-eo pipefail`, so `smoke | tee` fails when the smoke does.
+        shell: bash
     env:
       # SmolLM2-135M-Instruct-Q4_K_M.gguf — pinned for supply-chain integrity.
       MODEL_URL: "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q4_K_M.gguf"
       MODEL_SHA256: "2e8040ceae7815abe0dcb3540b9995eaa1fa0d2ca9e797d0a635ae4433c68c2d"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Report runner CPU features (must include avx2)
         run: |
@@ -166,7 +179,7 @@ jobs:
           grep -q avx2 /proc/cpuinfo || { echo "::error::runner lacks AVX2"; exit 1; }
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
           cache: pip
@@ -179,7 +192,7 @@ jobs:
 
       - name: Cache tiny GGUF model
         id: gguf-cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/models/tiny.gguf
           key: gguf-smollm2-135m-q4km-${{ env.MODEL_SHA256 }}
@@ -217,7 +230,7 @@ jobs:
 
       - name: Upload generation proof
         continue-on-error: true # summary above carries the proof if storage is full
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: real-generation
           path: artifacts/*
@@ -312,16 +325,16 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
           cache: pip
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
           cache: npm
@@ -338,6 +351,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip build
           python -m build
+
+      - name: Verify release version + dashboard bundled in the wheel
+        run: |
+          VERSION=$(python scripts/release.py check-version)
+          python scripts/release.py verify-wheel dist/*.whl --expect-version "$VERSION"
 
       - name: Install the built wheel in a clean environment
         run: |
@@ -373,7 +391,7 @@ jobs:
 
       - name: Upload distributions
         continue-on-error: true # never fail the build if artifact storage quota is full
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dist
           path: dist/*
@@ -383,8 +401,8 @@ jobs:
     name: Dependency CVE audit (pip-audit)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
           cache: pip
@@ -401,7 +419,7 @@ jobs:
         run: python scripts/generate_sbom.py --out sbom.json
       - name: Upload SBOM
         continue-on-error: true # never fail on artifact-quota limits
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: sbom
           path: sbom.json
@@ -411,12 +429,14 @@ jobs:
     name: Docker image (build + start smoke)
     runs-on: ubuntu-latest
     needs: test
+    if: ${{ !inputs.skip-container }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Build image (CPU, no llama backend)
+      - name: Build image (CPU, llama.cpp backend included)
         run: |
           docker build \
+            --build-arg IE_VERSION="$(python3 scripts/release.py check-version)" \
             --build-arg IE_BUILD_SHA="${GITHUB_SHA::7}" \
             --build-arg IE_BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -t inference-engine:ci .
@@ -440,6 +460,8 @@ jobs:
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/dashboard/)" = "200"
           # Runs as a non-root user.
           test "$(docker exec ie id -u)" != "0"
+          # The CPU llama.cpp backend is always present in the image.
+          docker exec ie python -c "import llama_cpp; print('llama_cpp', llama_cpp.__version__)"
 
       - name: Graceful stop
         run: |
@@ -462,11 +484,16 @@ jobs:
           echo "integration-llama: ${{ needs.integration-llama.result }}"
           echo "build:             ${{ needs.build.result }}"
           echo "container:         ${{ needs.container.result }}"
+          CONTAINER="${{ needs.container.result }}"
+          # Only a release (workflow_call with skip-container) may skip it.
+          if [ "$CONTAINER" = "skipped" ] && [ "${{ inputs.skip-container }}" = "true" ]; then
+            CONTAINER=success
+          fi
           if [ "${{ needs.test.result }}" != "success" ] \
              || [ "${{ needs.dashboard.result }}" != "success" ] \
              || [ "${{ needs.integration-llama.result }}" != "success" ] \
              || [ "${{ needs.build.result }}" != "success" ] \
-             || [ "${{ needs.container.result }}" != "success" ]; then
+             || [ "$CONTAINER" != "success" ]; then
             echo "::error::one or more CI jobs did not succeed"
             exit 1
           fi

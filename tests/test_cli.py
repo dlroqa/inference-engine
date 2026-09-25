@@ -11,10 +11,16 @@ from engine import __version__
 from engine.cli import main
 
 
-def test_version(capsys: pytest.CaptureFixture[str]) -> None:
+def test_version(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("IE_BUILD_SHA", "abc1234")
+    monkeypatch.setenv("IE_BUILD_DATE", "2026-09-24T00:00:00Z")
     rc = main(["version"])
     assert rc == 0
-    assert __version__ in capsys.readouterr().out
+    assert json.loads(capsys.readouterr().out) == {
+        "version": __version__,
+        "commit": "abc1234",
+        "built_at": "2026-09-24T00:00:00Z",
+    }
 
 
 def test_config_prints_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

@@ -1,0 +1,43 @@
+# Owner deployment for the prebuilt Inference Engine CPU image.
+#
+# Pin the image by digest (never a mutable tag). Each GitHub release attaches a
+# rendered copy of this file with its digest filled in; with this template, set:
+#   export IMAGE="ghcr.io/dlroqa/inference-engine@sha256:<published-digest>"
+#   docker compose -f deploy/compose.yaml pull
+#   docker compose -f deploy/compose.yaml up -d
+#   docker compose -f deploy/compose.yaml exec inference-engine \
+#     inference-engine keys create --label owner    # prints the owner key ONCE
+#
+# Supported host: Linux x86-64 with AVX2, Docker Engine + Compose plugin >= 2.24.
+# Full guide (models, TLS, backup, upgrade, rollback): docs/deployment.md
+services:
+  inference-engine:
+    image: ${IMAGE:?set IMAGE to ghcr.io/dlroqa/inference-engine@sha256:<digest> (see docs/deployment.md)}
+    restart: unless-stopped
+    # Loopback only. Terminate public HTTPS at Caddy/nginx/Traefik or keep the
+    # service behind a private network boundary.
+    ports:
+      - "127.0.0.1:8000:8000"
+    # Secrets and local overrides (remote-provider credentials, Stripe/webhook
+    # signing secrets, ...) live in an uncommitted file next to this one. Copy
+    # inference-engine.env.example to inference-engine.env to start.
+    env_file:
+      - path: ./inference-engine.env
+        required: false
+    environment:
+      IE_HOST: "0.0.0.0"              # bind inside the container
+      IE_ALLOW_NETWORK_BIND: "true"   # required for the non-loopback bind
+      IE_REQUIRE_AUTH: "true"         # every operator/API call needs a key
+      IE_REQUIRE_MODEL_READY: "true"  # /readyz is 503 until a model is loaded
+      IE_DATA_DIR: "/data"            # database, logs, backups, model store
+      IE_DRAIN_TIMEOUT_S: "30"        # keep below stop_grace_period
+    volumes:
+      - engine-data:/data
+      # GGUF models are never baked into the image. Either download/import them
+      # from the dashboard Models page (stored in /data/models on the volume
+      # above) or mount an existing host directory of models:
+      # - /srv/models:/data/models
+    stop_grace_period: 40s            # > IE_DRAIN_TIMEOUT_S so in-flight work drains
+
+volumes:
+  engine-data:

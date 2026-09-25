@@ -1,12 +1,10 @@
-# Reference deployment for the Inference Engine (Block 9).
-# See docs/deployment.md for volumes, model store, backups, and reverse-proxy/TLS.
+# Build-from-source compose for development (Block 9). Server owners should use
+# the prebuilt, digest-pinned release image with deploy/compose.yaml instead —
+# see docs/deployment.md.
 services:
   inference-engine:
     build:
       context: .
-      args:
-        # Set to "true" to bundle the llama.cpp CPU backend (requires an AVX2 host).
-        INSTALL_LLAMA: "false"
     image: inference-engine:local
     restart: unless-stopped
     # Bind to loopback on the host; terminate TLS/authn at a reverse proxy in front.

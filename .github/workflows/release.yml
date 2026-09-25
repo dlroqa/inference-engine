@@ -1,0 +1,381 @@
+name: Release
+
+# Publishes the prebuilt CPU image (docs/releasing.md). Build once, test that
+# exact image, then promote it by digest:
+#   validate -> quality gates (ci.yml) -> candidate (build/inspect/e2e/SBOM/scan)
+#   -> publish (push digest, attest, stable tags, GitHub release)
+#
+# Only a protected vX.Y.Z tag push publishes. workflow_dispatch and pull requests
+# that touch release inputs are dry runs: every stage up to and including the
+# vulnerability gate runs against the real image, and nothing is pushed or
+# released. Ordinary branch pushes never trigger this workflow.
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+  pull_request:
+    # Every input that is copied into the image build context or that decides
+    # release eligibility (the reusable ci.yml gates).
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - engine/**
+      - dashboard/**
+      - requirements/**
+      - pyproject.toml
+      - CHANGELOG.md
+      - deploy/**
+      - scripts/release.py
+      - scripts/release_image_e2e.py
+      - .github/workflows/release.yml
+      - .github/workflows/ci.yml
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    # Explicit bash => `bash -eo pipefail`: a failing test piped to tee fails the step.
+    shell: bash
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE_REPO: ghcr.io/dlroqa/inference-engine
+  # SmolLM2-135M-Instruct-Q4_K_M.gguf — same pinned fixture as ci.yml.
+  MODEL_URL: "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q4_K_M.gguf"
+  MODEL_SHA256: "2e8040ceae7815abe0dcb3540b9995eaa1fa0d2ca9e797d0a635ae4433c68c2d"
+
+jobs:
+  validate:
+    name: Validate tag + version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      commit: ${{ steps.meta.outputs.commit }}
+      created: ${{ steps.meta.outputs.created }}
+      publish: ${{ steps.meta.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate tag, version, and clean tree
+        id: meta
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            TAG="$GITHUB_REF_NAME"
+            VERSION=$(python3 scripts/release.py check-version --tag "$TAG")
+            # The tag must be the checked-out commit and reachable from main.
+            test "$(git rev-list -n1 "refs/tags/$TAG")" = "$GITHUB_SHA"
+            git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+              || { echo "::error::$TAG is not on main"; exit 1; }
+            PUBLISH=true
+          else
+            VERSION=$(python3 scripts/release.py check-version)
+            PUBLISH=false
+          fi
+          test -z "$(git status --porcelain)" || { echo "::error::dirty tree"; exit 1; }
+          {
+            echo "version=$VERSION"
+            echo "commit=$(git rev-parse HEAD)"
+            echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "publish=$PUBLISH"
+          } | tee -a "$GITHUB_OUTPUT"
+          {
+            echo "### Release candidate"
+            echo "version \`$VERSION\` · commit \`$(git rev-parse HEAD)\` · publish \`$PUBLISH\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  quality:
+    name: Quality gates
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+    with:
+      skip-container: true
+
+  candidate:
+    name: Build once + image-level tests
+    needs: [validate, quality]
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      config: ${{ steps.build.outputs.config }}
+      tar_sha256: ${{ steps.build.outputs.tar_sha256 }}
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+      COMMIT: ${{ needs.validate.outputs.commit }}
+      CREATED: ${{ needs.validate.outputs.created }}
+      CANDIDATE: ghcr.io/dlroqa/inference-engine:candidate
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+          persist-credentials: false
+
+      - name: Require an AVX2 runner
+        run: grep -q avx2 /proc/cpuinfo || { echo "::error::runner lacks AVX2"; exit 1; }
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build the candidate image once (linux/amd64)
+        id: build
+        run: |
+          set -euo pipefail
+          # One build, two exports of the same result: an OCI archive that is
+          # later pushed byte-for-byte, and a daemon copy for the tests.
+          docker buildx build --platform linux/amd64 \
+            --build-arg IE_VERSION="$VERSION" \
+            --build-arg IE_BUILD_SHA="$COMMIT" \
+            --build-arg IE_BUILD_DATE="$CREATED" \
+            --provenance=false --sbom=false \
+            --output "type=oci,dest=candidate.oci.tar,name=$CANDIDATE" \
+            --output "type=docker,name=$CANDIDATE" \
+            .
+          DIGESTS=$(python3 scripts/release.py oci-digests candidate.oci.tar)
+          DIGEST=$(echo "$DIGESTS" | jq -r .manifest)
+          CONFIG=$(echo "$DIGESTS" | jq -r .config)
+          # The image under test must be the candidate's content.
+          TESTED=$(docker save "$CANDIDATE" | python3 scripts/release.py saved-config -)
+          test "$TESTED" = "$CONFIG" || { echo "::error::tested image $TESTED != $CONFIG"; exit 1; }
+          {
+            echo "digest=$DIGEST"
+            echo "config=$CONFIG"
+            echo "tar_sha256=$(sha256sum candidate.oci.tar | cut -d' ' -f1)"
+            echo "image_id=$(docker image inspect -f '{{.Id}}' "$CANDIDATE")"
+          } | tee -a "$GITHUB_OUTPUT"
+          echo "Candidate \`$IMAGE_REPO@$DIGEST\` (config \`$CONFIG\`)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Inspect the image
+        run: |
+          set -euo pipefail
+          run() { docker run --rm --entrypoint "$1" "$CANDIDATE" "${@:2}"; }
+          # Non-root engine user.
+          test "$(docker image inspect -f '{{.Config.User}}' "$CANDIDATE")" = "engine"
+          test "$(run id -u)" = "10001"
+          # CLI build info = tag version + commit + build date.
+          INFO=$(run inference-engine version)
+          echo "version: $INFO"
+          echo "$INFO" | jq -e --arg v "$VERSION" --arg c "$COMMIT" --arg d "$CREATED" \
+            '.version == $v and .commit == $c and .built_at == $d'
+          # Installed package metadata agrees with the tag.
+          test "$(run python -c 'import importlib.metadata as m; print(m.version("inference-engine"))')" = "$VERSION"
+          # CPU llama backend importable; dashboard bundled.
+          run python -c "import llama_cpp; print('llama_cpp', llama_cpp.__version__)"
+          run python -c "import importlib.resources as r; p = r.files('engine') / 'static'; \
+            assert (p / 'index.html').is_file() and any((p / 'assets').iterdir())"
+          # No build toolchain, sources, or node in the runtime layer.
+          run sh -c '! command -v node && ! command -v gcc && ! test -e /src && ! test -e /app'
+          # OCI labels agree with the release version.
+          LABELS=$(docker image inspect -f '{{json .Config.Labels}}' "$CANDIDATE")
+          echo "$LABELS" | jq -e --arg v "$VERSION" --arg c "$COMMIT" --arg d "$CREATED" '
+            ."org.opencontainers.image.version" == $v
+            and ."org.opencontainers.image.revision" == $c
+            and ."org.opencontainers.image.created" == $d
+            and ."org.opencontainers.image.source" == "https://github.com/dlroqa/inference-engine"
+            and (."org.opencontainers.image.licenses" | length > 0)'
+
+      - name: Cache tiny GGUF model
+        id: gguf-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/models/tiny.gguf
+          key: gguf-smollm2-135m-q4km-${{ env.MODEL_SHA256 }}
+
+      - name: Download tiny GGUF model
+        if: steps.gguf-cache.outputs.cache-hit != 'true'
+        run: mkdir -p ~/models && curl -sfL -o ~/models/tiny.gguf "$MODEL_URL"
+
+      - name: Verify model checksum before use
+        run: echo "${MODEL_SHA256}  $HOME/models/tiny.gguf" | sha256sum -c -
+
+      - name: Image-level end-to-end test (deploy/compose.yaml, fresh volume)
+        run: |
+          python3 scripts/release_image_e2e.py \
+            --image "$CANDIDATE" \
+            --expect-image-id "${{ steps.build.outputs.image_id }}" \
+            --model "$HOME/models/tiny.gguf" --model-sha256 "$MODEL_SHA256" \
+            --expect-version "$VERSION" --expect-commit "$COMMIT" --expect-built-at "$CREATED" \
+            | tee e2e.txt
+          { echo "### Image E2E"; echo '```'; cat e2e.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Generate SBOM from the candidate image
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          image: ${{ env.CANDIDATE }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+          dependency-snapshot: false
+
+      - name: Vulnerability scan (grype)
+        id: scan
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          sbom: sbom.spdx.json
+          fail-build: false # gated below with documented, time-bounded exceptions
+          output-format: json
+          output-file: grype.json
+
+      - name: Vulnerability gate (fail on critical)
+        run: |
+          python3 scripts/release.py scan-gate --report grype.json --summary-out scan-summary.md
+          { echo "### Vulnerability scan"; cat scan-summary.md; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Render release Compose + notes (dry-run preview)
+        run: |
+          set -euo pipefail
+          IMAGE_REF="$IMAGE_REPO@${{ steps.build.outputs.digest }}"
+          python3 scripts/release.py render-compose --image "$IMAGE_REF" --out compose.yaml
+          python3 scripts/release.py notes --version "$VERSION" --commit "$COMMIT" \
+            --created "$CREATED" --image-repo "$IMAGE_REPO" \
+            --digest "${{ steps.build.outputs.digest }}" \
+            --scan-summary scan-summary.md --tags "v$VERSION" --out notes.md
+          { echo "<details><summary>Release notes preview</summary>"; echo; cat notes.md;
+            echo "</details>"; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Hand the tested candidate to the publish job
+        if: needs.validate.outputs.publish == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-candidate
+          path: |
+            candidate.oci.tar
+            sbom.spdx.json
+            grype.json
+            scan-summary.md
+          retention-days: 3
+          if-no-files-found: error
+
+  publish:
+    name: Publish by digest
+    needs: [validate, candidate]
+    if: needs.validate.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # GitHub release
+      packages: write # push to GHCR
+      id-token: write # Sigstore signing via GitHub OIDC (no long-lived keys)
+      attestations: write
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+      COMMIT: ${{ needs.validate.outputs.commit }}
+      CREATED: ${{ needs.validate.outputs.created }}
+      DIGEST: ${{ needs.candidate.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+          fetch-depth: 0 # existing tags decide which convenience tags move
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-candidate
+
+      - name: Verify the artifact is the tested candidate
+        run: |
+          set -euo pipefail
+          echo "${{ needs.candidate.outputs.tar_sha256 }}  candidate.oci.tar" | sha256sum -c -
+          test "$(python3 scripts/release.py oci-digests candidate.oci.tar | jq -r .manifest)" = "$DIGEST"
+
+      - name: Registry login
+        env:
+          TOKEN: ${{ github.token }}
+        run: echo "$TOKEN" | skopeo login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Push the tested digest
+        run: |
+          set -euo pipefail
+          SHA_TAG="sha-${COMMIT::12}"
+          skopeo copy --preserve-digests --retry-times 3 \
+            oci-archive:candidate.oci.tar "docker://$IMAGE_REPO:$SHA_TAG"
+          PUSHED="sha256:$(skopeo inspect --raw "docker://$IMAGE_REPO:$SHA_TAG" | sha256sum | cut -d' ' -f1)"
+          test "$PUSHED" = "$DIGEST" || { echo "::error::registry digest $PUSHED != $DIGEST"; exit 1; }
+
+      - name: Attest build provenance (GitHub OIDC)
+        id: provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE_REPO }}
+          subject-digest: ${{ env.DIGEST }}
+          push-to-registry: true
+          create-storage-record: false # organization-only feature
+
+      - name: Attest SBOM (GitHub OIDC)
+        id: sbom
+        # actions/attest directly (the deprecated attest-sbom was a wrapper over it).
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        env:
+          NODE_OPTIONS: "--max-http-header-size=32768" # as the attest-sbom wrapper set
+        with:
+          subject-name: ${{ env.IMAGE_REPO }}
+          subject-digest: ${{ env.DIGEST }}
+          sbom-path: sbom.spdx.json
+          push-to-registry: true
+          create-storage-record: false # organization-only feature
+
+      - name: Apply stable tags to the attested digest
+        id: tags
+        run: |
+          set -euo pipefail
+          TAGS=$(python3 scripts/release.py stable-tags --version "$VERSION" $(git tag -l 'v*'))
+          for t in $TAGS; do
+            skopeo copy --preserve-digests --retry-times 3 \
+              "docker://$IMAGE_REPO@$DIGEST" "docker://$IMAGE_REPO:$t"
+            GOT="sha256:$(skopeo inspect --raw "docker://$IMAGE_REPO:$t" | sha256sum | cut -d' ' -f1)"
+            test "$GOT" = "$DIGEST" || { echo "::error::tag $t -> $GOT, expected $DIGEST"; exit 1; }
+          done
+          echo "tags=$TAGS" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Registry logout
+        if: always()
+        run: skopeo logout ghcr.io || true
+
+      - name: Assemble release assets
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python3 scripts/release.py render-compose --image "$IMAGE_REPO@$DIGEST" --out out/compose.yaml
+          cp deploy/inference-engine.env.example sbom.spdx.json out/
+          cp grype.json out/vulnerability-scan.grype.json
+          cp "${{ steps.provenance.outputs.bundle-path }}" out/provenance.sigstore.json
+          cp "${{ steps.sbom.outputs.bundle-path }}" out/sbom-attestation.sigstore.json
+          jq -n --arg image "$IMAGE_REPO@$DIGEST" \
+            --arg prov "${{ steps.provenance.outputs.attestation-url }}" \
+            --arg sbom "${{ steps.sbom.outputs.attestation-url }}" \
+            '{image: $image, provenance_attestation: $prov, sbom_attestation: $sbom,
+              verify: ("gh attestation verify oci://" + $image + " --repo dlroqa/inference-engine")}' \
+            > out/provenance-reference.json
+          python3 scripts/release.py notes --version "$VERSION" --commit "$COMMIT" \
+            --created "$CREATED" --image-repo "$IMAGE_REPO" --digest "$DIGEST" \
+            --scan-summary scan-summary.md --tags ${{ steps.tags.outputs.tags }} \
+            --provenance-url "${{ steps.provenance.outputs.attestation-url }}" \
+            --sbom-url "${{ steps.sbom.outputs.attestation-url }}" \
+            --out out/release-notes.md
+          (cd out && sha256sum -- * > SHA256SUMS)
+          cat out/SHA256SUMS
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$VERSION" --verify-tag \
+            --title "Inference Engine v$VERSION" \
+            --notes-file out/release-notes.md \
+            out/compose.yaml out/inference-engine.env.example out/sbom.spdx.json \
+            out/vulnerability-scan.grype.json out/provenance.sigstore.json \
+            out/sbom-attestation.sigstore.json out/provenance-reference.json \
+            out/release-notes.md out/SHA256SUMS
+          {
+            echo "### Published"
+            echo '```text'
+            echo "$IMAGE_REPO@$DIGEST"
+            echo '```'
+            echo "Tags: ${{ steps.tags.outputs.tags }}"
+          } >> "$GITHUB_STEP_SUMMARY"

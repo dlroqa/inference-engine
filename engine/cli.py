@@ -4,7 +4,7 @@ Subcommands:
     serve     Start the HTTP server (Uvicorn).
     migrate   Apply database migrations and exit.
     config    Print the resolved configuration and exit.
-    version   Print the version and exit.
+    version   Print version, build commit, and build date as JSON and exit.
 
 CLI flags are the highest-precedence configuration layer; unset flags fall
 through to IE_* environment variables, then the config file, then defaults.
@@ -46,7 +46,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("serve", parents=[common], help="Start the HTTP server.")
     sub.add_parser("migrate", parents=[common], help="Apply database migrations and exit.")
     sub.add_parser("config", parents=[common], help="Print resolved configuration and exit.")
-    sub.add_parser("version", help="Print the version and exit.")
+    sub.add_parser("version", help="Print version, build commit, and build date as JSON.")
 
     bk = sub.add_parser(
         "backup", parents=[common], help="Back up the database + config to a tarball."
@@ -262,7 +262,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "version":
-        print(__version__)
+        from engine.buildinfo import build_info
+
+        # Same payload as GET /version, so an image can be checked without serving.
+        print(json.dumps(build_info()))
         return 0
 
     try:
