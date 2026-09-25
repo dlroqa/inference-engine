@@ -338,3 +338,62 @@ def test_grpc_tls_pair_and_bind_validation(tmp_path):
         Settings(data_dir=tmp_path, grpc_enabled=True, grpc_tls_cert="/x/c.pem")
     with __import__("pytest").raises(ValidationError):  # non-loopback without opt-in
         Settings(data_dir=tmp_path, grpc_enabled=True, grpc_host="0.0.0.0")
+
+
+def test_enabled_workload_rule_references_are_validated_even_with_global_switch_off(tmp_path):
+    from pydantic import ValidationError
+
+    rule = {
+        "name": "json",
+        "kind": "structured_output_preference",
+        "model": "missing",
+        "preferred_backends": ["ghost"],
+        "enabled": True,
+    }
+    with pytest.raises(ValidationError, match="non-physical or unknown model"):
+        Settings(data_dir=tmp_path, workload_routing_rules=[rule])
+
+
+def test_enabled_workload_rule_cannot_prefer_external_or_virtual_backend(tmp_path):
+    from pydantic import ValidationError
+
+    external = {"name": "egress", "base_url": "https://api.openai.com/v1", "model": "gpt"}
+    rule = {
+        "name": "json",
+        "kind": "structured_output_preference",
+        "model": "local-model",
+        "preferred_backends": ["egress"],
+        "enabled": True,
+    }
+    with pytest.raises(ValidationError, match="unknown or non-primary backend"):
+        Settings(
+            data_dir=tmp_path,
+            allow_external_providers=True,
+            egress_allowlist=["openai.com"],
+            external_providers=[external],
+            workload_routing_rules=[rule],
+        )
+
+    with pytest.raises(ValidationError, match="non-physical or unknown model"):
+        Settings(
+            data_dir=tmp_path,
+            virtual_models=[{"name": "virtual", "backends": ["primary"]}],
+            workload_routing_rules=[
+                {**rule, "model": "virtual", "preferred_backends": ["primary"]}
+            ],
+        )
+
+
+def test_workload_rule_names_are_unique_and_disabled_templates_are_inert(tmp_path):
+    from pydantic import ValidationError
+
+    disabled = {
+        "name": "template",
+        "kind": "structured_output_preference",
+        "model": "future-model",
+        "preferred_backends": ["future-backend"],
+        "enabled": False,
+    }
+    assert Settings(data_dir=tmp_path, workload_routing_rules=[disabled]).workload_routing_rules
+    with pytest.raises(ValidationError, match="duplicate workload routing rule name"):
+        Settings(data_dir=tmp_path, workload_routing_rules=[disabled, disabled])

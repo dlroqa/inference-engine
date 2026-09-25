@@ -40,12 +40,32 @@ class VirtualModel:
     steps: tuple[tuple[str, ...], ...]
 
 
+@dataclass(frozen=True)
+class WorkloadRoutingRule:
+    """A resolved, opt-in Block 12.3 routing preference."""
+
+    name: str
+    kind: str
+    model: str
+    preferred_backends: tuple[str, ...]
+    enabled: bool = False
+
+
 class Router:
     """Resolves client-facing model names to registry placement scopes."""
 
-    def __init__(self, registry: BackendRegistry, virtual_models: list[VirtualModel]) -> None:
+    def __init__(
+        self,
+        registry: BackendRegistry,
+        virtual_models: list[VirtualModel],
+        workload_rules: list[WorkloadRoutingRule] | None = None,
+        *,
+        workload_routing_enabled: bool = False,
+    ) -> None:
         self._registry = registry
         self._vmodels = {vm.name: vm for vm in virtual_models}
+        self._workload_rules = tuple(workload_rules or ())
+        self._workload_routing_enabled = workload_routing_enabled
 
     # -- name resolution ---------------------------------------------------
 
@@ -73,6 +93,21 @@ class Router:
         vm = self._vmodels[name]
         return [frozenset(step) for step in vm.steps]
 
+    def _matching_workload_rule(
+        self, name: str, required_features: frozenset[str]
+    ) -> WorkloadRoutingRule | None:
+        if not self._workload_routing_enabled or self._is_virtual(name):
+            return None
+        for rule in self._workload_rules:
+            if (
+                rule.enabled
+                and rule.kind == "structured_output_preference"
+                and rule.model == name
+                and "structured_output" in required_features
+            ):
+                return rule
+        return None
+
     # -- placement ---------------------------------------------------------
 
     def acquire(
@@ -89,6 +124,19 @@ class Router:
         on a feature-incapable backend. ``FeatureUnsupportedError`` propagates for
         the edge to map to a 400.
         """
+        rule = self._matching_workload_rule(name, required_features)
+        if rule is not None:
+            try:
+                lease = self._registry.acquire(
+                    prefix_key,
+                    allowed=frozenset(rule.preferred_backends),
+                    model=name,
+                    required_features=required_features,
+                )
+            except (NoBackendAvailable, FeatureUnsupportedError):
+                pass  # A preference cannot replace the deterministic baseline.
+            else:
+                return _with_workload_rule(_with_policy(lease, policy="base", step=None), rule.name)
         if not self._is_virtual(name):
             lease = self._registry.acquire(
                 prefix_key, model=name, required_features=required_features
@@ -123,12 +171,20 @@ class Router:
         required_features: frozenset[str] = frozenset(),
     ) -> dict[str, object]:
         """Explain how ``name`` would route right now, without reserving anything."""
+        rule = self._matching_workload_rule(name, required_features)
         virtual = self._is_virtual(name)
         policy = self._vmodels[name].policy if virtual else "base"
         # Physical models resolve over the whole pool filtered by model eligibility;
         # virtual models resolve over their configured step scopes.
         model = None if virtual else name
-        scopes: list[frozenset[str] | None] = self._scopes(name) if virtual else [None]
+        # A matching preference is the first placement attempt. If it cannot
+        # select a ready eligible entry, the ordinary physical-model scope is
+        # the second attempt, exactly as acquire() does.
+        scopes: list[frozenset[str] | None]
+        if rule is not None:
+            scopes = [frozenset(rule.preferred_backends), None]
+        else:
+            scopes = self._scopes(name) if virtual else [None]
         steps_out: list[dict[str, object]] = []
         chosen: str | None = None
         chosen_step: int | None = None
@@ -156,6 +212,10 @@ class Router:
             "chosen": chosen,
             "chosen_step": chosen_step,
             "steps": steps_out,
+            "workload_rule": rule.name if rule is not None else None,
+            "workload_rule_preferred_targets": list(rule.preferred_backends)
+            if rule is not None
+            else None,
         }
 
 
@@ -171,6 +231,13 @@ def _with_policy(
     if decision is not None:
         fallbacks = ("cascade_escalation", *decision.fallbacks) if escalated else decision.fallbacks
         lease.decision = replace(decision, policy=policy, step=step, fallbacks=fallbacks)  # type: ignore[arg-type]
+    return lease
+
+
+def _with_workload_rule(lease: RegistryLease, name: str) -> RegistryLease:
+    """Attach the preference that actually acquired a lease (Block 12.3)."""
+    if lease.decision is not None:
+        lease.decision = replace(lease.decision, workload_rule=name)
     return lease
 
 

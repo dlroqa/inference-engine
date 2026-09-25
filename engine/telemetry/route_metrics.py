@@ -57,6 +57,7 @@ class RouteStat:
     reasons: dict[str, int] = field(default_factory=dict)
     fallbacks: dict[str, int] = field(default_factory=dict)
     policies: dict[str, int] = field(default_factory=dict)
+    workload_rules: dict[str, int] = field(default_factory=dict)
 
     @property
     def success_rate(self) -> float | None:
@@ -98,6 +99,7 @@ class RouteStat:
             "reasons": dict(sorted(self.reasons.items())),
             "fallbacks": dict(sorted(self.fallbacks.items())),
             "policies": dict(sorted(self.policies.items())),
+            "workload_rules": dict(sorted(self.workload_rules.items())),
         }
 
 
@@ -126,6 +128,7 @@ class RouteMetrics:
         tier: str | None = None,
         queue_wait_ms: float | None = None,
         upstream_attempts: int = 0,
+        workload_rule: str | None = None,
     ) -> None:
         stat = self._routes.setdefault((model, backend), RouteStat())
         stat.requests += 1
@@ -141,6 +144,8 @@ class RouteMetrics:
             stat.fallbacks[fb] = stat.fallbacks.get(fb, 0) + 1
         if policy is not None:
             stat.policies[policy] = stat.policies.get(policy, 0) + 1
+        if workload_rule is not None:
+            stat.workload_rules[workload_rule] = stat.workload_rules.get(workload_rule, 0) + 1
         if error:
             stat.errors += 1
         if cancelled:

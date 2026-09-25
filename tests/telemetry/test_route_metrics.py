@@ -124,3 +124,10 @@ def test_old_fields_remain_compatible() -> None:
     assert row["avg_total_ms"] == 200.0 and row["avg_ttft_ms"] == 40.0
     assert row["avg_queue_wait_ms"] is None and row["avg_output_tps"] == 250.0
     assert row["reasons"] == {} and row["tier"] is None
+
+
+def test_workload_rule_counts_are_safe_and_optional() -> None:
+    m = RouteMetrics()
+    _record(m, workload_rule="json-preferred")
+    _record(m)
+    assert m.snapshot()["routes"][0]["workload_rules"] == {"json-preferred": 1}

@@ -56,6 +56,16 @@ Notes:
 - **Saturation** is a named phase driven at `--burst-concurrency`, not ordinary
   requests with a higher weight.
 
+## Block 12.3 workload-routing enablement
+
+Before enabling a workload-routing rule, retain the baseline and candidate report
+files, the successful comparison-gate output, the exact harness version and commands,
+and the target identity: client-facing model, engine/pool configuration, and hardware.
+The candidate must use the same target and workload manifest as the baseline, target
+the `structured_output` slice for the initial rule, and pass all §8 vetoes. Keep both
+`workload_routing_enabled` and the individual rule disabled in ordinary deployments;
+setting the global switch to `false` is the immediate rollback.
+
 ## Metric definitions
 
 Client-side (always available):

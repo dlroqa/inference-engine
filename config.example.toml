@@ -94,6 +94,19 @@ log_level = "INFO"
 # policy = "cascade"                 # try each step in order; first available serves
 # steps = [["vllm-a"], ["vllm-b", "sglang-a"]]
 #
+# --- Measured workload-aware routing (Block 12.3) ---
+# CPU/RAM-only installations need no change: both switches default false and keep
+# deterministic least-busy placement. Enable only after the documented benchmark gate
+# passes on the target hardware.
+# workload_routing_enabled = false
+#
+# [[workload_routing_rules]]
+# name               = "chat-json-preferred"
+# kind               = "structured_output_preference"
+# model              = "local-model"
+# preferred_backends = ["primary"]
+# enabled            = false
+#
 # External-provider spillover (Block 10, sub-slice 7): OpenAI-compatible endpoints
 # used ONLY as overflow when the local pool is saturated. Off by default; enable
 # the kill switch AND allowlist their hosts, or startup fails.

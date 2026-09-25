@@ -193,6 +193,25 @@ the same worker and surface that worker's cache stats. Everything here is
 **capability-gated and honest**: llama.cpp reports neither, and a remote whose
 build has the feature off is configured to report it off.
 
+### Measured workload-aware routing (Block 12.3)
+
+CPU/RAM-only deployments continue using the deterministic model map by default.
+`workload_routing_enabled = false` is the global rollback switch; individual
+`workload_routing_rules` are also disabled by default. The initial
+`structured_output_preference` rule may prefer a configured primary backend for a
+physical-model request requiring structured output, but live model, feature, health,
+and capacity eligibility still apply. Enabled rules are validated at startup: their
+model must be a configured physical model and every preferred target must be in the
+primary pool; virtual names and external/spillover providers are rejected. This
+remains true even while the global switch is off, preventing latent unsafe
+configuration. If the preference cannot serve the request, normal deterministic
+placement resumes.
+
+`POST /admin/route/plan` exposes `workload_rule` and
+`workload_rule_preferred_targets` only when a rule matches. Its ordered steps show
+the preferred attempt followed by the ordinary eligible scope when a fallback would
+be needed; it is a dry run and never reserves capacity.
+
 **Prefix affinity.** Set `prefix_affinity_chars = N` (default `0` = off). Each
 request whose prompt shares the leading `N` characters is routed, via a consistent
 hash, to the same prefix-cache-capable backend so its cache is reused. If that

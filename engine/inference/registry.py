@@ -125,6 +125,7 @@ class RouteDecision:
     fallbacks: tuple[Literal["cascade_escalation", "spillover"], ...] = ()
     policy: Literal["base", "route", "cascade"] = "base"
     step: int | None = None
+    workload_rule: str | None = None
 
 
 @dataclass(slots=True)

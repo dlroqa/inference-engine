@@ -19,17 +19,21 @@ def test_no_rapl_probe_reports_unavailable(monkeypatch, tmp_path: Path) -> None:
     assert "RAPL" in (reading.reason or "")
 
 
-def _make_rapl(tmp_path: Path, uj: int) -> Path:
+def _make_rapl(monkeypatch, tmp_path: Path, uj: int) -> tuple[Path, Path]:
     root = tmp_path / "powercap"
-    domain = root / "intel-rapl:0"
+    domain = root / "intel-rapl-0"
     domain.mkdir(parents=True)
-    (domain / "energy_uj").write_text(str(uj))
-    return root
+    energy = domain / "energy_uj"
+    energy.write_text(str(uj))
+    # The RAPL sysfs directory is named ``intel-rapl:0`` on Linux, but Windows
+    # cannot create a path containing ``:``. Inject the same discovered counter
+    # so sampling stays portable without loosening production RAPL discovery.
+    monkeypatch.setattr(power, "_read_rapl_domains", lambda: [energy])
+    return root, energy
 
 
 def test_rapl_baseline_then_measured(monkeypatch, tmp_path: Path) -> None:
-    root = _make_rapl(tmp_path, 1_000_000)
-    monkeypatch.setattr(power, "RAPL_ROOT", root)
+    _root, energy = _make_rapl(monkeypatch, tmp_path, 1_000_000)
     probe = PowerProbe()
     assert probe.has_probe is True
 
@@ -39,7 +43,7 @@ def test_rapl_baseline_then_measured(monkeypatch, tmp_path: Path) -> None:
     assert first.reason == "establishing baseline"
 
     # Advance the counter by 2 J over 1 s -> 2 W measured.
-    (root / "intel-rapl:0" / "energy_uj").write_text(str(1_000_000 + 2_000_000))
+    energy.write_text(str(1_000_000 + 2_000_000))
     second = probe.sample(now=101.0)
     assert second.state == "measured"
     assert second.watts is not None
@@ -48,12 +52,11 @@ def test_rapl_baseline_then_measured(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_counter_wrap_is_not_fabricated(monkeypatch, tmp_path: Path) -> None:
-    root = _make_rapl(tmp_path, 5_000_000)
-    monkeypatch.setattr(power, "RAPL_ROOT", root)
+    _root, energy = _make_rapl(monkeypatch, tmp_path, 5_000_000)
     probe = PowerProbe()
     probe.sample(now=0.0)  # baseline
     # Counter goes backwards (wrap): we must not invent a negative/huge wattage.
-    (root / "intel-rapl:0" / "energy_uj").write_text("10")
+    energy.write_text("10")
     reading = probe.sample(now=1.0)
     assert reading.state == "unavailable"
     assert reading.watts is None

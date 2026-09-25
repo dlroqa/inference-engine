@@ -49,7 +49,7 @@ from engine.gateway import Gateway
 from engine.inference.base import InferenceBackend
 from engine.inference.factory import build_backend, build_remote_worker
 from engine.inference.registry import BackendEntry, BackendRegistry
-from engine.inference.router import Router, VirtualModel
+from engine.inference.router import Router, VirtualModel, WorkloadRoutingRule
 from engine.inference.scheduler import Scheduler
 from engine.inference.types import BackendError
 from engine.logging_setup import configure_logging, get_logger
@@ -395,7 +395,22 @@ def create_app(
         _vmodels.append(
             VirtualModel(name=_vm.name, policy=_vm.policy, steps=tuple(tuple(s) for s in _steps))
         )
-    app.state.router = Router(app.state.backend_registry, _vmodels)
+    _workload_rules = [
+        WorkloadRoutingRule(
+            name=rule.name,
+            kind=rule.kind,
+            model=rule.model,
+            preferred_backends=tuple(rule.preferred_backends),
+            enabled=rule.enabled,
+        )
+        for rule in settings.workload_routing_rules
+    ]
+    app.state.router = Router(
+        app.state.backend_registry,
+        _vmodels,
+        _workload_rules,
+        workload_routing_enabled=settings.workload_routing_enabled,
+    )
     app.state.route_metrics = RouteMetrics()
     billing_store = BillingStore(
         settings.db_path,  # type: ignore[arg-type]
