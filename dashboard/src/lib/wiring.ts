@@ -270,6 +270,16 @@ export const WIRING: WiringEntry[] = [
     docs: { ref: "README.md#model-lifecycle-block-6", title: "README: model lifecycle" },
   },
   {
+    id: "models.detail",
+    label: "Model details",
+    what: "Reads one registry model: status, compatibility, checksum, metadata and the credential-redacted source. A local import's path is not shown.",
+    chain: ["model_registry", "model_service"],
+    endpoint: { method: "GET", path: "/admin/models/{model_id}" },
+    client: "getModel",
+    audited: false,
+    docs: { ref: "README.md#model-lifecycle-block-6", title: "README: model lifecycle" },
+  },
+  {
     id: "models.download",
     label: "Download model",
     what:
@@ -413,7 +423,6 @@ export const NOT_IN_UI: Record<string, string> = {
   "GET /admin/backends": "planned: Backends & Routing view (A3a).",
   "GET /admin/routes": "planned: Backends & Routing view (A3a).",
   "POST /admin/route/plan": "planned: Backends & Routing view (A3a).",
-  "GET /admin/models/{model_id}": "planned: model detail drawer (after the A2 popovers).",
   "POST /admin/model/load": "Legacy single-model control, superseded by /admin/models/{id}/load.",
   "POST /admin/model/unload": "Legacy single-model control, superseded by /admin/models/{id}/unload.",
   "GET /admin/billing/plans": "planned: plan administration (A3b).",
@@ -474,6 +483,16 @@ export const LOCAL_CONTROLS: LocalControl[] = [
     what: "Copies the new token to your clipboard. It is not sent anywhere and cannot be shown again.",
   },
   {
+    id: "local.copy-checksum",
+    label: "Copy checksum",
+    what: "Copies the model's SHA-256 checksum text to your clipboard. Nothing is sent to the engine.",
+  },
+  {
+    id: "local.close-drawer",
+    label: "Close details",
+    what: "Closes the model details and returns the page address to #/models (back to the list entry you came from, when you opened them from the list).",
+  },
+  {
     id: "local.close-detail",
     label: "Close detail",
     what: "Closes this panel and updates the page address.",
@@ -481,7 +500,7 @@ export const LOCAL_CONTROLS: LocalControl[] = [
   {
     id: "local.select-client",
     label: "Select a client",
-    what: "Opens the client's detail panel and updates the page address (#/clients/<id>). Rows respond to mouse and touch only; they are not yet keyboard-focusable.",
+    what: "Opens or closes the client's detail panel and updates the page address (#/clients/<id>). Click a row, or use the client's button with Enter or Space; keyboard focus stays on that button.",
     followUp: "The panel then loads the client's webhook endpoints and recent deliveries.",
   },
   {

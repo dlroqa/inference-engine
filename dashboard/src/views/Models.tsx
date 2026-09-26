@@ -1,6 +1,8 @@
-import { useState, type JSX } from "react";
+import { useCallback, useLayoutEffect, useRef, useState, type JSX } from "react";
 import { api, type ModelInfo, type DownloadRequest, type SwitchName } from "../lib/api";
-import { useModels } from "../hooks/useModels";
+import { useModelDetail, useModels } from "../hooks/useModels";
+import { isDrawerEntry } from "../hooks/useHashRoute";
+import { ModelDrawer } from "./ModelDrawer";
 import { AsyncBoundary } from "../components/Panel";
 import { Badge, type ToneName } from "../components/widgets";
 import { Icon } from "../components/Icon";
@@ -249,9 +251,13 @@ function AddModel({ onAdded }: { onAdded: () => void }): JSX.Element {
 function ModelRow({
   model,
   onChange,
+  onDetails,
+  detailsRef,
 }: {
   model: ModelInfo;
   onChange: () => void;
+  onDetails: () => void;
+  detailsRef: (el: HTMLButtonElement | null) => void;
 }): JSX.Element {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -290,6 +296,7 @@ function ModelRow({
 
   // The explanation lists exactly the actions this row currently offers.
   const actions = [
+    "models.detail",
     model.status === "downloading" && "models.cancel",
     model.status === "ready" && !model.loaded && "models.load",
     model.loaded && "models.unload",
@@ -318,6 +325,15 @@ function ModelRow({
           )}
         </div>
         <div className="row">
+          <button
+            ref={detailsRef}
+            className="btn"
+            onClick={onDetails}
+            aria-label={`Details for ${model.name}`}
+            data-wiring="models.detail"
+          >
+            <Icon name="eye" size={16} /> Details
+          </button>
           {model.status === "downloading" && (
             <button
               className="btn"
@@ -372,7 +388,7 @@ function ModelRow({
               <Icon name="trash" size={16} /> Delete
             </button>
           )}
-          {actions.length > 0 && <WiredTo id={actions} label={`Actions for ${model.name}`} />}
+          <WiredTo id={actions} label={`Actions for ${model.name}`} />
         </div>
       </div>
 
@@ -409,15 +425,56 @@ function ModelRow({
   );
 }
 
-export function Models(): JSX.Element {
-  const { status, models, error, reload } = useModels();
+type ModelsNav = (view: string, opts?: { modelId?: string | null; drawer?: "open" | "close" }) => void;
+
+export function Models({
+  modelId = null,
+  onNavigate = () => {},
+}: {
+  /** The model whose details drawer is open (#/models/<id>), already decoded. */
+  modelId?: string | null;
+  onNavigate?: ModelsNav;
+}): JSX.Element {
+  const list = useModels();
+  const { status, models, error, reload } = list;
   const sys = useSystem();
+  const detail = useModelDetail(modelId, list);
+
+  // Where focus goes when the drawer closes depends on how it was opened, which
+  // is recorded in the history entry (tagged when opened from the list) rather
+  // than guessed from whether a Details button happens to exist: from the list,
+  // back to that model's Details button (the heading if the row is gone); from
+  // a direct link, always the heading.
+  const heading = useRef<HTMLHeadingElement>(null);
+  const detailsButtons = useRef(new Map<string, HTMLButtonElement>());
+  const opened = useRef<{ id: string; fromList: boolean } | null>(null);
+  useLayoutEffect(() => {
+    if (modelId !== null) opened.current = { id: modelId, fromList: isDrawerEntry("models") };
+  }, [modelId]);
+
+  const returnFocus = useCallback((): HTMLElement | null => {
+    const o = opened.current;
+    const button = o?.fromList ? detailsButtons.current.get(o.id) : undefined;
+    if (button?.isConnected) return button;
+    // Leaving the view entirely: the shell focuses the next page instead.
+    return heading.current?.isConnected ? heading.current : null;
+  }, []);
+
+  const refFor = useCallback(
+    (id: string) => (el: HTMLButtonElement | null) => {
+      if (el) detailsButtons.current.set(id, el);
+      else detailsButtons.current.delete(id);
+    },
+    [],
+  );
 
   return (
     <>
       <div className="topbar">
         <div className="row">
-          <h1>Models</h1>
+          <h1 id="models-heading" ref={heading} tabIndex={-1}>
+            Models
+          </h1>
           <WiredTo id="models.list" />
         </div>
         <div className="row">
@@ -454,10 +511,25 @@ export function Models(): JSX.Element {
           onRetry={reload}
         >
           {models.map((m) => (
-            <ModelRow key={m.id} model={m} onChange={reload} />
+            <ModelRow
+              key={m.id}
+              model={m}
+              onChange={reload}
+              onDetails={() => onNavigate("models", { modelId: m.id, drawer: "open" })}
+              detailsRef={refFor(m.id)}
+            />
           ))}
         </AsyncBoundary>
       </div>
+
+      {modelId !== null && (
+        <ModelDrawer
+          state={detail.state}
+          onClose={() => onNavigate("models", { drawer: "close" })}
+          onRetry={detail.retry}
+          returnFocus={returnFocus}
+        />
+      )}
     </>
   );
 }

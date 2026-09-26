@@ -7,7 +7,7 @@ import { Icon } from "../components/Icon";
 import { WiredTo } from "../components/WiredTo";
 import { num, clockTime } from "../lib/format";
 
-type NavFn = (view: string, opts?: { logQuery?: string; clientId?: string }) => void;
+type NavFn = (view: string, opts?: { logQuery?: string; clientId?: string; keepFocus?: boolean }) => void;
 
 interface ClientUsage {
   requests: number;
@@ -45,6 +45,14 @@ export function Clients({
   }, [attribution.data]);
 
   const rows = clients.data?.clients ?? [];
+
+  // Selecting the open client again closes it. From the row's button, focus
+  // stays on that button (the shell does not move it to the page content).
+  const toggle = (id: string, keepFocus: boolean) => {
+    const next = id === selected ? null : id;
+    setSelected(next);
+    onNavigate("clients", next ? { clientId: next, keepFocus } : { keepFocus });
+  };
   const selectedClient = rows.find((c) => c.id === selected) ?? null;
 
   return (
@@ -104,15 +112,26 @@ export function Clients({
                       <tr
                         key={c.id}
                         className={`clickrow ${selected === c.id ? "selected" : ""}`}
-                        onClick={() => {
-                          const next = c.id === selected ? null : c.id;
-                          setSelected(next);
-                          onNavigate("clients", next ? { clientId: next } : {});
-                        }}
+                        onClick={() => toggle(c.id, false)}
                         aria-selected={selected === c.id}
                         data-wiring="local.select-client"
                       >
-                        <td className="mono">{c.id.slice(0, 12)}</td>
+                        <td>
+                          <button
+                            type="button"
+                            className="rowbtn mono"
+                            aria-pressed={selected === c.id}
+                            aria-label={`Client ${c.id.slice(0, 12)}${c.email ? ` (${c.email})` : ""}`}
+                            data-client-id={c.id}
+                            onClick={(e) => {
+                              // The row also selects on click; handle it once, here.
+                              e.stopPropagation();
+                              toggle(c.id, true);
+                            }}
+                          >
+                            {c.id.slice(0, 12)}
+                          </button>
+                        </td>
                         <td>{c.email ?? <span className="muted">—</span>}</td>
                         <td className="mono muted">{c.external_ref ?? "—"}</td>
                         <td>

@@ -63,6 +63,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await resp.json()) as T;
 }
 
+// A registry model's URL. The raw id is encoded exactly once, here; route
+// segments reach the views already decoded by the hash router.
+export function modelPath(id: string): string {
+  return `/admin/models/${encodeURIComponent(id)}`;
+}
+
 // --- Types (mirror the backend contracts) ---
 
 export interface EnergyPanel {
@@ -378,14 +384,15 @@ export const api = {
     request<ModelInfo>("/admin/models/import", { method: "POST", body: JSON.stringify({ path, name }) }),
   downloadModel: (body: DownloadRequest) =>
     request<ModelInfo>("/admin/models/download", { method: "POST", body: JSON.stringify(body) }),
+  getModel: (id: string) => request<ModelInfo>(modelPath(id)),
   cancelDownload: (id: string) =>
-    request<{ cancelling: boolean; id: string }>(`/admin/models/${id}/cancel`, { method: "POST" }),
+    request<{ cancelling: boolean; id: string }>(`${modelPath(id)}/cancel`, { method: "POST" }),
   loadModelById: (id: string) =>
-    request<{ result: string; model: ModelInfo }>(`/admin/models/${id}/load`, { method: "POST" }),
+    request<{ result: string; model: ModelInfo }>(`${modelPath(id)}/load`, { method: "POST" }),
   unloadModelById: (id: string) =>
-    request<{ result: string; model: ModelInfo }>(`/admin/models/${id}/unload`, { method: "POST" }),
+    request<{ result: string; model: ModelInfo }>(`${modelPath(id)}/unload`, { method: "POST" }),
   deleteModel: (id: string) =>
-    request<{ deleted: boolean; id: string }>(`/admin/models/${id}`, { method: "DELETE" }),
+    request<{ deleted: boolean; id: string }>(modelPath(id), { method: "DELETE" }),
 
   // Commercial / monitoring (Block 11)
   listClients: () => request<{ clients: ClientRow[] }>("/admin/billing/clients"),

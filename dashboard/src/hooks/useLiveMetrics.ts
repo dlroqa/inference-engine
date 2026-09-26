@@ -7,6 +7,12 @@ export type ConnStatus = "connecting" | "live" | "polling" | "down";
 export interface LiveMetrics {
   snapshot: MetricsSnapshot | null;
   status: ConnStatus;
+  /**
+   * True only while `snapshot` arrived since the last disconnect: set by a
+   * valid frame or a successful poll, cleared when the transport is lost. An
+   * open socket or a started poll alone does not make retained data fresh.
+   */
+  fresh: boolean;
 }
 
 // Streams metrics over /ws/metrics and falls back to REST polling of /metrics
@@ -16,6 +22,10 @@ export interface LiveMetrics {
 export function useLiveMetrics(pollMs = 3000): LiveMetrics {
   const [snapshot, setSnapshot] = useState<MetricsSnapshot | null>(null);
   const [status, setStatus] = useState<ConnStatus>("connecting");
+  const [fresh, setFresh] = useState(false);
+  // Whether the running poll's latest request succeeded; a failed retry socket
+  // must not mark data stale while polling keeps delivering it.
+  const pollOkRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -34,19 +44,28 @@ export function useLiveMetrics(pollMs = 3000): LiveMetrics {
       }
     };
 
+    const transportLost = () => {
+      if (!pollRef.current || !pollOkRef.current) setFresh(false);
+    };
+
     const startPolling = () => {
       if (pollRef.current) return;
+      pollOkRef.current = false;
       setStatus((s) => (s === "live" ? s : "polling"));
       const tick = () =>
         api
           .metrics()
           .then((snap) => {
             if (closedRef.current) return;
+            pollOkRef.current = true;
             setSnapshot(snap);
+            setFresh(true);
             setStatus((s) => (s === "live" ? s : "polling"));
           })
           .catch((e: unknown) => {
             if (closedRef.current || authRef.current(e)) return;
+            pollOkRef.current = false;
+            setFresh(false);
             setStatus("down");
           });
       tick();
@@ -69,6 +88,7 @@ export function useLiveMetrics(pollMs = 3000): LiveMetrics {
       ws.onmessage = (ev) => {
         try {
           setSnapshot(JSON.parse(ev.data));
+          setFresh(true);
           setStatus("live");
         } catch {
           /* ignore malformed frame */
@@ -76,11 +96,13 @@ export function useLiveMetrics(pollMs = 3000): LiveMetrics {
       };
       ws.onerror = () => {
         // Fall back to polling; onclose handles reconnect scheduling.
+        transportLost();
         startPolling();
       };
       ws.onclose = () => {
         wsRef.current = null;
         if (closedRef.current) return;
+        transportLost();
         startPolling();
         retryRef.current = setTimeout(connect, pollMs);
       };
@@ -96,5 +118,5 @@ export function useLiveMetrics(pollMs = 3000): LiveMetrics {
     };
   }, [pollMs]);
 
-  return { snapshot, status };
+  return { snapshot, status, fresh };
 }

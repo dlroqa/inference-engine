@@ -2,8 +2,9 @@
 
 The dashboard explains what each control does and which engine call it makes
 through "How this works" popovers (`dashboard/src/components/WiredTo.tsx`).
-This page describes how that content is sourced and checked. A generated
-**UI → subsystem → endpoint** table is planned for this page in a later slice.
+This page describes how that content is sourced and checked, and ends with the
+generated **UI → subsystem → endpoint** table (see
+[UI → subsystem → endpoint table](#ui--subsystem--endpoint-table)).
 
 ## Sources of truth
 
@@ -147,6 +148,98 @@ control to have a registry scope explained by a visible hint on the same surface
 
 - Excluded by design: the hint buttons themselves and links inside an open
   popover (no help for help).
-- Client rows on the Clients view are pointer-only (not keyboard-focusable). They
-  are explained by a "Select a client" hint in the column header; making them
-  keyboard-operable is a follow-up.
+- Client rows on the Clients view are selected by clicking the row or with the
+  client's own button (Enter or Space). The audit counts a clickable row as
+  pointer-only unless it contains that button, and requires none to be.
+
+## Live metrics states
+
+The Overview's stat cards and Scheduler card read the live metrics stream
+(`WS /ws/metrics`), or the polling fallback (`GET /metrics`). What they may claim
+depends on the data, not only on the connection:
+
+| Data | Connection | Shown |
+| --- | --- | --- |
+| None yet | connecting, live or polling | Loading; no numbers (no invented zeros) |
+| None yet | disconnected | Metrics unavailable, reconnecting |
+| Kept from before | disconnected | The last data, marked as not current |
+| Kept from before | reconnected, no new data yet | The last data, marked as awaiting new data |
+| New since the last disconnect | live or polling | Current data |
+
+A scheduler that is not running is shown as such. A zero-length queue means
+queueing is off. An average wait of null means no request has waited yet.
+Energy is shown as measured only when the engine reports `state: measured`;
+otherwise the card gives the engine's reason. A source name alone, such as
+`rapl` while a baseline is being established, is not a measurement.
+
+## Model details
+
+**Details** on a Models row opens a drawer (`#/models/<id>`) that reads
+`GET /admin/models/{model_id}`. It shows the following:
+
+- status and compatibility;
+- metadata;
+- the SHA-256 checksum, with a copy button;
+- the model's source;
+- the last error.
+
+**Presentation rules.**
+
+- **Local imports:** the engine's `source_ref` for a local import is the file's
+  path. The drawer never shows it and says "Local import (path not shown)" instead.
+- **Remote sources:** a Hugging Face or URL source is shown as plain text, not as
+  a link. The engine removes credentials from it before sending it: URL
+  userinfo, and query values whose names look credential-bearing.
+- **Error text:** it is shown as text. The engine applies the same credential
+  redaction to every URL and query parameter in it, in list and detail
+  responses alike.
+
+**Limits.**
+
+- This is not a promise that no text can ever contain a filesystem path. A model
+  name, or an error the engine reported, may still name one.
+- The engine's own logs are not covered by this redaction.
+
+**Refresh.** The drawer refreshes from the model list's polling, not from a
+separate loop:
+
+- A changed row refreshes the details.
+- A row that is gone after a successful list refresh leads to the engine's
+  "not found".
+- A failed refresh keeps the last details, marked as not current, with Retry.
+
+**Navigation and focus.**
+
+- **Close, Escape or Back** close the drawer. Escape first closes an open
+  "How this works" popover.
+- **Opened from the list:** closing returns to that list entry and focuses the
+  model's **Details** button. If the row is gone, focus goes to the Models heading.
+- **Opened from a direct link:** closing replaces the address with `#/models`
+  and focuses the heading.
+- **Back and Forward** close and reopen the drawer.
+- **Leaving the view** with the drawer open focuses the next page, as any
+  navigation does.
+
+## UI → subsystem → endpoint table
+
+The table below is generated from the registry and the route inventory by
+`dashboard/src/lib/wiringDocs.ts`. The ordinary vitest run fails if it is out of
+date, but it never rewrites it.
+
+**Regenerating.** Regeneration runs in GitHub Actions, never by hand-editing the
+block:
+
+1. The CI step **Wiring docs (generated diff)** runs `npm run docs:wiring`
+   (`UPDATE_WIRING_DOCS=1`) and prints the diff.
+2. It uploads the complete generated file as the `wiring-docs` artifact.
+3. It then restores the tracked file and fails on drift.
+
+To update, copy the generated block into this page and commit it.
+
+**Contents.** Rows are sorted by control ID. Access is the route inventory's gate.
+Kill switches are the configuration switches that must be on for the control to
+work (read-only in the dashboard).
+
+<!-- wiring-table:start -->
+_Not generated yet: the first CI run prints this block._
+<!-- wiring-table:end -->

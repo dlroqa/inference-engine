@@ -10,6 +10,7 @@ Required environment:
 - ``IE_E2E_BASE_URL``      e.g. ``http://127.0.0.1:8140``
 - ``IE_E2E_OPERATOR_KEY``  an operator key created with the CLI before start
 - ``IE_E2E_MODEL_PATH``    path to the checksum-verified GGUF fixture
+- ``IE_E2E_MODEL_SHA256``  that fixture's pinned checksum (the workflow's pin)
 - ``IE_E2E_RESTRICTED_BASE_URL`` / ``IE_E2E_RESTRICTED_OPERATOR_KEY``  a second
   engine started with ``allow_model_management`` and ``allow_network_downloads``
   off, seeded beforehand with one loaded and one ready model
@@ -49,6 +50,9 @@ class Engine:
     operator_key: str
     client_key: str
     model_path: str
+    # The billing client the session creates, and the fixture's pinned checksum.
+    client_id: str
+    model_sha256: str
 
     def api(self, key: str | None = None) -> httpx.Client:
         headers = {"authorization": f"Bearer {key}"} if key else {}
@@ -64,6 +68,7 @@ def engine() -> Engine:
     base = _required("IE_E2E_BASE_URL").rstrip("/")
     operator = _required("IE_E2E_OPERATOR_KEY")
     model_path = _required("IE_E2E_MODEL_PATH")
+    model_sha256 = _required("IE_E2E_MODEL_SHA256").lower()
     # A billing client and its key, created through the real admin API.
     with httpx.Client(
         base_url=base, headers={"authorization": f"Bearer {operator}"}, timeout=30.0
@@ -74,7 +79,14 @@ def engine() -> Engine:
         resp = c.post(f"/admin/billing/clients/{client_id}/keys", json={"label": "e2e-client-key"})
         assert resp.status_code in (200, 201), resp.status_code
         client_key = resp.json()["token"]
-    return Engine(base=base, operator_key=operator, client_key=client_key, model_path=model_path)
+    return Engine(
+        base=base,
+        operator_key=operator,
+        client_key=client_key,
+        model_path=model_path,
+        client_id=client_id,
+        model_sha256=model_sha256,
+    )
 
 
 @dataclass(frozen=True)

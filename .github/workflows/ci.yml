@@ -172,6 +172,63 @@ jobs:
         working-directory: dashboard
         run: python3 ../scripts/measure.py run --label "vitest (dashboard)" -- npm run test:run
 
+      - name: Wiring docs (generated diff)
+        # Regenerates the UI -> subsystem -> endpoint table in the root
+        # docs/dashboard.md from the registry, prints the complete diff (bounded
+        # in the log, whole in the artifact), restores the tracked file, and
+        # fails on drift. It also runs after a failed vitest step so drift can
+        # be diagnosed in one run. Nothing is committed from CI.
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set +e -u
+          root="$GITHUB_WORKSPACE"
+          out="$RUNNER_TEMP/wiring-docs"
+          mkdir -p "$out"
+          if [ ! -d "$root/dashboard/node_modules" ]; then
+            echo "::error::Wiring docs not generated: dashboard dependencies are not installed (an earlier step failed)."
+            exit 1
+          fi
+          (cd "$root/dashboard" && npm run docs:wiring)
+          gen=$?
+          cp "$root/docs/dashboard.md" "$out/dashboard.md"
+          git -C "$root" diff --no-color -- docs/dashboard.md > "$out/wiring-docs.diff"
+          diff_status=$?
+          git -C "$root" checkout -- docs/dashboard.md
+          size=$(wc -c < "$out/wiring-docs.diff")
+          limit=60000
+          {
+            echo "### Wiring docs (generated)"
+            if [ "$gen" -ne 0 ]; then
+              echo "Generation FAILED (exit $gen); see the step log. The diff below may be incomplete."
+            fi
+            if [ "$diff_status" -ne 0 ]; then
+              echo "git diff FAILED (exit $diff_status)."
+            elif [ "$size" -eq 0 ]; then
+              echo "No drift: docs/dashboard.md matches the registry."
+            else
+              echo "Drift: $size bytes of diff. Copy the generated block from the \`wiring-docs\` artifact (dashboard.md)."
+              if [ "$size" -gt "$limit" ]; then
+                echo "**Truncated:** showing the first $limit of $size bytes; the complete diff is in the artifact."
+              fi
+              echo '```diff'
+              head -c "$limit" "$out/wiring-docs.diff"
+              echo
+              echo '```'
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$gen" -ne 0 ]; then exit "$gen"; fi
+          if [ "$diff_status" -ne 0 ] || [ "$size" -ne 0 ]; then exit 1; fi
+
+      - name: Upload generated wiring docs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wiring-docs
+          path: ${{ runner.temp }}/wiring-docs/
+          if-no-files-found: ignore
+          retention-days: 3
+
       - name: Build SPA into engine/static
         working-directory: dashboard
         run: python3 ../scripts/measure.py run --label "vite build (dashboard)" -- npm run build
@@ -465,6 +522,7 @@ jobs:
           IE_E2E_BASE_URL=http://127.0.0.1:8140 \
           IE_E2E_OPERATOR_KEY="$OWNER" \
           IE_E2E_MODEL_PATH="$HOME/models/tiny.gguf" \
+          IE_E2E_MODEL_SHA256="$MODEL_SHA256" \
           IE_E2E_RESTRICTED_BASE_URL=http://127.0.0.1:8141 \
           IE_E2E_RESTRICTED_OPERATOR_KEY="$ROWNER" \
           IE_E2E_SCREENSHOT_DIR=e2e-screenshots \

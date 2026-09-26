@@ -482,6 +482,11 @@ by the typed admin API and the Block 4 WebSocket feeds:
 - **Security** (Block 11.6) — the tamper-evident operator/security **audit log**
   with an on-demand hash-chain **integrity check**.
 
+Every control explains its backend call through a "How this works" hint. The
+generated **UI → subsystem → endpoint** table, the model details drawer, and the
+Overview's Scheduler card and live-data states are described in
+[`docs/dashboard.md`](docs/dashboard.md).
+
 **Access:** the SPA is served to anyone who can reach the route, but every data
 endpoint it calls is gated (an operator API key, or keyless loopback dev use while
 auth is off), so the
