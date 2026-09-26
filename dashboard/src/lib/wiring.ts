@@ -6,7 +6,7 @@
 // (routes.generated.json, produced by scripts/export_routes.py) and against the
 // typed client in api.ts, so it cannot silently drift from the backend.
 
-import type { api } from "./api";
+import type { api, SwitchName } from "./api";
 import inventory from "./routes.generated.json";
 
 export type Subsystem =
@@ -114,9 +114,10 @@ export interface WiringEntry {
   audited: boolean;
   /**
    * Config switches that must all be enabled for this action (read-only in the
-   * UI). Turning off any one of them disables it.
+   * UI). Turning off any one of them disables it. Names are keys of the
+   * /admin/system `switches` object.
    */
-  requiredSwitches?: string[];
+  requiredSwitches?: SwitchName[];
   sideEffects?: string;
   docs?: DocRef;
 }
@@ -153,6 +154,16 @@ export const WIRING: WiringEntry[] = [
     client: "identity",
     audited: false,
     docs: { ref: "docs/security.md#operator-access", title: "Security: operator access" },
+  },
+  {
+    id: "app.system",
+    label: "Feature-switch status",
+    what: "Reads the engine's read-only configuration summary: feature switches (on/off only), readiness and drain state. The dashboard uses it to explain which actions a switch disables; the engine still enforces every switch itself.",
+    chain: ["gateway", "store", "backend_pool", "scheduler"],
+    endpoint: { method: "GET", path: "/admin/system" },
+    client: "system",
+    audited: false,
+    docs: { ref: "docs/security.md#kill-switches", title: "Security: kill switches" },
   },
   {
     id: "overview.readiness",
@@ -399,7 +410,6 @@ export const NOT_IN_UI: Record<string, string> = {
   "GET /readyz": "planned: System view (A3a).",
   "GET /version": "planned: System view (A3a); the version is shown via /admin/overview.",
   "GET /diagnostics": "planned: System view (A3a).",
-  "GET /admin/system": "planned: disabled-control explanations (after the A2 popovers) and System view (A3a).",
   "GET /admin/backends": "planned: Backends & Routing view (A3a).",
   "GET /admin/routes": "planned: Backends & Routing view (A3a).",
   "POST /admin/route/plan": "planned: Backends & Routing view (A3a).",
@@ -435,6 +445,11 @@ export const LOCAL_CONTROLS: LocalControl[] = [
     label: "Navigation",
     what: "Changes the page address (#/view) in this browser.",
     followUp: "The view that opens then loads its own data from the engine.",
+  },
+  {
+    id: "local.show-wiring",
+    label: "Show wiring",
+    what: "Shows or hides the endpoint (METHOD /path) next to every \"How this works\" button. The choice is kept in this browser only; it is off by default.",
   },
   {
     id: "local.saved-key",

@@ -31,6 +31,17 @@ release notes and refuses to publish without it (see `docs/releasing.md`).
   a client key, and an unreachable engine, confirmation dialogs for destructive
   actions, a server-side request-id log filter, per-endpoint webhook deliveries,
   and a visible error when an audit verification request fails.
+- Dashboard: model actions that a feature switch disables
+  (`allow_model_management`, `allow_network_downloads`) are shown disabled with
+  the switch named, using `GET /admin/system`. Feature 403s name their switch
+  and stay distinct from authorization failures. If the switch status cannot be
+  read, the dashboard says so, offers Retry, and leaves enforcement to the engine.
+- Dashboard: if a protected request returns 401 or `operator_role_required`
+  (for example, the key was revoked), the dashboard ends the session. Its views
+  and switch state are discarded, and the key prompt or operator-access screen
+  is shown. A late failure from an earlier session is ignored.
+- Dashboard: a "Show wiring" toggle (off by default, remembered in the browser)
+  that shows each control's `METHOD /path` beside its "How this works" hint.
 
 ## [0.1.1] - 2026-09-25
 

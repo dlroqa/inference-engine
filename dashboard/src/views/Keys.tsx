@@ -6,6 +6,7 @@ import { Badge } from "../components/widgets";
 import { Icon } from "../components/Icon";
 import { WiredTo } from "../components/WiredTo";
 import { useConfirm } from "../hooks/useConfirm";
+import { useAuthFailure } from "../hooks/useAuthScope";
 
 export function Keys(): JSX.Element {
   const { status, data, error, reload } = useAsync(() => api.listKeys(), []);
@@ -15,6 +16,7 @@ export function Keys(): JSX.Element {
   const [copyOk, setCopyOk] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [confirm, confirmDialog] = useConfirm();
+  const reportAuthFailure = useAuthFailure();
 
   const create = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -27,6 +29,7 @@ export function Keys(): JSX.Element {
       setLabel("");
       reload();
     } catch (err) {
+      if (reportAuthFailure(err)) return;
       setFormError(err instanceof ApiError ? err.message : String(err));
     } finally {
       setCreating(false);
@@ -51,6 +54,7 @@ export function Keys(): JSX.Element {
       await api.revokeKey(k.id);
       reload();
     } catch (err) {
+      if (reportAuthFailure(err)) return;
       setFormError(err instanceof ApiError ? err.message : String(err));
     }
   };
@@ -72,6 +76,7 @@ export function Keys(): JSX.Element {
       await api.deleteKey(k.id);
       reload();
     } catch (err) {
+      if (reportAuthFailure(err)) return;
       setFormError(err instanceof ApiError ? err.message : String(err));
     }
   };

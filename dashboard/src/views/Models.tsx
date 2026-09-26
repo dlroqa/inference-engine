@@ -1,5 +1,5 @@
 import { useState, type JSX } from "react";
-import { api, ApiError, type ModelInfo, type DownloadRequest } from "../lib/api";
+import { api, type ModelInfo, type DownloadRequest, type SwitchName } from "../lib/api";
 import { useModels } from "../hooks/useModels";
 import { AsyncBoundary } from "../components/Panel";
 import { Badge, type ToneName } from "../components/widgets";
@@ -7,6 +7,11 @@ import { Icon } from "../components/Icon";
 import { WiredTo } from "../components/WiredTo";
 import { bytes } from "../lib/format";
 import { useConfirm } from "../hooks/useConfirm";
+import { useSystem } from "../hooks/useSystem";
+import { useAuthFailure } from "../hooks/useAuthScope";
+import { SystemNotice } from "../components/SystemNotice";
+import { describeActionError, featureSwitchFor, switchReason } from "../lib/switches";
+import { wiringFor } from "../lib/wiring";
 
 type AddMode = "huggingface" | "url" | "import";
 
@@ -25,6 +30,16 @@ const STATUS_TONE: Record<string, ToneName> = {
   cancelled: "neutral",
 };
 
+// Switch-gated row actions share one explanation (SystemNotice) that each
+// disabled button references. Cancelling a download is not switch-gated.
+const ROW_NOTICE_ID = "models-switch-notice";
+const ROW_ACTIONS = ["models.load", "models.unload", "models.delete"] as const;
+const ROW_SWITCHES: SwitchName[] = [...new Set(ROW_ACTIONS.flatMap((id) => wiringFor(id).requiredSwitches ?? []))];
+
+function switchesFor(id: string): SwitchName[] {
+  return wiringFor(id).requiredSwitches ?? [];
+}
+
 function bytesProgress(m: ModelInfo): string {
   if (m.size_bytes) return `${bytes(m.downloaded_bytes)} / ${bytes(m.size_bytes)}`;
   return bytes(m.downloaded_bytes);
@@ -40,9 +55,21 @@ function AddModel({ onAdded }: { onAdded: () => void }): JSX.Element {
   const [sha, setSha] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const sys = useSystem();
+  const reportAuthFailure = useAuthFailure();
+
+  const submitId = mode === "import" ? "models.import" : "models.download";
+  // Every switch this mode needs that is known to be off.
+  const off = sys.offSwitches(switchesFor(submitId));
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    // Re-check at submission: the state may have changed since render.
+    const nowOff = sys.offSwitches(switchesFor(submitId));
+    if (nowOff.length > 0) {
+      setError(switchReason(nowOff));
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -70,13 +97,14 @@ function AddModel({ onAdded }: { onAdded: () => void }): JSX.Element {
       setSha("");
       onAdded();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : String(err));
+      if (reportAuthFailure(err)) return;
+      setError(describeActionError(err));
+      const denied = featureSwitchFor(err);
+      if (denied) sys.reportDenied(denied);
     } finally {
       setBusy(false);
     }
   };
-
-  const submitId = mode === "import" ? "models.import" : "models.download";
 
   const tabs: { id: AddMode; label: string }[] = [
     { id: "huggingface", label: "Hugging Face" },
@@ -192,8 +220,22 @@ function AddModel({ onAdded }: { onAdded: () => void }): JSX.Element {
             {error}
           </div>
         )}
+        {off.length > 0 && (
+          <p className="disabled-reason" id="add-model-restriction">
+            <Icon name="lock" size={14} />
+            <span>
+              {switchReason(off)} {mode === "import" ? "Importing" : "Downloading"} models is unavailable until the
+              engine's configuration turns {off.length === 1 ? "it" : "them"} on.
+            </span>
+          </p>
+        )}
         <div className="row">
-          <button className="btn primary" type="submit" disabled={busy}>
+          <button
+            className="btn primary"
+            type="submit"
+            disabled={busy || off.length > 0}
+            aria-describedby={off.length > 0 ? "add-model-restriction" : undefined}
+          >
             {busy ? <span className="spinner" /> : <Icon name="play" size={16} />}
             {mode === "import" ? "Import model" : "Download model"}
           </button>
@@ -214,15 +256,31 @@ function ModelRow({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirm, confirmDialog] = useConfirm();
+  const sys = useSystem();
+  const reportAuthFailure = useAuthFailure();
 
-  const run = async (fn: () => Promise<unknown>) => {
+  // Switches (known to be off) that block a row action; none for cancel.
+  const blockedBy = (id: string) => sys.offSwitches(switchesFor(id));
+  const rowBlocked = (id: string) => blockedBy(id).length > 0;
+  const describedBy = (id: string) => (rowBlocked(id) ? ROW_NOTICE_ID : undefined);
+
+  const run = async (id: string, fn: () => Promise<unknown>) => {
+    // Re-check when the action runs, including after a confirmation dialog.
+    const off = blockedBy(id);
+    if (off.length > 0) {
+      setError(switchReason(off));
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
       await fn();
       onChange();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : String(err));
+      if (reportAuthFailure(err)) return;
+      setError(describeActionError(err));
+      const denied = featureSwitchFor(err);
+      if (denied) sys.reportDenied(denied);
     } finally {
       setBusy(false);
     }
@@ -263,7 +321,7 @@ function ModelRow({
           {model.status === "downloading" && (
             <button
               className="btn"
-              onClick={() => run(() => api.cancelDownload(model.id))}
+              onClick={() => run("models.cancel", () => api.cancelDownload(model.id))}
               disabled={busy}
               data-wiring="models.cancel"
             >
@@ -273,8 +331,9 @@ function ModelRow({
           {model.status === "ready" && !model.loaded && (
             <button
               className="btn primary"
-              onClick={() => run(() => api.loadModelById(model.id))}
-              disabled={busy}
+              onClick={() => run("models.load", () => api.loadModelById(model.id))}
+              disabled={busy || rowBlocked("models.load")}
+              aria-describedby={describedBy("models.load")}
               data-wiring="models.load"
             >
               {busy ? <span className="spinner" /> : <Icon name="play" size={16} />} Load
@@ -283,8 +342,9 @@ function ModelRow({
           {model.loaded && (
             <button
               className="btn"
-              onClick={() => run(() => api.unloadModelById(model.id))}
-              disabled={busy}
+              onClick={() => run("models.unload", () => api.unloadModelById(model.id))}
+              disabled={busy || rowBlocked("models.unload")}
+              aria-describedby={describedBy("models.unload")}
               data-wiring="models.unload"
             >
               <Icon name="stop" size={16} /> Unload
@@ -302,9 +362,10 @@ function ModelRow({
                   confirmLabel: "Delete model",
                   wiring: "models.delete",
                 });
-                if (ok) await run(() => api.deleteModel(model.id));
+                if (ok) await run("models.delete", () => api.deleteModel(model.id));
               }}
-              disabled={busy}
+              disabled={busy || rowBlocked("models.delete")}
+              aria-describedby={describedBy("models.delete")}
               aria-label={`Delete ${model.name}`}
               data-wiring="models.delete"
             >
@@ -350,6 +411,7 @@ function ModelRow({
 
 export function Models(): JSX.Element {
   const { status, models, error, reload } = useModels();
+  const sys = useSystem();
 
   return (
     <>
@@ -359,12 +421,25 @@ export function Models(): JSX.Element {
           <WiredTo id="models.list" />
         </div>
         <div className="row">
-          <button className="btn" onClick={reload} data-wiring="models.list">
+          <button
+            className="btn"
+            onClick={() => {
+              reload();
+              sys.refresh();
+            }}
+            data-wiring="models.list app.system"
+          >
             <Icon name="refresh" size={16} /> Refresh
           </button>
-          <WiredTo id="models.list" label="Refresh" />
+          <WiredTo id={["models.list", "app.system"]} label="Refresh" />
         </div>
       </div>
+
+      <SystemNotice
+        id={ROW_NOTICE_ID}
+        switches={ROW_SWITCHES}
+        consequence="Loading, unloading and deleting models is unavailable; listing models and cancelling downloads still work."
+      />
 
       <div className="grid" style={{ marginBottom: 20 }}>
         <AddModel onAdded={reload} />

@@ -9,6 +9,9 @@ import {
   type JSX,
 } from "react";
 import { Icon } from "./Icon";
+import { useSystem } from "../hooks/useSystem";
+import { useWiringPrefs } from "../hooks/useWiringPrefs";
+import type { SwitchName } from "../lib/api";
 import {
   SUBSYSTEMS,
   docsUrl,
@@ -130,12 +133,30 @@ function WiredFacts({ entry }: { entry: WiringEntry }): JSX.Element {
   );
 }
 
-function SwitchFacts({ switches }: { switches: string[] }): JSX.Element {
+// Live state is appended only when /admin/system has answered; unknown state is
+// never presented as on (or off).
+function SwitchState({ name }: { name: SwitchName }): JSX.Element | null {
+  const sys = useSystem();
+  const on = sys.switchState(name);
+  if (on === null) return null;
+  return (
+    <span className="wired-switch-state">
+      {" "}
+      — currently {on ? "on" : "off"}
+      {sys.stale ? " (last known)" : ""}
+    </span>
+  );
+}
+
+function SwitchFacts({ switches }: { switches: SwitchName[] }): JSX.Element {
   if (switches.length === 1) {
     return (
       <>
         <dt>Kill switch</dt>
-        <dd className="mono">{switches[0]}</dd>
+        <dd>
+          <span className="mono">{switches[0]}</span>
+          <SwitchState name={switches[0]} />
+        </dd>
       </>
     );
   }
@@ -145,8 +166,9 @@ function SwitchFacts({ switches }: { switches: string[] }): JSX.Element {
       <dd>
         <ul className="wired-switches">
           {switches.map((s) => (
-            <li key={s} className="mono">
-              {s}
+            <li key={s}>
+              <span className="mono">{s}</span>
+              <SwitchState name={s} />
             </li>
           ))}
         </ul>
@@ -208,6 +230,12 @@ export function WiredTo({ id, label }: { id: string | string[]; label?: string }
       ? " (no direct engine call)"
       : " (no backend call)";
   const ariaLabel = `How this works: ${name}${suffix}`;
+
+  const { showWiring } = useWiringPrefs();
+  // One chip per distinct wired endpoint; local-only controls have none.
+  const chips = [
+    ...new Set(explanations.flatMap((e) => (e.kind === "wired" ? [`${e.entry.endpoint.method} ${e.entry.endpoint.path}`] : []))),
+  ];
 
   const popId = useId();
   const wrap = useRef<HTMLSpanElement>(null);
@@ -327,73 +355,84 @@ export function WiredTo({ id, label }: { id: string | string[]; label?: string }
   }, [open, close, place]);
 
   return (
-    <span
-      ref={wrap}
-      className="wired"
-      data-wiring-ids={ids.join(" ")}
-      onPointerEnter={(e) => {
-        if (!isMouse(e)) return;
-        clearTimer();
-        timer.current = window.setTimeout(() => setOpen(true), HOVER_OPEN_MS);
-      }}
-      onPointerLeave={(e) => {
-        if (!isMouse(e) || pinned) return;
-        clearTimer();
-        // Keyboard focus inside the region keeps it open when the mouse leaves.
-        timer.current = window.setTimeout(() => {
-          if (!focusInside()) setOpen(false);
-        }, HOVER_CLOSE_MS);
-      }}
-      onBlur={(e) => {
-        if (!wrap.current?.contains(e.relatedTarget as Node | null)) close();
-      }}
-    >
-      <button
-        ref={trigger}
-        type="button"
-        className={`wired-btn${allLocal ? " local" : ""}`}
-        aria-label={ariaLabel}
-        aria-expanded={open}
-        aria-controls={open ? popId : undefined}
-        onPointerDown={() => {
-          fromPointer.current = true;
-        }}
-        onFocus={() => {
-          const skip = skipFocusOpen.current || fromPointer.current;
-          skipFocusOpen.current = false;
-          fromPointer.current = false;
-          // Keyboard focus opens it; a mouse or touch press is handled by click,
-          // and focus returned by Escape leaves it closed.
-          if (!skip) setOpen(true);
-        }}
-        onClick={() => {
+    <>
+      <span
+        ref={wrap}
+        className="wired"
+        data-wiring-ids={ids.join(" ")}
+        onPointerEnter={(e) => {
+          if (!isMouse(e)) return;
           clearTimer();
-          fromPointer.current = false;
-          if (open && pinned) {
-            close();
-          } else {
-            setOpen(true);
-            setPinned(true);
-          }
+          timer.current = window.setTimeout(() => setOpen(true), HOVER_OPEN_MS);
+        }}
+        onPointerLeave={(e) => {
+          if (!isMouse(e) || pinned) return;
+          clearTimer();
+          // Keyboard focus inside the region keeps it open when the mouse leaves.
+          timer.current = window.setTimeout(() => {
+            if (!focusInside()) setOpen(false);
+          }, HOVER_CLOSE_MS);
+        }}
+        onBlur={(e) => {
+          if (!wrap.current?.contains(e.relatedTarget as Node | null)) close();
         }}
       >
-        <Icon name="info" size={16} />
-      </button>
-      {open && (
-        <div
-          ref={pop}
-          id={popId}
-          className="wired-pop"
-          role="group"
+        <button
+          ref={trigger}
+          type="button"
+          className={`wired-btn${allLocal ? " local" : ""}`}
           aria-label={ariaLabel}
-          tabIndex={0}
-          style={style}
+          aria-expanded={open}
+          aria-controls={open ? popId : undefined}
+          onPointerDown={() => {
+            fromPointer.current = true;
+          }}
+          onFocus={() => {
+            const skip = skipFocusOpen.current || fromPointer.current;
+            skipFocusOpen.current = false;
+            fromPointer.current = false;
+            // Keyboard focus opens it; a mouse or touch press is handled by click,
+            // and focus returned by Escape leaves it closed.
+            if (!skip) setOpen(true);
+          }}
+          onClick={() => {
+            clearTimer();
+            fromPointer.current = false;
+            if (open && pinned) {
+              close();
+            } else {
+              setOpen(true);
+              setPinned(true);
+            }
+          }}
         >
-          {explanations.map((ex) => (
-            <ExplanationBlock key={ex.kind === "wired" ? ex.entry.id : ex.control.id} ex={ex} />
+          <Icon name="info" size={16} />
+        </button>
+        {open && (
+          <div
+            ref={pop}
+            id={popId}
+            className="wired-pop"
+            role="group"
+            aria-label={ariaLabel}
+            tabIndex={0}
+            style={style}
+          >
+            {explanations.map((ex) => (
+              <ExplanationBlock key={ex.kind === "wired" ? ex.entry.id : ex.control.id} ex={ex} />
+            ))}
+          </div>
+        )}
+      </span>
+      {showWiring && chips.length > 0 && (
+        <span className="wired-chips" data-testid="wiring-chips">
+          {chips.map((c) => (
+            <code key={c} className="wired-chip">
+              <Breakable text={c} />
+            </code>
           ))}
-        </div>
+        </span>
       )}
-    </span>
+    </>
   );
 }

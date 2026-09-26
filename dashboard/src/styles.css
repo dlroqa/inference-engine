@@ -909,3 +909,101 @@ a.navbtn {
 .identity-name .wired {
   margin-left: auto;
 }
+
+/* --- Show wiring (A2b) --- */
+.wiring-toggle {
+  gap: var(--space-2);
+  padding: 0 var(--space-2) var(--space-3);
+}
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-height: 44px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--color-fg-muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.toggle:hover {
+  background: var(--color-muted);
+  color: var(--color-fg);
+}
+.toggle[aria-pressed="true"] {
+  border-color: var(--color-info);
+  color: var(--color-fg);
+}
+.toggle-state {
+  margin-left: auto;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border-strong);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-fg-muted);
+}
+.toggle[aria-pressed="true"] .toggle-state {
+  border-color: var(--color-info);
+  color: var(--color-info);
+}
+/* Endpoint chips: wrap freely, never widen the page. */
+.wired-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: 100%;
+  vertical-align: middle;
+}
+.wired-chip {
+  display: inline-block;
+  max-width: 100%;
+  padding: 1px 6px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  color: var(--color-info);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.wired-switch-state {
+  color: var(--color-fg-muted);
+}
+
+/* --- Feature-switch explanations (A2b) --- */
+.switch-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.switch-notice > span {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+.disabled-reason {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  color: var(--color-fg-muted);
+  font-size: 13px;
+}
+.disabled-reason svg {
+  flex: none;
+  margin-top: 2px;
+}
+@media (max-width: 900px) {
+  .wiring-toggle {
+    width: 100%;
+  }
+}

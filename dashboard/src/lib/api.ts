@@ -171,6 +171,42 @@ export interface Identity {
   key: { id: string; prefix: string; label: string | null; role: KeyRole } | null;
 }
 
+// Read-only system description (GET /admin/system). Feature switches are
+// booleans only; the response never carries secrets, credential URLs or prompts.
+export interface SystemSwitches {
+  allow_model_management: boolean;
+  allow_network_downloads: boolean;
+  allow_structured_output: boolean;
+  diagnostics_enabled: boolean;
+  require_auth: boolean;
+  webhooks_enabled: boolean;
+  client_events_enabled: boolean;
+  ip_allowlist_set: boolean;
+  grpc_enabled: boolean;
+}
+
+export type SwitchName = keyof SystemSwitches;
+
+export interface SystemInfo {
+  build: { version: string; commit: string | null; built_at: string | null };
+  readiness: {
+    ready: boolean;
+    checks: Record<string, string>;
+    inference: { available: boolean; model_id?: string | null; state?: string; reason?: string };
+  };
+  draining: boolean;
+  switches: SystemSwitches;
+  metadata: { grpc_port: number | null; billing_provider: string | null };
+  routing: {
+    backend_kind: string;
+    virtual_models: { name: string; policy: string }[];
+    workload_routing_enabled: boolean;
+    workload_rule_count: number;
+    remote_workers: string[];
+    spillover_providers: string[];
+  };
+}
+
 export interface CreatedKey {
   id: string;
   prefix: string;
@@ -318,6 +354,7 @@ export interface AuditPage {
 
 export const api = {
   identity: () => request<Identity>("/admin/identity"),
+  system: () => request<SystemInfo>("/admin/system"),
   overview: () => request<Overview>("/admin/overview"),
   metrics: () => request<MetricsSnapshot>("/metrics"),
   logs: (params: { limit?: number; level?: string; request_id?: string } = {}) => {

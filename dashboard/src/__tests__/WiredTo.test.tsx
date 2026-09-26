@@ -1,9 +1,12 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WiredTo } from "../components/WiredTo";
 import { ConfirmDialog } from "../components/Dialog";
 import { DOCS_BASE, SUBSYSTEMS, docsUrl, routeFor, wiringFor } from "../lib/wiring";
+import { SystemProvider } from "../hooks/useSystem";
+import { WiringPrefsProvider } from "../hooks/useWiringPrefs";
+import { api, ApiError, type SystemInfo } from "../lib/api";
 
 const LOAD = "How this works: Load model";
 
@@ -442,5 +445,104 @@ describe("WiredTo popover: placement inside the viewport", () => {
     });
     expect(pop.getAttribute("style")).not.toBe(before);
     restore();
+  });
+});
+
+describe("WiredTo: Show wiring chips", () => {
+  function withChips(ui: React.ReactNode) {
+    localStorage.setItem("ie.dashboard.showWiring", "1");
+    try {
+      return render(<WiringPrefsProvider>{ui}</WiringPrefsProvider>);
+    } finally {
+      localStorage.removeItem("ie.dashboard.showWiring");
+    }
+  }
+
+  it("shows no chips by default", () => {
+    render(
+      <WiringPrefsProvider>
+        <WiredTo id="models.load" />
+      </WiringPrefsProvider>,
+    );
+    expect(screen.queryByTestId("wiring-chips")).not.toBeInTheDocument();
+  });
+
+  it("shows the registry endpoint for a wired hint", () => {
+    withChips(<WiredTo id="models.load" />);
+    const codes = Array.from(screen.getByTestId("wiring-chips").querySelectorAll("code")).map((c) => c.textContent);
+    expect(codes).toEqual(["POST /admin/models/{model_id}/load"]);
+  });
+
+  it("shows every wired endpoint of a multi-entry hint, once each, and none for local entries", () => {
+    withChips(<WiredTo id={["overview.metrics", "overview.metrics-fallback", "models.list", "local.navigation"]} />);
+    const codes = Array.from(screen.getByTestId("wiring-chips").querySelectorAll("code")).map((c) => c.textContent);
+    expect(codes).toEqual(["WS /ws/metrics", "GET /metrics", "GET /admin/models"]);
+  });
+
+  it("gives local-only hints no chip", () => {
+    withChips(<WiredTo id={["local.navigation", "local.copy-token"]} />);
+    expect(screen.queryByTestId("wiring-chips")).not.toBeInTheDocument();
+  });
+
+  it("keeps the popover behaviour with chips shown", async () => {
+    withChips(
+      <>
+        <button>before</button>
+        <WiredTo id="models.load" />
+        <button>after</button>
+      </>,
+    );
+    await tabToHint();
+    expect(screen.getByRole("group", { name: LOAD })).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("group")).not.toBeInTheDocument();
+  });
+});
+
+describe("WiredTo: live switch state", () => {
+  const info = (management: boolean) =>
+    ({
+      switches: {
+        allow_model_management: management,
+        allow_network_downloads: true,
+        allow_structured_output: true,
+        diagnostics_enabled: true,
+        require_auth: true,
+        webhooks_enabled: false,
+        client_events_enabled: true,
+        ip_allowlist_set: false,
+        grpc_enabled: false,
+      },
+    }) as SystemInfo;
+
+  it("shows current on/off state once /admin/system has answered", async () => {
+    vi.spyOn(api, "system").mockResolvedValue(info(false));
+    render(
+      <SystemProvider>
+        <WiredTo id="models.download" />
+      </SystemProvider>,
+    );
+    await userEvent.click(screen.getByRole("button", { name: /^How this works/ }));
+    await waitFor(() =>
+      expect(Array.from(screen.getByRole("group").querySelectorAll(".wired-switches li")).map((li) => li.textContent)).toEqual([
+        "allow_model_management — currently off",
+        "allow_network_downloads — currently on",
+      ]),
+    );
+  });
+
+  it("states nothing about switch state while it is unknown", async () => {
+    vi.spyOn(api, "system").mockRejectedValue(new ApiError("down", 500));
+    render(
+      <SystemProvider>
+        <WiredTo id="models.load" />
+      </SystemProvider>,
+    );
+    await waitFor(() => expect(api.system).toHaveBeenCalled());
+    await act(async () => {});
+    await userEvent.click(screen.getByRole("button", { name: /^How this works/ }));
+    const pop = screen.getByRole("group");
+    expect(pop).toHaveTextContent("allow_model_management");
+    expect(pop).not.toHaveTextContent(/currently (on|off)/);
   });
 });
