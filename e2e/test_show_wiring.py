@@ -19,8 +19,9 @@ rows cannot make the check pass early:
 With chips on, the document must not scroll horizontally at 1280 px or 390 px.
 Wide tables still scroll inside their own card. A real delete confirmation with
 its endpoint chip is then checked for fit, focus containment and Escape order,
-and cancelled without deleting anything. This is bounded acceptance, not an
-exhaustive responsive or assistive-technology audit.
+then reopened and cancelled with its Cancel button, with no DELETE request
+observed and the model confirmed ready through the API. This is bounded
+acceptance, not an exhaustive responsive or assistive-technology audit.
 """
 
 from __future__ import annotations
@@ -29,8 +30,9 @@ import re
 import time
 from collections.abc import Callable
 from pathlib import Path
+from urllib.parse import urlparse
 
-from playwright.sync_api import Page, expect
+from playwright.sync_api import Locator, Page, Request, expect
 
 from e2e.conftest import (
     Engine,
@@ -207,8 +209,51 @@ def _delete_dialog_with_chips(
         expect(dialog).to_have_count(0)
         expect(opener).to_be_focused()
 
-    # Cancelled: nothing was deleted.
+        _cancel_with_button(page, engine, model, opener, label)
+
+    # Cancelled every time: nothing was deleted.
+    _assert_model_kept(engine, model)
+
+
+def _assert_model_kept(engine: Engine, model: dict[str, str]) -> None:
     with engine.api(engine.operator_key) as c:
         resp = c.get(f"/admin/models/{model['id']}")
         assert resp.status_code == 200, resp.status_code
-        assert resp.json()["status"] == "ready"
+        body = resp.json()
+        assert body["id"] == model["id"], body["id"]
+        assert body["status"] == "ready", body["status"]
+
+
+def _cancel_with_button(
+    page: Page, engine: Engine, model: dict[str, str], opener: Locator, label: str
+) -> None:
+    """Reopen the confirmation and activate its Cancel button (not Escape or the scrim)."""
+    target = f"/admin/models/{model['id']}"
+    deletes: list[str] = []
+
+    def on_request(request: Request) -> None:
+        if request.method == "DELETE" and urlparse(request.url).path == target:
+            deletes.append(request.url)
+
+    # Only this browser interaction is observed (cleanup runs later, via the API).
+    page.on("request", on_request)
+    try:
+        opener.click()
+        dialog = page.get_by_role("dialog", name=f"Delete {model['name']}?")
+        expect(dialog).to_be_visible()
+        chip = dialog.locator(".wired-chip", has_text="DELETE /admin/models/{model_id}")
+        expect(chip).to_be_visible()
+        cancel = dialog.get_by_role("button", name="Cancel", exact=True)
+        expect(cancel).to_be_visible()
+        expect(cancel).to_be_enabled()
+        cancel.click()
+        expect(dialog).to_have_count(0)
+        expect(opener).to_be_focused()
+        # A delete would be sent by the click handler itself; the listener stays
+        # attached through the closing, focus and API checks, and the engine
+        # confirms the model still exists and is ready.
+        _assert_model_kept(engine, model)
+        expect(opener).to_be_visible()
+    finally:
+        page.remove_listener("request", on_request)
+    assert deletes == [], f"{label}: Cancel sent {len(deletes)} DELETE request(s) for the model"
