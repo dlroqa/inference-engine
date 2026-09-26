@@ -29,7 +29,7 @@ from urllib.parse import urlparse
 import pytest
 from playwright.sync_api import Browser, Locator, Page, expect
 
-from e2e.conftest import Engine, login
+from e2e.conftest import Engine, assert_no_secrets, login
 
 ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = json.loads(
@@ -81,7 +81,7 @@ def _is_scrollable(pop: Locator) -> bool:
 
 
 def _shot(page: Page, name: str, trigger: Locator, pop: Locator, engine: Engine) -> None:
-    assert engine.operator_key not in page.content()
+    assert_no_secrets(page, [engine.operator_key, engine.client_key])
     a = trigger.bounding_box()
     b = pop.bounding_box()
     assert a and b

@@ -10,18 +10,23 @@ Required environment:
 - ``IE_E2E_BASE_URL``      e.g. ``http://127.0.0.1:8140``
 - ``IE_E2E_OPERATOR_KEY``  an operator key created with the CLI before start
 - ``IE_E2E_MODEL_PATH``    path to the checksum-verified GGUF fixture
+- ``IE_E2E_RESTRICTED_BASE_URL`` / ``IE_E2E_RESTRICTED_OPERATOR_KEY``  a second
+  engine started with ``allow_model_management`` and ``allow_network_downloads``
+  off, seeded beforehand with one loaded and one ready model
+  (``e2e/seed_restricted.py``). Used by ``test_switch_states.py``.
 
 Secrets hygiene: keys are read from the environment and never printed; no
-traces or videos are recorded. The only screenshots are the wiring popover
-evidence in ``test_wiring_popovers.py``, clipped to a control and its popover,
-taken after asserting that no key is on the page.
+traces or videos are recorded. Screenshots are taken only through
+``safe_screenshot`` (or after ``assert_no_secrets``), which first checks that no
+key appears in the page text or in any form field value.
 """
 
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from pathlib import Path
 
 import httpx
 import pytest
@@ -67,6 +72,58 @@ def engine() -> Engine:
         assert resp.status_code in (200, 201), resp.status_code
         client_key = resp.json()["token"]
     return Engine(base=base, operator_key=operator, client_key=client_key, model_path=model_path)
+
+
+@dataclass(frozen=True)
+class RestrictedEngine:
+    """An engine whose model-management and download switches are off."""
+
+    base: str
+    operator_key: str
+
+    def api(self) -> httpx.Client:
+        headers = {"authorization": f"Bearer {self.operator_key}"}
+        return httpx.Client(base_url=self.base, headers=headers, timeout=60.0)
+
+    @property
+    def dashboard(self) -> str:
+        return f"{self.base}/dashboard/"
+
+
+@pytest.fixture(scope="session")
+def restricted() -> RestrictedEngine:
+    base = _required("IE_E2E_RESTRICTED_BASE_URL").rstrip("/")
+    key = _required("IE_E2E_RESTRICTED_OPERATOR_KEY")
+    engine = RestrictedEngine(base=base, operator_key=key)
+    with engine.api() as c:
+        switches = c.get("/admin/system").json()["switches"]
+    # The suite is meaningless against an unrestricted engine: fail, never skip.
+    assert switches["allow_model_management"] is False, "restricted engine has model management on"
+    assert switches["allow_network_downloads"] is False, "restricted engine has downloads on"
+    return engine
+
+
+SHOTS = Path(os.environ.get("IE_E2E_SCREENSHOT_DIR", "e2e-screenshots"))
+
+
+def assert_no_secrets(page: Page, secrets: Iterable[str]) -> None:
+    """No key is in the page text/markup or in any form field's current value."""
+    values = page.eval_on_selector_all("input, textarea", "els => els.map(e => e.value)")
+    content = page.content()
+    for secret in secrets:
+        assert secret, "empty secret"
+        assert secret not in content, "a key is present in the page"
+        assert all(secret not in v for v in values), "a key is present in a form field"
+
+
+def safe_screenshot(
+    page: Page, name: str, secrets: Iterable[str], *, full_page: bool = False
+) -> None:
+    """A viewport (or full-page) screenshot, only after the secrets check."""
+    secrets = list(secrets)
+    assert_no_secrets(page, secrets)
+    SHOTS.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(SHOTS / f"{name}.png"), full_page=full_page, animations="disabled")
 
 
 @pytest.fixture(scope="session")

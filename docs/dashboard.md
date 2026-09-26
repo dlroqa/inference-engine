@@ -25,6 +25,57 @@ wiring.ts + routes.generated.json → WiredTo.tsx → views
   call** means the control itself sends nothing but leads to a request (for
   example, saving a key, after which the dashboard calls `GET /admin/identity`).
 
+## Show wiring
+
+The sidebar's **Show wiring** toggle adds a compact `METHOD /path` chip beside
+every "How this works" hint, one per distinct wired endpoint in that hint. Hints
+for controls that make no backend call get no chip. The chips come from the
+same registry entries as the popovers. The toggle is off by default, and the
+choice is kept in this browser's storage (`ie.dashboard.showWiring`). If storage
+is unavailable, the choice lasts only for the page.
+
+The toggle is in the sidebar brand block because the dashboard has no app-wide
+top bar.
+
+## Feature-switch states
+
+Model actions that a kill switch disables (see
+[Security: kill switches](security.md#kill-switches)) are shown disabled with the
+switch named. For example:
+
+> Model management is disabled (allow_model_management=false).
+
+The state comes from `GET /admin/system` and is read-only. The dashboard never
+changes configuration.
+
+- **Explanation only.** Disabled controls stay visible and are explained. Each
+  disabled button's `aria-describedby` points at the explanation: a shared notice
+  for row actions, and a reason under the Add model form that covers every switch
+  the selected mode needs.
+- **Which actions each switch gates.** This matches the backend:
+  - Import, load, unload and delete need `allow_model_management`.
+  - Download also needs `allow_network_downloads`.
+  - Listing models, model details and cancelling a download are not gated.
+- **One fetch per operator session.** The switch state is fetched once per
+  session and discarded when the key changes, is forgotten, or access is lost. A
+  late answer from an earlier session is ignored.
+- **Refreshes.** The state refreshes from the Models **Refresh** button, when the
+  browser comes back online, and after the engine refuses an action because of a
+  switch.
+- **Unknown state is shown as unknown.** If `/admin/system` cannot be read, the
+  dashboard shows "Feature-switch status unavailable" with **Retry** and leaves
+  actions enabled. The engine still refuses anything a switch disables. If a
+  refresh fails after an earlier success, the last known state is kept and
+  labelled as such.
+- **Actions re-check before sending.** Actions check the switch again when they
+  run, including after a confirmation dialog. The engine remains the authority.
+- **Feature errors vs authorization errors.** Only the feature codes
+  `model_management_disabled`, `downloads_disabled` and `diagnostics_disabled`,
+  with status 403, are reported as a disabled switch. After such an error the
+  dashboard treats that switch as off at once and refreshes. Any other 403,
+  including `operator_role_required`, is reported as an authorization or server
+  error, never as a disabled feature.
+
 ## Documentation links
 
 Registry `docs` references are repository paths with an optional heading

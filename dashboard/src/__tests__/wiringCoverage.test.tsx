@@ -23,6 +23,7 @@ import { Security } from "../views/Security";
 import { Keys } from "../views/Keys";
 import { api, ApiError, setApiKey } from "../lib/api";
 import { LOCAL_CONTROLS, WIRING, explain } from "../lib/wiring";
+import { SystemProvider } from "../hooks/useSystem";
 
 // Coverage of the dashboard's controls by the wiring registry.
 //
@@ -79,7 +80,31 @@ const key = (over: Record<string, unknown>) => ({
 const ok = <T,>(v: T) => Promise.resolve(v as never);
 const boom = () => Promise.reject(new ApiError("engine error", 500));
 
+const systemInfo = (switches: Record<string, boolean> = {}) => ({
+  build: { version: "0.2.0", commit: null, built_at: null },
+  readiness: { ready: true, checks: {}, inference: { available: false } },
+  draining: false,
+  switches: {
+    allow_model_management: true,
+    allow_network_downloads: true,
+    allow_structured_output: true,
+    diagnostics_enabled: true,
+    require_auth: true,
+    webhooks_enabled: false,
+    client_events_enabled: true,
+    ip_allowlist_set: false,
+    grpc_enabled: false,
+    ...switches,
+  },
+  metadata: { grpc_port: null, billing_provider: null },
+  routing: {
+    backend_kind: "llama_cpp", virtual_models: [], workload_routing_enabled: false,
+    workload_rule_count: 0, remote_workers: [], spillover_providers: [],
+  },
+});
+
 function mockApi() {
+  vi.spyOn(api, "system").mockImplementation(() => ok(systemInfo()));
   vi.spyOn(api, "identity").mockImplementation(() =>
     ok({ kind: "key", auth_required: true, key: { id: "k1", prefix: "sk-ie-ab12", label: "owner", role: "operator" } }),
   );
@@ -310,6 +335,33 @@ describe("wiring coverage of dashboard controls", () => {
     audit("Models: error");
   });
 
+  it("Models: management switch off (disabled actions and their notice)", async () => {
+    vi.mocked(api.system).mockImplementation(() =>
+      ok(systemInfo({ allow_model_management: false, allow_network_downloads: false })),
+    );
+    await show(
+      <SystemProvider>
+        <Models />
+      </SystemProvider>,
+      () => screen.findByText(/Loading, unloading and deleting/),
+    );
+    expect(screen.getByRole("button", { name: "Delete ready" })).toBeDisabled();
+    const r = audit("Models: switches off");
+    expect(r.explained).toContain("app.system");
+  });
+
+  it("Models: switch status unavailable, with retry", async () => {
+    vi.mocked(api.system).mockImplementation(boom);
+    await show(
+      <SystemProvider>
+        <Models />
+      </SystemProvider>,
+      () => screen.findByText(/Feature-switch status unavailable/),
+    );
+    const r = audit("Models: switch status unavailable");
+    expect(r.explained).toContain("app.system");
+  });
+
   it("Logs: filtered to a request", async () => {
     await show(<Logs requestId="req-1" onNavigate={vi.fn()} />, () => screen.findByText("Clear request filter"));
     audit("Logs: request filter");
@@ -361,6 +413,14 @@ describe("wiring coverage of dashboard controls", () => {
     expect(r.explained).toEqual(["app.identity", "local.dialog-cancel", "local.saved-key"]);
     // Initial focus stays on the key field, not on the hint.
     expect(screen.getByLabelText("Operator API key")).toHaveFocus();
+  });
+
+  it("App shell: Show wiring on", async () => {
+    await show(<App />, () => screen.findByRole("button", { name: "Show wiring" }));
+    await userEvent.click(screen.getByRole("button", { name: "Show wiring" }));
+    expect(screen.getAllByTestId("wiring-chips").length).toBeGreaterThan(0);
+    expect(audit("App shell: Show wiring on").explained).toContain("local.show-wiring");
+    await userEvent.click(screen.getByRole("button", { name: "Show wiring" }));
   });
 
   it("Gate: sign-in (401)", async () => {

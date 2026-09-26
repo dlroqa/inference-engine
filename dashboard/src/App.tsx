@@ -4,6 +4,8 @@ import { Icon, type IconName } from "./components/Icon";
 import { Dialog } from "./components/Dialog";
 import { WiredTo } from "./components/WiredTo";
 import { buildHash, useHashRoute } from "./hooks/useHashRoute";
+import { SystemProvider } from "./hooks/useSystem";
+import { WiringPrefsProvider, useWiringPrefs } from "./hooks/useWiringPrefs";
 import { Overview } from "./views/Overview";
 import { Monitoring } from "./views/Monitoring";
 import { Clients } from "./views/Clients";
@@ -174,6 +176,29 @@ function IdentityMenu({
   );
 }
 
+// Reveals METHOD /path chips beside every "How this works" button. There is no
+// app-wide topbar, so the toggle lives in the sidebar brand block.
+function ShowWiringToggle(): JSX.Element {
+  const { showWiring, setShowWiring } = useWiringPrefs();
+  return (
+    <div className="row wiring-toggle" data-wiring="local.show-wiring">
+      <button
+        type="button"
+        className="toggle"
+        aria-pressed={showWiring}
+        onClick={() => setShowWiring(!showWiring)}
+      >
+        <Icon name="link" size={16} />
+        Show wiring
+        <span className="toggle-state" aria-hidden="true">
+          {showWiring ? "On" : "Off"}
+        </span>
+      </button>
+      <WiredTo id="local.show-wiring" />
+    </div>
+  );
+}
+
 function NotFound({ view, onHome }: { view: string; onHome: () => void }): JSX.Element {
   return (
     <div className="card col-12" data-wiring="local.navigation">
@@ -189,13 +214,25 @@ function NotFound({ view, onHome }: { view: string; onHome: () => void }): JSX.E
 }
 
 export function App(): JSX.Element {
+  return (
+    <WiringPrefsProvider>
+      <Shell />
+    </WiringPrefsProvider>
+  );
+}
+
+function Shell(): JSX.Element {
   const [route, go] = useHashRoute("overview");
   const [gate, setGate] = useState<GateState>({ kind: "checking" });
   const [changingKey, setChangingKey] = useState(false);
+  // Bumped on every identity check, so switch state never outlives the session
+  // (key submitted, key forgotten, or access lost) it was fetched for.
+  const [session, setSession] = useState(0);
   const main = useRef<HTMLElement>(null);
   const firstRoute = useRef(true);
 
   const check = useCallback(() => {
+    setSession((n) => n + 1);
     setGate({ kind: "checking" });
     api
       .identity()
@@ -304,59 +341,62 @@ export function App(): JSX.Element {
   const params = route.params;
 
   return (
-    <div className="app">
-      <nav className="sidebar" aria-label="Primary">
-        <div className="brand">
-          <span className="dot" /> Inference Engine
-          <WiredTo id="local.navigation" label="Navigation" />
-        </div>
-        {NAV_SECTIONS.map((section) => (
-          <div className="navsection" key={section.label} data-wiring="local.navigation">
-            <div className="navsection-label" id={`nav-${section.label}`}>
-              {section.label}
-            </div>
-            <ul aria-labelledby={`nav-${section.label}`}>
-              {section.items.map((item) => (
-                <li key={item.id}>
-                  <a
-                    className="navbtn"
-                    href={buildHash(item.id)}
-                    aria-current={view === item.id ? "page" : undefined}
-                  >
-                    <Icon name={item.icon} />
-                    {item.label}
-                  </a>
-                </li>
-              ))}
-            </ul>
+    <SystemProvider key={session}>
+      <div className="app">
+        <nav className="sidebar" aria-label="Primary">
+          <div className="brand">
+            <span className="dot" /> Inference Engine
+            <WiredTo id="local.navigation" label="Navigation" />
           </div>
-        ))}
-        <IdentityMenu
-          identity={gate.identity}
-          onChangeKey={() => setChangingKey(true)}
-          onForgetKey={forgetKey}
-        />
-      </nav>
-      <main className="main" ref={main} tabIndex={-1}>
-        {view === "overview" && <Overview />}
-        {view === "monitoring" && <Monitoring onNavigate={navigate} />}
-        {view === "clients" && (
-          <Clients focusClientId={route.segments[0] ?? null} onNavigate={navigate} />
+          <ShowWiringToggle />
+          {NAV_SECTIONS.map((section) => (
+            <div className="navsection" key={section.label} data-wiring="local.navigation">
+              <div className="navsection-label" id={`nav-${section.label}`}>
+                {section.label}
+              </div>
+              <ul aria-labelledby={`nav-${section.label}`}>
+                {section.items.map((item) => (
+                  <li key={item.id}>
+                    <a
+                      className="navbtn"
+                      href={buildHash(item.id)}
+                      aria-current={view === item.id ? "page" : undefined}
+                    >
+                      <Icon name={item.icon} />
+                      {item.label}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+          <IdentityMenu
+            identity={gate.identity}
+            onChangeKey={() => setChangingKey(true)}
+            onForgetKey={forgetKey}
+          />
+        </nav>
+        <main className="main" ref={main} tabIndex={-1}>
+          {view === "overview" && <Overview />}
+          {view === "monitoring" && <Monitoring onNavigate={navigate} />}
+          {view === "clients" && (
+            <Clients focusClientId={route.segments[0] ?? null} onNavigate={navigate} />
+          )}
+          {view === "models" && <Models />}
+          {view === "logs" && <Logs requestId={params.get("request_id") ?? undefined} onNavigate={navigate} />}
+          {view === "security" && <Security />}
+          {view === "keys" && <Keys />}
+          {!VIEW_IDS.has(view) && <NotFound view={view} onHome={() => go(buildHash("overview"))} />}
+        </main>
+        {changingKey && (
+          <Dialog title="Change operator key" onClose={() => setChangingKey(false)}>
+            <p className="muted" style={{ marginTop: 0 }}>
+              The key is stored only in this browser and sent as a Bearer token.
+            </p>
+            <KeyForm onSubmit={submitKey} onCancel={() => setChangingKey(false)} />
+          </Dialog>
         )}
-        {view === "models" && <Models />}
-        {view === "logs" && <Logs requestId={params.get("request_id") ?? undefined} onNavigate={navigate} />}
-        {view === "security" && <Security />}
-        {view === "keys" && <Keys />}
-        {!VIEW_IDS.has(view) && <NotFound view={view} onHome={() => go(buildHash("overview"))} />}
-      </main>
-      {changingKey && (
-        <Dialog title="Change operator key" onClose={() => setChangingKey(false)}>
-          <p className="muted" style={{ marginTop: 0 }}>
-            The key is stored only in this browser and sent as a Bearer token.
-          </p>
-          <KeyForm onSubmit={submitKey} onCancel={() => setChangingKey(false)} />
-        </Dialog>
-      )}
-    </div>
+      </div>
+    </SystemProvider>
   );
 }

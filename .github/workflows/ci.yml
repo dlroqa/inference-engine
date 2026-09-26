@@ -414,24 +414,59 @@ jobs:
       - name: Verify model checksum
         run: echo "${MODEL_SHA256}  $HOME/models/tiny.gguf" | sha256sum -c -
 
-      - name: Run the browser acceptance suite (auth on, no model preloaded)
+      - name: Run the browser acceptance suite (auth on, no model preloaded; plus a restricted engine)
         run: |
+          SRV=""; SEED=""; RSRV=""
+          trap 'kill $SRV $SEED $RSRV 2>/dev/null || true' EXIT
+          # Bounded readiness: fail the step (never continue) if the engine does not come up.
+          wait_healthy() {
+            for _ in $(seq 1 120); do
+              curl -sf "http://127.0.0.1:$1/healthz" >/dev/null 2>&1 && return 0
+              sleep 0.5
+            done
+            echo "::error::engine on port $1 did not become healthy"; return 1
+          }
+          # Owner keys are created with the CLI (shown once) and kept only in this
+          # step's environment; they are masked and never printed.
+          owner_key() {
+            IE_REQUIRE_AUTH=true inference-engine keys create --label owner --data-dir "$1" 2>/dev/null \
+              | python -c 'import sys,json; print(json.load(sys.stdin)["token"])'
+          }
+
           DATA=/tmp/ie-e2e
-          # The owner key is created with the CLI (shown once) and kept only in
-          # this step's environment; it is masked and never printed.
-          OWNER=$(IE_REQUIRE_AUTH=true inference-engine keys create --label owner --data-dir "$DATA" 2>/dev/null \
-            | python -c 'import sys,json; print(json.load(sys.stdin)["token"])')
+          OWNER=$(owner_key "$DATA")
           echo "::add-mask::$OWNER"
           IE_REQUIRE_AUTH=true inference-engine serve --port 8140 --data-dir "$DATA" &
           SRV=$!
-          trap 'kill $SRV 2>/dev/null || true' EXIT
-          for _ in $(seq 1 60); do
-            curl -sf http://127.0.0.1:8140/healthz >/dev/null 2>&1 && break
-            sleep 0.5
-          done
+          wait_healthy 8140
+
+          # Restricted engine (A2b): seed a ready model while management is on,
+          # then restart with model management and downloads off and the fixture
+          # configured as its loaded model. Separate data dir and credential.
+          RDATA=/tmp/ie-e2e-restricted
+          ROWNER=$(owner_key "$RDATA")
+          echo "::add-mask::$ROWNER"
+          mkdir -p /tmp/ie-e2e-seed
+          cp "$HOME/models/tiny.gguf" /tmp/ie-e2e-seed/tiny-ready.gguf
+          IE_REQUIRE_AUTH=true inference-engine serve --port 8141 --data-dir "$RDATA" &
+          SEED=$!
+          wait_healthy 8141
+          IE_SEED_BASE_URL=http://127.0.0.1:8141 \
+          IE_SEED_OPERATOR_KEY="$ROWNER" \
+          IE_SEED_MODEL_PATH=/tmp/ie-e2e-seed/tiny-ready.gguf \
+            python -m e2e.seed_restricted
+          kill "$SEED"; wait "$SEED" || true; SEED=""
+          IE_REQUIRE_AUTH=true IE_ALLOW_MODEL_MANAGEMENT=false IE_ALLOW_NETWORK_DOWNLOADS=false \
+          IE_MODEL_PATH="$HOME/models/tiny.gguf" IE_MODEL_ID=tiny \
+            inference-engine serve --port 8141 --data-dir "$RDATA" &
+          RSRV=$!
+          wait_healthy 8141
+
           IE_E2E_BASE_URL=http://127.0.0.1:8140 \
           IE_E2E_OPERATOR_KEY="$OWNER" \
           IE_E2E_MODEL_PATH="$HOME/models/tiny.gguf" \
+          IE_E2E_RESTRICTED_BASE_URL=http://127.0.0.1:8141 \
+          IE_E2E_RESTRICTED_OPERATOR_KEY="$ROWNER" \
           IE_E2E_SCREENSHOT_DIR=e2e-screenshots \
             python -m pytest e2e -v -p no:cacheprovider --junitxml=e2e-report.xml \
             | tee e2e-output.txt

@@ -19,7 +19,22 @@ vi.mock("../views/Clients", () => ({
     <h1>Clients view {focusClientId ?? "none"}</h1>
   ),
 }));
-vi.mock("../views/Models", () => ({ Models: () => <h1>Models view</h1> }));
+// The Models stub shows the shared feature-switch state so session handling can
+// be observed from the shell.
+vi.mock("../views/Models", async () => {
+  const { useSystem } = await import("../hooks/useSystem");
+  const Models = () => {
+    const sys = useSystem();
+    const v = sys.switchState("allow_model_management");
+    return (
+      <>
+        <h1>Models view</h1>
+        <p data-testid="management">{v === null ? "unknown" : v ? "on" : "off"}</p>
+      </>
+    );
+  };
+  return { Models };
+});
 vi.mock("../views/Logs", () => ({
   Logs: ({ requestId }: { requestId?: string }) => <h1>Logs view {requestId ?? "all"}</h1>,
 }));
@@ -27,13 +42,48 @@ vi.mock("../views/Security", () => ({ Security: () => <h1>Security view</h1> }))
 vi.mock("../views/Keys", () => ({ Keys: () => <h1>Keys view</h1> }));
 
 import { App } from "../App";
-import { api, ApiError, getApiKey, setApiKey, type Identity } from "../lib/api";
+import { api, ApiError, getApiKey, setApiKey, type Identity, type SystemInfo } from "../lib/api";
 
 const operator: Identity = {
   kind: "key",
   auth_required: true,
   key: { id: "k1", prefix: "sk-ie-ab12cd", label: "owner", role: "operator" },
 };
+
+const system = (management: boolean): SystemInfo =>
+  ({
+    build: { version: "0.2.0", commit: null, built_at: null },
+    readiness: { ready: true, checks: {}, inference: { available: false } },
+    draining: false,
+    switches: {
+      allow_model_management: management,
+      allow_network_downloads: true,
+      allow_structured_output: true,
+      diagnostics_enabled: true,
+      require_auth: true,
+      webhooks_enabled: false,
+      client_events_enabled: true,
+      ip_allowlist_set: false,
+      grpc_enabled: false,
+    },
+    metadata: { grpc_port: null, billing_provider: null },
+    routing: {
+      backend_kind: "llama_cpp",
+      virtual_models: [],
+      workload_routing_enabled: false,
+      workload_rule_count: 0,
+      remote_workers: [],
+      spillover_providers: [],
+    },
+  }) as SystemInfo;
+
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
 
 function goTo(hash: string) {
   act(() => {
@@ -45,6 +95,12 @@ function goTo(hash: string) {
 beforeEach(() => {
   window.location.hash = "";
   setApiKey(null);
+  try {
+    localStorage.clear();
+  } catch {
+    /* ignore */
+  }
+  vi.spyOn(api, "system").mockResolvedValue(system(true));
 });
 
 afterEach(() => vi.restoreAllMocks());
@@ -233,5 +289,120 @@ describe("App identity menu", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Forget key" }));
     expect(await screen.findByRole("heading", { name: "Operator access" })).toBeInTheDocument();
     expect(getApiKey()).toBeNull();
+  });
+});
+
+describe("App feature-switch session", () => {
+  it("fetches switch state once per session and shows it", async () => {
+    window.location.hash = "#/models";
+    vi.spyOn(api, "identity").mockResolvedValue(operator);
+    vi.mocked(api.system).mockResolvedValue(system(false));
+    render(<App />);
+    await waitFor(() => expect(screen.getByTestId("management")).toHaveTextContent("off"));
+    expect(api.system).toHaveBeenCalledTimes(1);
+  });
+
+  it("opening and cancelling Change key keeps the session's switch state", async () => {
+    window.location.hash = "#/models";
+    setApiKey("sk-ie-old");
+    vi.spyOn(api, "identity").mockResolvedValue(operator);
+    vi.mocked(api.system).mockResolvedValue(system(false));
+    render(<App />);
+    await waitFor(() => expect(screen.getByTestId("management")).toHaveTextContent("off"));
+    await userEvent.click(screen.getByRole("button", { name: "Change key" }));
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(screen.getByTestId("management")).toHaveTextContent("off");
+    expect(api.system).toHaveBeenCalledTimes(1);
+  });
+
+  it("a new key discards the old session's late switch response", async () => {
+    window.location.hash = "#/models";
+    setApiKey("sk-ie-old");
+    vi.spyOn(api, "identity").mockResolvedValue(operator);
+    const old = deferred<SystemInfo>();
+    const fresh = deferred<SystemInfo>();
+    vi.mocked(api.system).mockReturnValueOnce(old.promise).mockReturnValueOnce(fresh.promise);
+    render(<App />);
+    await screen.findByRole("heading", { name: "Models view" });
+    expect(screen.getByTestId("management")).toHaveTextContent("unknown");
+
+    await userEvent.click(screen.getByRole("button", { name: "Change key" }));
+    const dialog = screen.getByRole("dialog", { name: "Change operator key" });
+    await userEvent.type(within(dialog).getByLabelText("Operator API key"), "sk-ie-new");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(api.system).toHaveBeenCalledTimes(2));
+
+    await act(async () => fresh.resolve(system(true)));
+    expect(screen.getByTestId("management")).toHaveTextContent("on");
+    // The earlier session's answer arrives last and must not win.
+    await act(async () => old.resolve(system(false)));
+    expect(screen.getByTestId("management")).toHaveTextContent("on");
+  });
+
+  it("forgetting the key drops switch state; signing in again fetches it fresh", async () => {
+    window.location.hash = "#/models";
+    setApiKey("sk-ie-old");
+    vi.spyOn(api, "identity")
+      .mockResolvedValueOnce(operator)
+      .mockRejectedValueOnce(new ApiError("required", 401, "operator_access_required"))
+      .mockResolvedValueOnce(operator);
+    vi.mocked(api.system).mockResolvedValueOnce(system(false)).mockResolvedValueOnce(system(true));
+    render(<App />);
+    await waitFor(() => expect(screen.getByTestId("management")).toHaveTextContent("off"));
+    await userEvent.click(screen.getByRole("button", { name: "Forget key" }));
+    await userEvent.type(await screen.findByLabelText("Operator API key"), "sk-ie-next");
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(screen.getByTestId("management")).toHaveTextContent("on"));
+    expect(api.system).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("App Show wiring toggle", () => {
+  it("is off by default, reveals endpoint chips, and persists across reloads", async () => {
+    vi.spyOn(api, "identity").mockResolvedValue(operator);
+    const { unmount } = render(<App />);
+    const toggle = await screen.findByRole("button", { name: "Show wiring" });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByTestId("wiring-chips")).not.toBeInTheDocument();
+
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    // The identity hint is wired: its chip names the real endpoint.
+    const menu = screen.getByRole("region", { name: "Signed-in identity" });
+    expect(within(menu).getByTestId("wiring-chips")).toHaveTextContent("GET /admin/identity");
+    // Local-only hints (navigation) get no chip.
+    const brand = screen.getByRole("button", { name: /How this works: Navigation/ }).closest(".brand") as HTMLElement;
+    expect(within(brand).queryByTestId("wiring-chips")).not.toBeInTheDocument();
+    expect(localStorage.getItem("ie.dashboard.showWiring")).toBe("1");
+
+    unmount();
+    render(<App />);
+    expect(await screen.findByRole("button", { name: "Show wiring" })).toHaveAttribute("aria-pressed", "true");
+
+    await userEvent.click(screen.getByRole("button", { name: "Show wiring" }));
+    expect(screen.queryByTestId("wiring-chips")).not.toBeInTheDocument();
+    expect(localStorage.getItem("ie.dashboard.showWiring")).toBeNull();
+  });
+
+  it("works for the session when browser storage throws", async () => {
+    vi.spyOn(api, "identity").mockResolvedValue(operator);
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    render(<App />);
+    const toggle = await screen.findByRole("button", { name: "Show wiring" });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getAllByTestId("wiring-chips").length).toBeGreaterThan(0);
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
   });
 });
