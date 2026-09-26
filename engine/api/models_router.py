@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, unquote_plus, urlencode, urlsplit, urlunsplit
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
@@ -85,8 +85,9 @@ _SENSITIVE_QUERY_HINTS = ("token", "key", "secret", "sig", "auth", "password", "
 _MASK = "***"
 
 # A URL inside free-form text (an exception message): scheme://... up to
-# whitespace, a quote or a bracket.
-_URL_IN_TEXT = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://[^\s'\"<>()\[\]{}]+")
+# whitespace, a quote, a parenthesis or a brace. Square brackets are allowed:
+# they delimit IPv6 hosts (``https://[::1]:8443/...``).
+_URL_IN_TEXT = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://[^\s'\"<>(){}]+")
 # Userinfo right after "://" (``user:pass@``), for the conservative fallback.
 _USERINFO = re.compile(r"(?<=://)[^/?#\s]*@")
 # A query parameter anywhere in text, e.g. a request target without a scheme
@@ -95,7 +96,18 @@ _QUERY_PARAM = re.compile(r"([?&])([^=&#\s'\"<>]+)=([^&#\s'\"<>]*)")
 
 
 def _is_sensitive(name: str) -> bool:
+    """Whether a query parameter name (already URL-decoded) looks credential-bearing."""
     return any(h in name.lower() for h in _SENSITIVE_QUERY_HINTS)
+
+
+def _is_sensitive_raw(raw_name: str) -> bool:
+    """The same check for a name as written in text (e.g. ``%74oken``).
+
+    The name is decoded exactly once, as ``parse_qsl`` decodes names in a full
+    URL (percent-escapes and ``+``), so both paths classify the same name the
+    same way. Invalid escapes are kept as written; decoding never raises.
+    """
+    return _is_sensitive(unquote_plus(raw_name, errors="replace"))
 
 
 def _conservative_redact(url: str) -> str:
@@ -119,6 +131,8 @@ def redact_source_ref(source_ref: str | None) -> str | None:
     try:
         parts = urlsplit(source_ref)
         netloc = parts.hostname or ""
+        if ":" in netloc:
+            netloc = f"[{netloc}]"  # an IPv6 host keeps its brackets
         if parts.port is not None:
             netloc = f"{netloc}:{parts.port}"
         query = [
@@ -143,7 +157,10 @@ def redact_urls_in_text(text: str | None) -> str | None:
 
     Used for the model ``error`` string, which records raw exception messages
     that can quote the download URL, a redirect target, or a request target.
-    Uses the same sensitive-name policy as :func:`redact_source_ref`. Anything
+    Uses the same sensitive-name policy as :func:`redact_source_ref`: a name is
+    classified after one URL decode, so ``?%74oken=`` is treated as ``?token=``,
+    and the query-parameter pass covers the whole text, so protection does not
+    depend on the URL matcher consuming a complete URL. Anything
     that is not credential-bearing is kept, so the error stays useful. If the
     text cannot be processed at all, it is withheld rather than returned raw.
     """
@@ -157,7 +174,7 @@ def redact_urls_in_text(text: str | None) -> str | None:
     def param(match: re.Match[str]) -> str:
         sep, name, raw = match.groups()
         value, trail = _split_trailing(raw)
-        return f"{sep}{name}={_MASK if _is_sensitive(name) and value else value}{trail}"
+        return f"{sep}{name}={_MASK if _is_sensitive_raw(name) and value else value}{trail}"
 
     try:
         return _QUERY_PARAM.sub(param, _URL_IN_TEXT.sub(url, text))

@@ -19,7 +19,16 @@ from engine.main import create_app
 from engine.models.registry import ModelStatus
 
 LOOPBACK = ("127.0.0.1", 40000)
-SECRETS = ("s3cr3t-pass", "tok-abc123", "sig-deadbeef", "redir-key-999", "pw-malformed")
+SECRETS = (
+    "s3cr3t-pass",
+    "tok-abc123",
+    "sig-deadbeef",
+    "redir-key-999",
+    "pw-malformed",
+    "synthetic-secret",
+    "synthetic-sig",
+    "synthetic-pass",
+)
 
 
 @pytest.fixture
@@ -64,6 +73,29 @@ CASES = {
         "tried http://u:s3cr3t-pass@a.example/m.gguf "
         "then HTTPS://b.example/m.gguf?Signature=sig-deadbeef",
     ),
+    "encoded name in a request target": (
+        "https://cdn.example.com/m.gguf",
+        "URL can't contain control characters. "
+        "'/m.gguf?%74oken=synthetic-secret-1 x' (found at least ' ')",
+    ),
+    "encoded name after &": (
+        "https://cdn.example.com/m.gguf",
+        "bad request target '/m.gguf?v=1&%54OKEN=synthetic-secret-2&lang=en'",
+    ),
+    "mixed-case, plus and percent-encoded names": (
+        "https://cdn.example.com/m.gguf",
+        "rejected ?Api%5FKey=synthetic-secret-3&X%2DAmz%2DSignature=synthetic-sig-3"
+        "&api+key=synthetic-secret-4&lang=en",
+    ),
+    "encoded name in a complete URL": (
+        "https://cdn.example.com/m.gguf?%74oken=synthetic-secret-5",
+        "HTTP 403 fetching https://cdn.example.com/m.gguf?%74oken=synthetic-secret-5",
+    ),
+    "bracketed IPv6 URLs": (
+        "https://u:synthetic-pass-6@[::1]:8443/m.gguf?%73ig=synthetic-sig-6",
+        "fetching https://u:synthetic-pass-6@[::1]:8443/m.gguf?%73ig=synthetic-sig-6 "
+        "then http://[2001:db8::1]/m.gguf?token=synthetic-secret-7",
+    ),
     "malformed port": (
         "https://u:pw-malformed@cdn.example.com:notaport/m.gguf?token=tok-abc123",
         "bad URL https://u:pw-malformed@cdn.example.com:notaport/m.gguf?token=tok-abc123",
@@ -88,7 +120,7 @@ def test_list_and_detail_redact_source_and_error(
     # The error remains useful: it is still there, and any host it named still is.
     redacted = detail.json()["error"]
     assert redacted
-    if "://" in error:
+    if "://" in error and "example" in error:
         assert "example" in redacted
 
 
@@ -131,3 +163,20 @@ def test_helpers_are_conservative_and_never_raise() -> None:
     assert "tok-abc123" not in text
     assert "s3cr3t-pass" not in text
     assert text.startswith("a https://h.example/m?token=***,")
+
+
+def test_encoded_names_keep_harmless_text_and_ipv6_hosts() -> None:
+    text = redact_urls_in_text(
+        "a /m?%74oken=synthetic-secret-8&lang=en, then https://[::1]:8443/m?sig=synthetic-sig-9."
+    )
+    assert text is not None
+    assert "synthetic" not in text
+    # The name's own spelling, harmless values and punctuation are kept.
+    assert "?%74oken=***&lang=en," in text
+    assert text.endswith("https://[::1]:8443/m?sig=***.")
+    # Invalid escapes neither raise nor leak.
+    odd = redact_urls_in_text("?%zz%74oken=synthetic-secret-10&%=x")
+    assert odd is not None and "synthetic" not in odd
+    assert redact_source_ref("https://[::1]:8443/m?%73ig=synthetic-sig-11") == (
+        "https://[::1]:8443/m?sig=***"
+    )

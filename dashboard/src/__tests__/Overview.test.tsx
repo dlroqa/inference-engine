@@ -209,11 +209,20 @@ describe("Live metrics states", () => {
     await screen.findByTestId("engine-readiness");
   });
 
-  it("marks retained data as awaiting refresh after reconnecting, before a new frame", async () => {
-    renderWith({ snapshot, status: "live", fresh: false });
-    expect(screen.getByTestId("metrics-stale")).toHaveTextContent(/until new data arrives/);
-    await screen.findByTestId("engine-readiness");
-  });
+  it.each([
+    ["polling", "Polling", /Connection interrupted — showing the last data received until new data arrives/],
+    ["connecting", "Connecting…", /Connection interrupted — showing the last data received until new data arrives/],
+    ["down", "Disconnected", /Disconnected — showing the last data received; reconnecting/],
+  ] as const)(
+    "the connection badge (%s) and the stale notice agree for retained data",
+    async (status, badge, notice) => {
+      renderWith({ snapshot, status, fresh: false });
+      const badges = screen.getAllByRole("status").filter((n) => n.classList.contains("conn"));
+      expect(badges[0]).toHaveTextContent(badge);
+      expect(screen.getByTestId("metrics-stale")).toHaveTextContent(notice);
+      await screen.findByTestId("engine-readiness");
+    },
+  );
 
   it("shows current data with the Polling state after a successful REST result", async () => {
     renderWith({ snapshot, status: "polling", fresh: true });

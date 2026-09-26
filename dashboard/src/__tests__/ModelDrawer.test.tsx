@@ -110,6 +110,44 @@ describe("Model details drawer", () => {
     expect(within(drawer()).getByRole("button", { name: "Close" })).toBeInTheDocument();
   });
 
+  it("treats a 404 without the model_not_found code as an ordinary error, with Retry", async () => {
+    vi.spyOn(api, "getModel")
+      .mockRejectedValueOnce(new ApiError("request failed (404)", 404))
+      .mockRejectedValueOnce(new ApiError("no route", 404, "not_found"))
+      .mockResolvedValueOnce(model());
+    render(<Models modelId="m1" />);
+    let alert = await within(drawer()).findByRole("alert");
+    expect(alert).toHaveTextContent("request failed (404)");
+    expect(within(drawer()).queryByText(/no longer exists/)).toBeNull();
+    await userEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+    alert = await within(drawer()).findByText(/no route/);
+    expect(within(drawer()).queryByText(/no longer exists/)).toBeNull();
+    await userEvent.click(within(drawer()).getByRole("button", { name: "Retry" }));
+    expect(await within(drawer()).findByTestId("model-details")).toBeInTheDocument();
+  });
+
+  it("keeps the last details, stale, when a background refresh gets an unrelated 404", async () => {
+    vi.spyOn(api, "getModel")
+      .mockResolvedValueOnce(model())
+      .mockRejectedValueOnce(new ApiError("request failed (404)", 404));
+    render(<Models modelId="m1" />);
+    await within(drawer()).findByTestId("model-details");
+    vi.mocked(api.listModels).mockResolvedValue({ models: [model({ loaded: true })] });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    const stale = await within(drawer()).findByRole("alert");
+    expect(stale).toHaveTextContent("Could not refresh these details (request failed (404))");
+    expect(within(drawer()).getByTestId("model-details")).toBeInTheDocument();
+    expect(within(drawer()).queryByText(/no longer exists/)).toBeNull();
+  });
+
+  it("shows not found on a direct link's first load for a genuine model_not_found", async () => {
+    vi.spyOn(api, "listModels").mockResolvedValue({ models: [model()] });
+    vi.spyOn(api, "getModel").mockRejectedValue(new ApiError("model 'x' not found", 404, "model_not_found"));
+    render(<Models modelId="x" />);
+    expect(await within(drawer()).findByText(/no longer exists/)).toBeInTheDocument();
+    expect(within(drawer()).queryByTestId("model-details")).toBeNull();
+  });
+
   it("shows a server error with Retry, and Retry recovers", async () => {
     vi.spyOn(api, "getModel")
       .mockRejectedValueOnce(new ApiError("engine error", 500))

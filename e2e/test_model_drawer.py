@@ -5,6 +5,7 @@ checksum-pinned fixture. The checksum it shows must equal both the workflow's
 pin and the engine's ``GET /admin/models/{id}`` response. The imported file's
 actual path must appear nowhere on the page. Also covered:
 
+- reaching Details with the Tab key from the page content;
 - Escape order (hint popover first, then the drawer);
 - focus return, for an in-app open and for a direct link;
 - Back and Forward;
@@ -59,8 +60,19 @@ def test_model_drawer_keyboard_checksum_history_and_layout(
     details = page.get_by_role("button", name=f"Details for {model['name']}", exact=True)
     dialog = page.get_by_role("dialog", name=f"Model details: {model['name']}")
 
-    # Keyboard open from the list.
-    details.focus()
+    # Keyboard open from the list, reached by real Tab presses: navigating to
+    # Models puts focus on the page content (the shell's focus policy), and Tab
+    # moves through the page in order until this test's own row's Details
+    # button has focus (bounded; nothing focuses it programmatically).
+    expect(details).to_be_visible()
+    expect(page.get_by_role("main")).to_be_focused()
+    for _ in range(150):
+        if details.evaluate("el => el === document.activeElement"):
+            break
+        page.keyboard.press("Tab")
+    else:
+        raise AssertionError(f"Details for {model['name']} not reached within 150 Tab presses")
+    expect(details).to_be_focused()
     page.keyboard.press("Enter")
     expect(dialog).to_be_visible()
     expect(page).to_have_url(re.compile(rf"#/models/{re.escape(model['id'])}$"))

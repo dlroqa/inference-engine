@@ -72,15 +72,19 @@ function fingerprint(m: ModelInfo): string {
   ]);
 }
 
+// Only the engine's own "this model does not exist" answer means absence. Any
+// other 404 (no code, a proxy or routing error) is an ordinary failure.
 function isNotFound(e: unknown): boolean {
-  return e instanceof ApiError && e.status === 404;
+  return e instanceof ApiError && e.status === 404 && e.code === "model_not_found";
 }
 
 // One model's details (GET /admin/models/{id}) for the drawer, kept consistent
 // with the list's polling rather than polling on its own:
 // - a changed list row (or its confirmed disappearance from a successful list
 //   refresh) triggers a background refresh; a list that is loading or failing
-//   is not evidence of anything and triggers nothing;
+//   is not evidence of anything and triggers nothing. The not-found state comes
+//   from the detail endpoint itself (404 model_not_found), on any load,
+//   including the first one from a direct link;
 // - every request is ordered: a superseded response, one for an earlier id, or
 //   one arriving after close or unmount is ignored;
 // - background refreshes are coalesced (one in flight, at most one queued), so

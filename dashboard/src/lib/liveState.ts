@@ -26,5 +26,5 @@ export function staleNotice(view: LiveView): string | null {
   if (view.kind !== "ready" || !view.stale) return null;
   return view.reason === "disconnected"
     ? "Disconnected — showing the last data received; reconnecting…"
-    : "Reconnected — showing the last data received until new data arrives…";
+    : "Connection interrupted — showing the last data received until new data arrives…";
 }

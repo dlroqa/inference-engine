@@ -162,9 +162,15 @@ depends on the data, not only on the connection:
 | --- | --- | --- |
 | None yet | connecting, live or polling | Loading; no numbers (no invented zeros) |
 | None yet | disconnected | Metrics unavailable, reconnecting |
-| Kept from before | disconnected | The last data, marked as not current |
-| Kept from before | reconnected, no new data yet | The last data, marked as awaiting new data |
-| New since the last disconnect | live or polling | Current data |
+| Kept from before | disconnected (fallback failed) | The last data, marked as not current |
+| Kept from before | fallback or reconnect started, no new data yet | The last data, marked as awaiting new data |
+| New since the last disconnect | live (stream) or polling (REST fallback) | Current data |
+
+**Live** is shown only after the stream delivers data. After a disconnect, the
+badge reads **Polling** while the REST fallback is tried and while it delivers,
+and **Disconnected** if it fails. A reconnecting stream takes over at its first
+frame. From then on, an older poll that finishes late cannot replace newer data
+or mark the stream down.
 
 A scheduler that is not running is shown as such. A zero-length queue means
 queueing is off. An average wait of null means no request has waited yet.
@@ -204,8 +210,10 @@ otherwise the card gives the engine's reason. A source name alone, such as
 separate loop:
 
 - A changed row refreshes the details.
-- A row that is gone after a successful list refresh leads to the engine's
-  "not found".
+- A row that is gone after a successful list refresh triggers a refetch.
+- **Not found** is shown only when the details request returns the engine's
+  `404 model_not_found`. That can happen on any load, including the first one
+  from a direct link. Any other 404 is an ordinary error, with Retry.
 - A failed refresh keeps the last details, marked as not current, with Retry.
 
 **Navigation and focus.**
@@ -233,6 +241,12 @@ block:
    (`UPDATE_WIRING_DOCS=1`) and prints the diff.
 2. It uploads the complete generated file as the `wiring-docs` artifact.
 3. It then restores the tracked file and fails on drift.
+
+The step is `scripts/ci_wiring_docs.sh`. Its restore runs from an EXIT trap.
+Each failure is reported by name: generation, capturing the document, the diff,
+or the restore. A failed restore fails the step even when nothing else failed.
+`scripts/ci_wiring_docs_harness.sh` runs in the same job and tests these failure
+paths against throwaway repositories.
 
 To update, copy the generated block into this page and commit it.
 

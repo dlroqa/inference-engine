@@ -144,6 +144,13 @@ jobs:
       - name: Runner inventory
         run: python3 scripts/runner_inventory.py --job "Operator dashboard (build + tests)"
 
+      - name: Wiring docs step failure paths (harness)
+        # Runs scripts/ci_wiring_docs.sh against throwaway repositories with a
+        # stand-in generator: generator failure after mutation, drift, failed
+        # restore (with and without drift), truncation, missing dependencies.
+        shell: bash
+        run: bash scripts/ci_wiring_docs_harness.sh
+
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -174,51 +181,14 @@ jobs:
 
       - name: Wiring docs (generated diff)
         # Regenerates the UI -> subsystem -> endpoint table in the root
-        # docs/dashboard.md from the registry, prints the complete diff (bounded
-        # in the log, whole in the artifact), restores the tracked file, and
-        # fails on drift. It also runs after a failed vitest step so drift can
-        # be diagnosed in one run. Nothing is committed from CI.
+        # docs/dashboard.md, captures the complete document and diff, restores
+        # the tracked file (EXIT trap; a failed restore fails the step), and
+        # fails on drift, naming any failed operation. It also runs after a
+        # failed vitest step so drift can be diagnosed in one run. Nothing is
+        # committed from CI. See scripts/ci_wiring_docs.sh.
         if: ${{ !cancelled() }}
         shell: bash
-        run: |
-          set +e -u
-          root="$GITHUB_WORKSPACE"
-          out="$RUNNER_TEMP/wiring-docs"
-          mkdir -p "$out"
-          if [ ! -d "$root/dashboard/node_modules" ]; then
-            echo "::error::Wiring docs not generated: dashboard dependencies are not installed (an earlier step failed)."
-            exit 1
-          fi
-          (cd "$root/dashboard" && npm run docs:wiring)
-          gen=$?
-          cp "$root/docs/dashboard.md" "$out/dashboard.md"
-          git -C "$root" diff --no-color -- docs/dashboard.md > "$out/wiring-docs.diff"
-          diff_status=$?
-          git -C "$root" checkout -- docs/dashboard.md
-          size=$(wc -c < "$out/wiring-docs.diff")
-          limit=60000
-          {
-            echo "### Wiring docs (generated)"
-            if [ "$gen" -ne 0 ]; then
-              echo "Generation FAILED (exit $gen); see the step log. The diff below may be incomplete."
-            fi
-            if [ "$diff_status" -ne 0 ]; then
-              echo "git diff FAILED (exit $diff_status)."
-            elif [ "$size" -eq 0 ]; then
-              echo "No drift: docs/dashboard.md matches the registry."
-            else
-              echo "Drift: $size bytes of diff. Copy the generated block from the \`wiring-docs\` artifact (dashboard.md)."
-              if [ "$size" -gt "$limit" ]; then
-                echo "**Truncated:** showing the first $limit of $size bytes; the complete diff is in the artifact."
-              fi
-              echo '```diff'
-              head -c "$limit" "$out/wiring-docs.diff"
-              echo
-              echo '```'
-            fi
-          } | tee -a "$GITHUB_STEP_SUMMARY"
-          if [ "$gen" -ne 0 ]; then exit "$gen"; fi
-          if [ "$diff_status" -ne 0 ] || [ "$size" -ne 0 ]; then exit 1; fi
+        run: bash scripts/ci_wiring_docs.sh "$GITHUB_WORKSPACE" "$RUNNER_TEMP/wiring-docs"
 
       - name: Upload generated wiring docs
         if: ${{ !cancelled() }}
