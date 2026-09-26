@@ -15,9 +15,9 @@ from engine.config import Settings
 from engine.main import create_app
 from engine.quota.store import UsageStore
 from tests.support.fake_backend import FakeBackend
+from tests.support.operator import operator_client
 
 MODEL_ID = "fake-model"
-LOOPBACK = ("127.0.0.1", 40000)
 
 
 def _app(tmp_path: Path, **overrides: object) -> tuple[object, Settings]:
@@ -37,7 +37,7 @@ def test_requires_operator(tmp_path: Path) -> None:
 
 def test_attribution_rollup_matches_usage(tmp_path: Path) -> None:
     app, settings = _app(tmp_path)
-    with TestClient(app, client=LOOPBACK) as client:
+    with operator_client(app, settings) as client:  # type: ignore[arg-type]
         billing = BillingStore(settings.db_path)  # type: ignore[arg-type]
         keys = KeyStore(settings.db_path)  # type: ignore[arg-type]
         usage = UsageStore(settings.db_path)  # type: ignore[arg-type]
@@ -69,7 +69,7 @@ def test_attribution_rollup_matches_usage(tmp_path: Path) -> None:
 
 def test_error_taxonomy_counts(tmp_path: Path) -> None:
     app, settings = _app(tmp_path)
-    with TestClient(app, client=LOOPBACK) as client:
+    with operator_client(app, settings) as client:  # type: ignore[arg-type]
         # Emit categorized error log records via the request-error logger path.
         from engine.api.errors import log_request_error
         from engine.telemetry.taxonomy import ErrorCategory
@@ -101,7 +101,7 @@ def test_error_taxonomy_counts(tmp_path: Path) -> None:
 
 def test_alerts_reflect_signals(tmp_path: Path) -> None:
     app, settings = _app(tmp_path)
-    with TestClient(app, client=LOOPBACK) as client:
+    with operator_client(app, settings) as client:  # type: ignore[arg-type]
         billing = BillingStore(settings.db_path)  # type: ignore[arg-type]
         webhooks = WebhookStore(settings.db_path)  # type: ignore[arg-type]
         billing.create_client(id="c1")
@@ -121,6 +121,6 @@ def test_alerts_reflect_signals(tmp_path: Path) -> None:
 
 def test_alerts_empty_when_healthy(tmp_path: Path) -> None:
     app, settings = _app(tmp_path)
-    with TestClient(app, client=LOOPBACK) as client:
+    with operator_client(app, settings) as client:  # type: ignore[arg-type]
         BillingStore(settings.db_path).create_client(id="c1")  # type: ignore[arg-type]
         assert client.get("/admin/alerts").json()["alerts"] == []

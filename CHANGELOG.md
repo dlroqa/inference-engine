@@ -8,6 +8,30 @@ release notes and refuses to publish without it (see `docs/releasing.md`).
 
 ## [Unreleased]
 
+### Security
+
+- Operator surfaces (`/admin/*`, `/metrics`, `/logs`, `/diagnostics`, `/ws/*`)
+  now reject keys owned by a billing client with `403 operator_role_required`,
+  and evaluate presented credentials before the loopback exception: invalid or
+  revoked keys are refused from localhost too, and keyless loopback access is
+  allowed only while effective authentication is off. Previously any valid key,
+  including a client's, opened every operator endpoint.
+- Credential query values (e.g. the dashboard's WebSocket `?api_key=`) are
+  redacted from server log lines and the stored log buffer.
+
+### Added
+
+- `GET /admin/identity` (current operator key metadata or local-dev identity,
+  never a token) and `GET /admin/system` (read-only build, readiness, feature
+  switches as booleans, and a redacted routing summary).
+- API key listings include `role` (`operator`/`client`) and `client_id`.
+- Model responses redact credentials from `source_ref` URLs.
+- Dashboard: shareable URLs (hash routing) with working back/forward, an
+  identity/key menu with change and forget, distinct screens for a missing key,
+  a client key, and an unreachable engine, confirmation dialogs for destructive
+  actions, a server-side request-id log filter, per-endpoint webhook deliveries,
+  and a visible error when an audit verification request fails.
+
 ## [0.1.1] - 2026-09-25
 
 First published prebuilt image. `v0.1.0` was tagged, but its publish job stopped

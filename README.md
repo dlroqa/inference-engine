@@ -368,9 +368,11 @@ definitions and limitations are in [docs/operability.md](docs/operability.md).
 | `GET /logs` | Recent structured log events (filter by `level`, `request_id`). |
 | `GET /diagnostics` | A redacted support bundle (config + hardware + metrics + recent logs). |
 
-All five are gated to **loopback development use or an authenticated operator**
-(a valid API key via `Authorization: Bearer …`, `x-api-key:`, or `?api_key=` on
-the WebSocket). Example:
+All five are gated to an **operator** API key (via `Authorization: Bearer …`,
+`x-api-key:`, or `?api_key=` on the WebSocket), or keyless loopback development
+use while auth is off. Client-owned keys get `403`; invalid, revoked, or missing
+keys get `401` even from localhost when auth is on — see
+[docs/operability.md](docs/operability.md#access-control). Example:
 
 ```bash
 curl -s http://127.0.0.1:8000/metrics | jq .energy
@@ -480,7 +482,8 @@ by the typed admin API and the Block 4 WebSocket feeds:
   with an on-demand hash-chain **integrity check**.
 
 **Access:** the SPA is served to anyone who can reach the route, but every data
-endpoint it calls is gated (loopback dev use or a valid operator API key), so the
+endpoint it calls is gated (an operator API key, or keyless loopback dev use while
+auth is off), so the
 UI is useless without authorization when the engine is network-bound — access
 control never relies on the obscurity of the route. When a call returns `401`, the
 dashboard prompts for an operator key (sent as a Bearer token and, for WebSockets,
@@ -590,7 +593,9 @@ push/PR (and on demand via **workflow_dispatch**):
   integration test, and **renders a real completion** (uploaded as the
   `real-generation` artifact and shown in the run summary). This is the canonical
   place the llama.cpp path is exercised, since local dev CPUs may lack AVX. It
-  also runs the dashboard control-plane smoke and the **model-lifecycle smoke**
+  also runs the dashboard control-plane smoke in real-model mode (the model must
+  load and generate, and `/admin/system` must report inference available — no
+  silent skip) and the **model-lifecycle smoke**
   (import → load → generate → unload → delete on the real model), and runs on
   demand via **workflow_dispatch**.
 - **`dashboard`**: installs the SPA deps, type-checks, runs the **vitest**
@@ -600,10 +605,23 @@ push/PR (and on demand via **workflow_dispatch**):
   `python -m build` (so the wheel bundles the SPA), installs the wheel into a clean
   virtualenv, and smoke-tests the packaged CLI (`version` / `migrate`), the running
   server's health + `/metrics` + served `/dashboard`, and the dashboard
-  control-plane smoke. The distributable is verified, not just the source tree.
-- **`ci-success`**: a single aggregator gate that passes only when **all** of the
-  above jobs succeed (`test`, `dashboard`, `integration-llama`, `build`; failing if
-  any failed or was skipped). Use it as the one required status check.
+  control-plane smoke in explicit no-model mode (the `/admin/system` contract is
+  still checked). The distributable is verified, not just the source tree.
+- **`cross-platform`** (Windows + macOS): builds the wheel and runs the portable
+  test suite against it.
+- **`browser-acceptance`**: drives the built dashboard in Chromium against a
+  running engine (auth on) with the checksum-pinned real GGUF — login, client-key
+  denial, deep links/history, keyboard confirmations, and model import → load →
+  generation, each checked on the backend too.
+- **`container`**: builds the Docker image and smokes health, `/version`, the
+  dashboard, non-root user, and graceful drain.
+- **`ci-success`**: a single aggregator gate that passes only when **all** required
+  jobs succeed (`test`, `cross-platform`, `dashboard`, `browser-acceptance`,
+  `integration-llama`, `build`, `container`); any failed, cancelled, or skipped job
+  fails it (the release workflow alone may skip `container`, since it builds its
+  own candidate image). `security-audit` is advisory. Use `ci-success` as the one
+  required status check. Every job records its runner inventory (OS, arch, CPU,
+  RAM, disk, toolchain) in the run summary.
 
 Future build/render/test needs are added here as jobs (e.g. real-SDK contract
 tests against a live model, the React/Vite dashboard build + screenshots, Docker
@@ -644,7 +662,7 @@ engine/
 │   ├── billing_router.py # /billing/webhooks/stripe, /admin/billing/* (Block 11)
 │   ├── client_router.py  # /client/me, /plan, /usage, /services (Block 11.4); /client/events[/stream] (11.5)
 │   ├── monitoring_router.py # /admin/usage/attribution, /errors/taxonomy, /alerts (11.6a)
-│   ├── deps.py         # operator access gate (loopback or valid key)
+│   ├── deps.py         # operator access gate (operator key; loopback dev if auth off)
 │   └── errors.py       # OpenAI error envelope + structured error logging
 ├── backup.py           # database + config backup/restore
 ├── buildinfo.py        # release/build metadata (version, commit, date)

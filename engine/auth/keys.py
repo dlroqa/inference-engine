@@ -18,6 +18,8 @@ from pathlib import Path
 from engine.store.db import connect
 
 KEY_PREFIX = "sk-ie-"
+ROLE_OPERATOR = "operator"
+ROLE_CLIENT = "client"
 _PREFIX_DISPLAY_LEN = 12  # e.g. "sk-ie-ab12" — non-secret, for display/lookup
 
 
@@ -37,10 +39,21 @@ class KeyRecord:
     created_at: str
     last_used_at: str | None
     revoked_at: str | None
+    #: Owning billing client (Block 11), or ``None`` for an operator key.
+    client_id: str | None = None
 
     @property
     def revoked(self) -> bool:
         return self.revoked_at is not None
+
+    @property
+    def role(self) -> str:
+        """``"client"`` for a key owned by a billing client, else ``"operator"``.
+
+        Derived from ``api_keys.client_id`` (migration 0006): client-owned keys may
+        call inference and ``/client/*`` but never operator surfaces.
+        """
+        return ROLE_CLIENT if self.client_id is not None else ROLE_OPERATOR
 
 
 def _row_to_record(row: sqlite3.Row) -> KeyRecord:
@@ -51,6 +64,7 @@ def _row_to_record(row: sqlite3.Row) -> KeyRecord:
         created_at=row["created_at"],
         last_used_at=row["last_used_at"],
         revoked_at=row["revoked_at"],
+        client_id=row["client_id"] if "client_id" in row.keys() else None,
     )
 
 

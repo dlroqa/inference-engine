@@ -5,9 +5,11 @@
 - ``/ws/feed`` streams the inference live feed (request start/progress/end/error),
   replaying the recent-event ring buffer first so a late joiner has context.
 
-Both are gated to authenticated operator use or loopback development use (see
-:meth:`Gateway.operator_allowed`). Access is checked *before* accepting the
-socket; unauthorized clients are closed with policy-violation code 1008.
+Both use the same operator gate as the HTTP surfaces (see
+:meth:`Gateway.operator_access`): client-owned, invalid, or missing keys are
+refused, and keyless loopback use is allowed only while effective auth is off.
+Access is checked *before* accepting the socket; unauthorized clients are closed
+with policy-violation code 1008.
 """
 
 from __future__ import annotations

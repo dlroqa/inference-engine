@@ -15,6 +15,17 @@ drain, backup) are in [docs/deployment.md](deployment.md).
   Caddy, or Traefik in front, terminate TLS there, and forward to the app on a
   private interface. See the proxy example in [docs/deployment.md](deployment.md).
 
+## Operator access
+
+Operator surfaces (`/admin/*`, `/metrics`, `/logs`, `/diagnostics`, `/ws/*`)
+accept only **operator** keys. A key created for a billing client is a *client*
+key: it can call inference and `/client/*`, but operator surfaces answer
+`403 operator_role_required` — from localhost too. Credentials are evaluated
+before the loopback development exception, which applies only to keyless callers
+while effective auth is off. `GET /admin/identity` reports the caller's key id,
+safe prefix, label, and role (never the token). Full precedence table:
+[docs/operability.md](operability.md#access-control).
+
 ## Trusted-network / IP policy
 
 `ip_allowlist` (a list of CIDRs) restricts which client addresses may reach **any**

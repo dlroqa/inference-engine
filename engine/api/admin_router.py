@@ -8,10 +8,13 @@ A small, typed control surface the dashboard consumes:
 - ``GET  /admin/keys``          — list API keys (no secrets).
 - ``POST /admin/keys``          — create a key (token returned **once**).
 - ``DELETE /admin/keys/{id}``   — revoke a key.
+- ``GET  /admin/identity``      — who the current operator caller is (never a token).
+- ``GET  /admin/system``        — version, readiness, feature switches (booleans),
+  and a routing-config summary — redacted, read-only.
 
-Every endpoint is behind :func:`require_operator` (loopback dev use or a valid
-API key). Model control acts on the single configured GGUF model (Block 1); a
-full model catalog is a later block.
+Every endpoint is behind :func:`require_operator` (an operator key, or keyless
+loopback development use while effective auth is off). Model control acts on the
+single configured GGUF model (Block 1); a full model catalog is a later block.
 """
 
 from __future__ import annotations
@@ -23,7 +26,9 @@ from pydantic import BaseModel, Field
 
 from engine.api.deps import operator_identity, require_operator
 from engine.api.errors import OpenAIError
+from engine.api.health import readiness_state
 from engine.auth.keys import KeyStore
+from engine.buildinfo import build_info
 from engine.inference.base import InferenceBackend
 from engine.inference.factory import build_backend
 from engine.inference.types import BackendError, BackendState
@@ -203,6 +208,8 @@ def list_keys(request: Request) -> dict[str, Any]:
                 "created_at": r.created_at,
                 "last_used_at": r.last_used_at,
                 "revoked": r.revoked,
+                "role": r.role,
+                "client_id": r.client_id,
             }
             for r in store.list()
         ]
@@ -314,3 +321,72 @@ def audit_log(
             "first_bad_id": result.first_bad_id,
         }
     return body
+
+
+@router.get("/identity")
+def identity(request: Request) -> dict[str, Any]:
+    """Who is calling: the presented operator key's safe metadata, or local dev.
+
+    Never returns the token. With keyless loopback development access (effective
+    auth off) the identity is reported explicitly as ``local``.
+    """
+    decision = require_operator(request)
+    settings = request.app.state.settings
+    key = decision.key
+    return {
+        "kind": "key" if key is not None else "local",
+        "auth_required": settings.effective_require_auth(),
+        "key": (
+            {"id": key.id, "prefix": key.prefix, "label": key.label, "role": key.role}
+            if key is not None
+            else None
+        ),
+    }
+
+
+def system_summary(request: Request) -> dict[str, Any]:
+    """The redacted, read-only system description used by ``/admin/system``.
+
+    Feature switches are booleans only; the gRPC port and billing provider are
+    separate typed metadata. No URLs, credentials, secrets, or prompts appear.
+    """
+    settings = request.app.state.settings
+    ready, checks, inference = readiness_state(request)
+    scheduler = getattr(request.app.state, "scheduler", None)
+    return {
+        "build": build_info(),
+        "readiness": {"ready": ready, "checks": checks, "inference": inference},
+        "draining": bool(scheduler is not None and scheduler.is_draining),
+        "switches": {
+            "allow_model_management": bool(settings.allow_model_management),
+            "allow_network_downloads": bool(settings.allow_network_downloads),
+            "allow_structured_output": bool(settings.allow_structured_output),
+            "diagnostics_enabled": bool(settings.diagnostics_enabled),
+            "require_auth": bool(settings.effective_require_auth()),
+            "webhooks_enabled": bool(settings.webhooks_enabled),
+            "client_events_enabled": bool(settings.client_events_enabled),
+            "ip_allowlist_set": bool(settings.ip_allowlist),
+            "grpc_enabled": bool(settings.grpc_enabled),
+        },
+        "metadata": {
+            "grpc_port": settings.grpc_port if settings.grpc_enabled else None,
+            "billing_provider": settings.billing_provider or None,
+        },
+        "routing": {
+            "backend_kind": settings.backend_kind,
+            "virtual_models": [
+                {"name": vm.name, "policy": vm.policy} for vm in settings.virtual_models
+            ],
+            "workload_routing_enabled": bool(settings.workload_routing_enabled),
+            "workload_rule_count": len(settings.workload_routing_rules),
+            "remote_workers": [w.name for w in settings.remote_workers],
+            "spillover_providers": [p.name for p in settings.external_providers],
+        },
+    }
+
+
+@router.get("/system")
+def system(request: Request) -> dict[str, Any]:
+    """Read-only system state for the operator UI (configuration is not editable)."""
+    require_operator(request)
+    return system_summary(request)

@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Security } from "../views/Security";
-import { api } from "../lib/api";
+import { api, ApiError } from "../lib/api";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -36,5 +36,18 @@ describe("Security view", () => {
     await screen.findByText("No audit records yet.");
     await userEvent.click(screen.getByRole("button", { name: /Verify integrity/ }));
     expect(await screen.findByText(/Tamper detected — first bad record id 2/)).toBeInTheDocument();
+  });
+
+  it("reports a failed verification request instead of hiding it", async () => {
+    const spy = vi.spyOn(api, "audit");
+    spy.mockResolvedValueOnce({ events: [] });
+    spy.mockRejectedValueOnce(new ApiError("engine restarting", 503));
+    render(<Security />);
+    await screen.findByText("No audit records yet.");
+    await userEvent.click(screen.getByRole("button", { name: /Verify integrity/ }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Integrity check could not run: engine restarting",
+    );
+    expect(screen.queryByText(/Hash chain verified/)).not.toBeInTheDocument();
   });
 });

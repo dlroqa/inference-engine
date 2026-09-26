@@ -1,0 +1,108 @@
+name: Dashboard dependency audit
+
+# Maintenance tool (docs/releasing.md): audits the dashboard lockfile and shows
+# what a *non-forced* `npm audit fix` would change, then validates that preview
+# (typecheck, component tests, SPA build) and re-audits it. It never pushes or
+# publishes anything: the lockfile diff is printed so a maintainer can apply it
+# in a reviewed PR, where the full CI + Release dry run qualifies it.
+#
+# Runs on demand, or on a push to a `ci/dashboard-deps*` branch (so it can be
+# used before this file reaches main, where workflow_dispatch becomes available).
+# A `ci/dashboard-deps-major*` branch additionally previews the semver-major
+# upgrade npm names as the fix (vite, vitest), for review — still never pushed.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["ci/dashboard-deps*"]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  audit-fix-preview:
+    name: npm audit + non-forced fix preview
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Runner inventory
+        run: python3 scripts/runner_inventory.py --job "Dashboard dependency audit"
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
+      - name: Install from the committed lockfile
+        working-directory: dashboard
+        run: |
+          node --version && npm --version
+          npm ci
+
+      - name: Audit before (committed lockfile)
+        working-directory: dashboard
+        run: |
+          npm audit --json > ../audit-before.json || true
+          python3 ../scripts/npm_audit_report.py ../audit-before.json \
+            --package-json package.json --title "npm audit — committed lockfile"
+          echo "### Dependency paths (npm ls) for audited packages" >> "$GITHUB_STEP_SUMMARY"
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, subprocess
+          report = json.load(open("../audit-before.json"))
+          for name in sorted(report.get("vulnerabilities", {})):
+              out = subprocess.run(["npm", "ls", name, "--all"], capture_output=True, text=True)
+              print(f"\n`npm ls {name}`\n```\n{out.stdout.strip()}\n```")
+          PY
+
+      - name: Non-forced fix (lockfile only within declared ranges)
+        working-directory: dashboard
+        run: |
+          npm audit fix || true
+          echo "### Proposed dependency changes"
+          git --no-pager diff --stat -- package.json package-lock.json
+          git --no-pager diff -- package.json package-lock.json
+
+      - name: Audit after (preview)
+        working-directory: dashboard
+        run: |
+          npm audit --json > ../audit-after.json || true
+          python3 ../scripts/npm_audit_report.py ../audit-after.json \
+            --package-json package.json --title "npm audit — after non-forced fix"
+
+      - name: Validate the preview (typecheck, tests, build)
+        working-directory: dashboard
+        run: |
+          npm ci
+          npm run typecheck
+          npm run test:run
+          npm run build
+
+      - name: Semver-major upgrade preview (major branches only)
+        if: startsWith(github.ref_name, 'ci/dashboard-deps-major')
+        working-directory: dashboard
+        run: |
+          git checkout -- package.json package-lock.json
+          npm install --save-dev vite@8 vitest@5 @vitejs/plugin-react@latest
+          echo "### Proposed semver-major changes"
+          git --no-pager diff -- package.json
+          git --no-pager diff --stat -- package-lock.json
+          npm ls vite vitest @vitejs/plugin-react esbuild || true
+          npm audit --json > ../audit-major.json || true
+          python3 ../scripts/npm_audit_report.py ../audit-major.json \
+            --package-json package.json --title "npm audit — semver-major preview"
+          npm run typecheck
+          npm run test:run
+          npm run build
+          test -f ../engine/static/index.html
+          # Emit the exact generated manifests (line-prefixed, with checksums) so a
+          # maintainer can apply them verbatim in a PR; nothing is pushed from here.
+          for f in package.json package-lock.json; do
+            echo "MANIFEST-SHA256 $f $(sha256sum "$f" | cut -d' ' -f1)"
+            sed "s/^/MANIFEST|$f|/" "$f"
+          done

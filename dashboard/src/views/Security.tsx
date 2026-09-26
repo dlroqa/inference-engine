@@ -1,5 +1,5 @@
 import { useState, type JSX } from "react";
-import { api, type AuditPage } from "../lib/api";
+import { api, ApiError, type AuditPage } from "../lib/api";
 import { useAsync } from "../hooks/useAsync";
 import { AsyncBoundary } from "../components/Panel";
 import { Badge } from "../components/widgets";
@@ -9,15 +9,22 @@ import { clockTime } from "../lib/format";
 export function Security(): JSX.Element {
   const [verify, setVerify] = useState<AuditPage["verify"] | null>(null);
   const [verifying, setVerifying] = useState(false);
+  const [verifyError, setVerifyError] = useState<string | null>(null);
   const { status, data, error, reload } = useAsync(() => api.audit({ limit: 200 }), []);
 
   const runVerify = async () => {
     setVerifying(true);
+    setVerifyError(null);
     try {
       const res = await api.audit({ limit: 1000, verify: true });
       setVerify(res.verify ?? null);
-    } catch {
+    } catch (err) {
+      // A failed request is not a verification result: say so instead of
+      // silently showing nothing.
       setVerify(null);
+      setVerifyError(
+        `Integrity check could not run: ${err instanceof ApiError ? err.message : String(err)}`,
+      );
     } finally {
       setVerifying(false);
     }
@@ -39,6 +46,12 @@ export function Security(): JSX.Element {
           </button>
         </div>
       </div>
+
+      {verifyError && (
+        <div className="banner err" role="alert">
+          {verifyError}
+        </div>
+      )}
 
       {verify && (
         <div className={`banner ${verify.ok ? "info" : "err"}`} role="status">

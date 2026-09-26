@@ -147,3 +147,18 @@ docker buildx imagetools inspect ghcr.io/dlroqa/inference-engine:vX.Y.Z   # same
 GPU images will be separate artifacts (e.g. `vX.Y.Z-cuda12`) with their own base
 image, hardware-qualified test runner, SBOM, and attestations. CUDA/ROCm libraries
 never go into the CPU image.
+
+## Dashboard dependencies (npm)
+
+The dashboard lockfile (`dashboard/package-lock.json`) is audited in every CI run
+(`npm audit` in the `dashboard` job, summarized by `scripts/npm_audit_report.py`
+in the run summary). The report is informational — it does not gate the build —
+and it distinguishes a completed audit from one that could not run.
+
+To remediate, use the **Dashboard dependency audit** workflow
+(`.github/workflows/dashboard-deps.yml`; run it from Actions, or push a
+`ci/dashboard-deps*` branch). It prints each finding's dependency path, the
+lockfile diff a *non-forced* `npm audit fix` produces, and the re-audit of that
+preview, then typechecks, tests, and builds it. Apply the printed diff in a PR so
+the full CI and Release dry run qualify it. Never use `npm audit fix --force`
+blindly: semver-major upgrades need their own review.

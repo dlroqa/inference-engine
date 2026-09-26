@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type JSX } from "react";
+import { useMemo, useState, type JSX } from "react";
 import { api, type LogEvent } from "../lib/api";
 import { useAsync } from "../hooks/useAsync";
 import { AsyncBoundary } from "../components/Panel";
@@ -14,18 +14,24 @@ function levelTone(level: string): "danger" | "warn" | "neutral" {
   return "neutral";
 }
 
-export function Logs({ initialQuery }: { initialQuery?: string } = {}): JSX.Element {
-  const [level, setLevel] = useState("");
-  const [query, setQuery] = useState(initialQuery ?? "");
+type NavFn = (view: string, opts?: { logQuery?: string }) => void;
 
-  // Apply a cross-linked filter (e.g. a request id from Monitoring) when it changes.
-  useEffect(() => {
-    if (initialQuery !== undefined) setQuery(initialQuery);
-  }, [initialQuery]);
-  const { status, data, error, reload } = useAsync(
-    () => api.logs({ limit: 200, level: level || undefined }),
-    [level],
-  );
+export function Logs({
+  requestId,
+  onNavigate,
+}: { requestId?: string; onNavigate?: NavFn } = {}): JSX.Element {
+  const [level, setLevel] = useState("");
+  const [query, setQuery] = useState("");
+
+  // A request id (e.g. linked from Monitoring, or in the URL) is filtered on the
+  // server, so it finds the request's events however old they are — not only
+  // within the most recent page.
+  const { status, data, error, reload } = useAsync(() => {
+    const params: { limit: number; level?: string; request_id?: string } = { limit: 200 };
+    if (level) params.level = level;
+    if (requestId) params.request_id = requestId;
+    return api.logs(params);
+  }, [level, requestId]);
 
   const rows = useMemo(() => {
     const events = data?.events ?? [];
@@ -50,6 +56,16 @@ export function Logs({ initialQuery }: { initialQuery?: string } = {}): JSX.Elem
       </div>
 
       <div className="card col-12">
+        {requestId && (
+          <div className="banner info row spread" role="status">
+            <span>
+              Showing events for request <span className="mono">{requestId}</span>
+            </span>
+            <button className="btn" onClick={() => onNavigate?.("logs")}>
+              Clear request filter
+            </button>
+          </div>
+        )}
         <div className="row" style={{ marginBottom: 16 }}>
           <div className="field" style={{ margin: 0 }}>
             <label htmlFor="lvl">Level</label>

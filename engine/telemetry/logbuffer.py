@@ -22,6 +22,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+from engine.logging_setup import redact_secrets
 from engine.store.db import connect
 
 # Extra fields we lift from ``logger.info(..., extra={...})`` into columns.
@@ -52,7 +53,7 @@ class LogCollector(logging.Handler):
             "ts": record.created,
             "level": record.levelname,
             "logger": record.name,
-            "event": record.getMessage(),
+            "event": redact_secrets(record.getMessage()),
         }
         for field in _STRUCTURED_FIELDS:
             value = getattr(record, field, None)

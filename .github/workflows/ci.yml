@@ -46,6 +46,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
+      - name: Runner inventory
+        run: python scripts/runner_inventory.py --job "Lint, type-check, test & coverage (${{ matrix.python-version }})"
+
       - name: Install
         run: |
           python -m pip install --upgrade pip
@@ -55,10 +58,15 @@ jobs:
         run: ruff check --output-format=github .
 
       - name: Ruff (format check)
-        run: ruff format --check .
+        run: ruff format --check --diff .
 
       - name: Mypy (type check)
         run: mypy
+
+      - name: Route inventory is current (dashboard wiring drift guard)
+        # The dashboard's "wired to" explanations are checked against this file by
+        # vitest; a backend route change must regenerate it (prints the diff).
+        run: python scripts/export_routes.py --check
 
       - name: Pytest with coverage (enforces fail_under)
         run: |
@@ -101,6 +109,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
+      - name: Runner inventory
+        run: python scripts/runner_inventory.py --job "Cross-platform build & test (${{ matrix.os }})"
+
       - name: Install
         run: |
           python -m pip install --upgrade pip
@@ -130,6 +141,9 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
+      - name: Runner inventory
+        run: python3 scripts/runner_inventory.py --job "Operator dashboard (build + tests)"
+
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -141,17 +155,26 @@ jobs:
         working-directory: dashboard
         run: npm ci
 
+      - name: npm audit of the dashboard lockfile (report only; policy unchanged)
+        working-directory: dashboard
+        shell: bash
+        run: |
+          # npm exits non-zero when findings exist; the report script separates a
+          # completed audit (exit 0, findings listed) from one that failed to run.
+          npm audit --json > ../npm-audit.json || true
+          python3 ../scripts/npm_audit_report.py ../npm-audit.json --package-json package.json
+
       - name: Type-check
         working-directory: dashboard
         run: npm run typecheck
 
       - name: Component tests (vitest)
         working-directory: dashboard
-        run: npm run test:run
+        run: python3 ../scripts/measure.py run --label "vitest (dashboard)" -- npm run test:run
 
       - name: Build SPA into engine/static
         working-directory: dashboard
-        run: npm run build
+        run: python3 ../scripts/measure.py run --label "vite build (dashboard)" -- npm run build
 
       - name: Verify build output
         run: test -f engine/static/index.html
@@ -183,6 +206,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+
+      - name: Runner inventory
+        run: python scripts/runner_inventory.py --job "llama.cpp integration (real GGUF, AVX)"
 
       - name: Install engine + llama.cpp CPU backend
         run: |
@@ -257,7 +283,7 @@ jobs:
           IE_SMOKE_BASE=http://127.0.0.1:8127 IE_MODEL_ID=tiny python scripts/anthropic_sdk_smoke.py
           IE_SMOKE_BASE=http://127.0.0.1:8127 IE_MODEL_ID=tiny python scripts/structured_output_smoke.py
 
-      - name: Dashboard control-plane smoke (real model load/gen/logs/keys)
+      - name: Dashboard control-plane smoke (real model load/gen/logs/keys/system)
         run: |
           IE_MODEL_PATH="$HOME/models/tiny.gguf" IE_MODEL_ID=tiny \
             inference-engine serve --port 8124 --data-dir /tmp/ie-serve-dash &
@@ -267,7 +293,11 @@ jobs:
             curl -sf http://127.0.0.1:8124/healthz >/dev/null 2>&1 && break
             sleep 0.5
           done
-          python scripts/dashboard_smoke.py --base-url http://127.0.0.1:8124
+          # Real-model mode (no --skip-generation): the model must load, generate,
+          # and /admin/system must report inference available — no silent skip.
+          python scripts/dashboard_smoke.py --base-url http://127.0.0.1:8124 \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          python scripts/measure.py pid --label "engine, real-model dashboard smoke" "$SRV"
 
       - name: Model lifecycle smoke (import → load → generate → unload → delete)
         run: |
@@ -297,6 +327,7 @@ jobs:
           python scripts/load_test.py --base-url http://127.0.0.1:8126 \
             --model tiny --concurrency 16 --requests 64 --max-tokens 16 \
             | tee -a "$GITHUB_STEP_SUMMARY"
+          python scripts/measure.py pid --label "engine, 64-request load test" "$SRV"
 
       - name: Remote adapters (vLLM + SGLang) against a real OpenAI-compatible server
         run: |
@@ -320,6 +351,97 @@ jobs:
             --base-url http://127.0.0.1:8130/v1 --model tiny \
             | tee -a "$GITHUB_STEP_SUMMARY"
 
+  browser-acceptance:
+    name: Dashboard in a real browser (real engine + GGUF)
+    runs-on: ubuntu-latest
+    needs: test
+    defaults:
+      run:
+        shell: bash
+    env:
+      MODEL_URL: "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q4_K_M.gguf"
+      MODEL_SHA256: "2e8040ceae7815abe0dcb3540b9995eaa1fa0d2ca9e797d0a635ae4433c68c2d"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Runner inventory
+        run: python3 scripts/runner_inventory.py --job "Dashboard in a real browser (real engine + GGUF)"
+
+      - name: Require AVX2 (prebuilt llama.cpp wheel)
+        run: grep -q avx2 /proc/cpuinfo || { echo "::error::runner lacks AVX2"; exit 1; }
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Build the dashboard into engine/static
+        working-directory: dashboard
+        run: |
+          npm ci
+          npm run build
+          test -f ../engine/static/index.html
+
+      - name: Install engine + llama.cpp backend + browser harness
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[llama]" \
+            --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+          pip install -r requirements/e2e.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Cache tiny GGUF model
+        id: gguf-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/models/tiny.gguf
+          key: gguf-smollm2-135m-q4km-${{ env.MODEL_SHA256 }}
+
+      - name: Download tiny GGUF model
+        if: steps.gguf-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/models
+          curl -sL -o ~/models/tiny.gguf "$MODEL_URL"
+
+      - name: Verify model checksum
+        run: echo "${MODEL_SHA256}  $HOME/models/tiny.gguf" | sha256sum -c -
+
+      - name: Run the browser acceptance suite (auth on, no model preloaded)
+        run: |
+          DATA=/tmp/ie-e2e
+          # The owner key is created with the CLI (shown once) and kept only in
+          # this step's environment; it is masked and never printed.
+          OWNER=$(IE_REQUIRE_AUTH=true inference-engine keys create --label owner --data-dir "$DATA" 2>/dev/null \
+            | python -c 'import sys,json; print(json.load(sys.stdin)["token"])')
+          echo "::add-mask::$OWNER"
+          IE_REQUIRE_AUTH=true inference-engine serve --port 8140 --data-dir "$DATA" &
+          SRV=$!
+          trap 'kill $SRV 2>/dev/null || true' EXIT
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8140/healthz >/dev/null 2>&1 && break
+            sleep 0.5
+          done
+          IE_E2E_BASE_URL=http://127.0.0.1:8140 \
+          IE_E2E_OPERATOR_KEY="$OWNER" \
+          IE_E2E_MODEL_PATH="$HOME/models/tiny.gguf" \
+            python -m pytest e2e -v -p no:cacheprovider --junitxml=e2e-report.xml \
+            | tee e2e-output.txt
+          python scripts/measure.py pid --label "engine, browser acceptance" "$SRV"
+          {
+            echo "### Browser acceptance (Chromium, real engine, real GGUF)"
+            echo '```'
+            grep -E "PASSED|FAILED|ERROR|passed|failed" e2e-output.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   build:
     name: Build & validate package
     runs-on: ubuntu-latest
@@ -332,6 +454,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+
+      - name: Runner inventory
+        run: python scripts/runner_inventory.py --job "Build & validate package"
 
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -350,7 +475,7 @@ jobs:
       - name: Build sdist and wheel
         run: |
           python -m pip install --upgrade pip build
-          python -m build
+          python scripts/measure.py run --label "python -m build (sdist + wheel)" -- python -m build
 
       - name: Verify release version + dashboard bundled in the wheel
         run: |
@@ -385,7 +510,8 @@ jobs:
           echo "metrics energy: $(echo "$METRICS" | python -c 'import sys,json; print(json.load(sys.stdin)["energy"]["state"])')"
           # The bundled dashboard SPA is served from the installed wheel.
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8137/dashboard/)" = "200"
-          # Control-plane smoke (no model configured -> generation skipped).
+          # Control-plane smoke in explicit no-model mode (generation skipped;
+          # the /admin/system contract is still checked).
           python scripts/dashboard_smoke.py --base-url http://127.0.0.1:8137 --skip-generation
           kill "$SRV" 2>/dev/null || true
 
@@ -406,6 +532,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+      - name: Runner inventory
+        run: python scripts/runner_inventory.py --job "Dependency CVE audit (pip-audit)"
+
       - name: Install
         run: |
           python -m pip install --upgrade pip
@@ -433,8 +562,15 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
+      - name: Runner inventory
+        run: python3 scripts/runner_inventory.py --job "Docker image (build + start smoke)"
+
       - name: Build image (CPU, llama.cpp backend included)
         run: |
+          # BuildKit runs inside the Docker daemon, outside this step's process
+          # tree, so build memory is not attributable here — report it honestly.
+          echo "MEASURE docker build: peak memory unmeasured (BuildKit runs in the daemon)"
+          echo "- \`docker build\`: peak memory unmeasured (BuildKit runs in the Docker daemon)" >> "$GITHUB_STEP_SUMMARY"
           docker build \
             --build-arg IE_VERSION="$(python3 scripts/release.py check-version)" \
             --build-arg IE_BUILD_SHA="${GITHUB_SHA::7}" \
@@ -463,6 +599,9 @@ jobs:
           # The CPU llama.cpp backend is always present in the image.
           docker exec ie python -c "import llama_cpp; print('llama_cpp', llama_cpp.__version__)"
 
+      - name: Container peak memory (whole cgroup)
+        run: python3 scripts/measure.py cgroup --label "container, start + smoke" --container ie
+
       - name: Graceful stop
         run: |
           docker stop -t 40 ie
@@ -475,12 +614,14 @@ jobs:
     name: CI passed (build + render + test)
     runs-on: ubuntu-latest
     if: always()
-    needs: [test, dashboard, integration-llama, build, container]
+    needs: [test, cross-platform, dashboard, browser-acceptance, integration-llama, build, container]
     steps:
       - name: Verify all jobs succeeded
         run: |
           echo "test:              ${{ needs.test.result }}"
+          echo "cross-platform:    ${{ needs.cross-platform.result }}"
           echo "dashboard:         ${{ needs.dashboard.result }}"
+          echo "browser:           ${{ needs.browser-acceptance.result }}"
           echo "integration-llama: ${{ needs.integration-llama.result }}"
           echo "build:             ${{ needs.build.result }}"
           echo "container:         ${{ needs.container.result }}"
@@ -490,7 +631,9 @@ jobs:
             CONTAINER=success
           fi
           if [ "${{ needs.test.result }}" != "success" ] \
+             || [ "${{ needs.cross-platform.result }}" != "success" ] \
              || [ "${{ needs.dashboard.result }}" != "success" ] \
+             || [ "${{ needs.browser-acceptance.result }}" != "success" ] \
              || [ "${{ needs.integration-llama.result }}" != "success" ] \
              || [ "${{ needs.build.result }}" != "success" ] \
              || [ "$CONTAINER" != "success" ]; then

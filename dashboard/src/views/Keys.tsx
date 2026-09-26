@@ -4,6 +4,7 @@ import { useAsync } from "../hooks/useAsync";
 import { AsyncBoundary } from "../components/Panel";
 import { Badge } from "../components/widgets";
 import { Icon } from "../components/Icon";
+import { useConfirm } from "../hooks/useConfirm";
 
 export function Keys(): JSX.Element {
   const { status, data, error, reload } = useAsync(() => api.listKeys(), []);
@@ -12,6 +13,7 @@ export function Keys(): JSX.Element {
   const [created, setCreated] = useState<CreatedKey | null>(null);
   const [copyOk, setCopyOk] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [confirm, confirmDialog] = useConfirm();
 
   const create = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -30,18 +32,41 @@ export function Keys(): JSX.Element {
     }
   };
 
-  const revoke = async (id: string) => {
+  const revoke = async (k: KeyRow) => {
+    const ok = await confirm({
+      title: "Revoke this key?",
+      body: (
+        <>
+          Key <span className="mono">{k.prefix}…</span>
+          {k.label ? ` (${k.label})` : ""} stops working immediately for every caller
+          using it. This is recorded in the audit log and cannot be undone.
+        </>
+      ),
+      confirmLabel: "Revoke key",
+    });
+    if (!ok) return;
     try {
-      await api.revokeKey(id);
+      await api.revokeKey(k.id);
       reload();
     } catch (err) {
       setFormError(err instanceof ApiError ? err.message : String(err));
     }
   };
 
-  const remove = async (id: string) => {
+  const remove = async (k: KeyRow) => {
+    const ok = await confirm({
+      title: "Delete this revoked key?",
+      body: (
+        <>
+          The record for <span className="mono">{k.prefix}…</span> is removed permanently.
+          Historical usage stays attributed to its key id.
+        </>
+      ),
+      confirmLabel: "Delete key",
+    });
+    if (!ok) return;
     try {
-      await api.deleteKey(id);
+      await api.deleteKey(k.id);
       reload();
     } catch (err) {
       setFormError(err instanceof ApiError ? err.message : String(err));
@@ -128,6 +153,7 @@ export function Keys(): JSX.Element {
                   <tr>
                     <th>Prefix</th>
                     <th>Label</th>
+                    <th>Role</th>
                     <th>Created</th>
                     <th>Last used</th>
                     <th>Status</th>
@@ -139,6 +165,13 @@ export function Keys(): JSX.Element {
                     <tr key={k.id}>
                       <td className="mono">{k.prefix}…</td>
                       <td>{k.label ?? <span className="muted">—</span>}</td>
+                      <td>
+                        {k.role === "client" ? (
+                          <Badge tone="neutral">client</Badge>
+                        ) : (
+                          <Badge tone="ok">operator</Badge>
+                        )}
+                      </td>
                       <td className="muted">{new Date(k.created_at).toLocaleDateString()}</td>
                       <td className="muted">
                         {k.last_used_at ? new Date(k.last_used_at).toLocaleString() : "never"}
@@ -154,7 +187,7 @@ export function Keys(): JSX.Element {
                         {k.revoked ? (
                           <button
                             className="btn danger"
-                            onClick={() => remove(k.id)}
+                            onClick={() => remove(k)}
                             aria-label={`Delete key ${k.prefix}`}
                           >
                             <Icon name="trash" size={16} /> Delete
@@ -162,7 +195,7 @@ export function Keys(): JSX.Element {
                         ) : (
                           <button
                             className="btn danger"
-                            onClick={() => revoke(k.id)}
+                            onClick={() => revoke(k)}
                             aria-label={`Revoke key ${k.prefix}`}
                           >
                             <Icon name="stop" size={16} /> Revoke
@@ -177,6 +210,7 @@ export function Keys(): JSX.Element {
           </AsyncBoundary>
         </div>
       </div>
+      {confirmDialog}
     </>
   );
 }

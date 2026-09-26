@@ -72,4 +72,15 @@ describe("Logs view", () => {
     await userEvent.selectOptions(screen.getByLabelText("Level"), "ERROR");
     await waitFor(() => expect(spy).toHaveBeenCalledWith({ limit: 200, level: "ERROR" }));
   });
+
+  it("filters by request id on the server and can clear it", async () => {
+    const spy = vi.spyOn(api, "logs").mockResolvedValue({ events: [logEvent({ event: "old-one" })] });
+    const onNavigate = vi.fn();
+    render(<Logs requestId="chatcmpl-abc" onNavigate={onNavigate} />);
+    await screen.findByText("old-one");
+    expect(spy).toHaveBeenCalledWith({ limit: 200, request_id: "chatcmpl-abc" });
+    expect(screen.getByRole("status")).toHaveTextContent("chatcmpl-abc");
+    await userEvent.click(screen.getByRole("button", { name: "Clear request filter" }));
+    expect(onNavigate).toHaveBeenCalledWith("logs");
+  });
 });

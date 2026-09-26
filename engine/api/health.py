@@ -38,17 +38,10 @@ def version() -> dict[str, object]:
     return build_info()
 
 
-@router.get("/readyz")
-def readyz(request: Request) -> JSONResponse:
-    """Readiness of foundational dependencies.
+def readiness_state(request: Request) -> tuple[bool, dict[str, str], dict[str, object]]:
+    """Compute ``(ready, checks, inference)`` exactly as ``/readyz`` reports them.
 
-    Returns 200 when the database is reachable and migrations are applied; 503
-    otherwise. Always reports ``inference.available = false`` so callers never
-    mistake the foundation for a working inference service.
-
-    Reads settings and the startup-computed migration status from the request's
-    application state, and uses a lightweight read-only connection so frequent
-    probes stay cheap.
+    Shared with the operator ``/admin/system`` view so both surfaces agree.
     """
     settings: Settings = request.app.state.settings
     migrations_ready: bool = getattr(request.app.state, "migrations_ready", False)
@@ -103,6 +96,22 @@ def readyz(request: Request) -> JSONResponse:
         checks["intake"] = "draining"
         ready = False
 
+    return ready, checks, inference
+
+
+@router.get("/readyz")
+def readyz(request: Request) -> JSONResponse:
+    """Readiness of foundational dependencies.
+
+    Returns 200 when the database is reachable and migrations are applied; 503
+    otherwise. Always reports ``inference.available`` so callers never mistake
+    the foundation for a working inference service.
+
+    Reads settings and the startup-computed migration status from the request's
+    application state, and uses a lightweight read-only connection so frequent
+    probes stay cheap.
+    """
+    ready, checks, inference = readiness_state(request)
     body: dict[str, object] = {
         "status": "ready" if ready else "not_ready",
         "version": __version__,
