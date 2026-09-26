@@ -92,3 +92,8 @@ def test_dashboard_smoke_modes_are_explicit() -> None:
     assert real and all("--skip-generation" not in line for line in real)
     package = smoke_lines("build")
     assert package and all("--skip-generation" in line for line in package)
+
+
+def test_dashboard_lockfile_is_audited_and_reported() -> None:
+    runs = [step.get("run", "") for step in _jobs()["dashboard"]["steps"]]
+    assert any("npm audit --json" in r and "npm_audit_report.py" in r for r in runs)

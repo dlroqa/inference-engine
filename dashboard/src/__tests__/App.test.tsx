@@ -151,6 +151,27 @@ describe("App routing", () => {
     expect(await screen.findByRole("heading", { name: "Page not available" })).toBeInTheDocument();
   });
 
+  it.each(["#/%", "#/clients/%E0%A4%A"])(
+    "recovers from malformed initial URL %s",
+    async (hash) => {
+      window.location.hash = hash;
+      render(<App />);
+      expect(await screen.findByRole("heading", { name: "Page not available" })).toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: "Go to Overview" }));
+      expect(await screen.findByRole("heading", { name: "Overview view" })).toBeInTheDocument();
+    },
+  );
+
+  it("handles malformed hash navigation and subsequent valid navigation", async () => {
+    render(<App />);
+    await screen.findByRole("heading", { name: "Overview view" });
+    goTo("#/clients/%FF");
+    expect(await screen.findByRole("heading", { name: "Page not available" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("main")).toHaveFocus());
+    goTo("#/clients/acme");
+    expect(await screen.findByRole("heading", { name: "Clients view acme" })).toBeInTheDocument();
+  });
+
   it("groups navigation into labelled sections", async () => {
     render(<App />);
     const nav = await screen.findByRole("navigation", { name: "Primary" });

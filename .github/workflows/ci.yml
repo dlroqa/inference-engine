@@ -155,17 +155,26 @@ jobs:
         working-directory: dashboard
         run: npm ci
 
+      - name: npm audit of the dashboard lockfile (report only; policy unchanged)
+        working-directory: dashboard
+        shell: bash
+        run: |
+          # npm exits non-zero when findings exist; the report script separates a
+          # completed audit (exit 0, findings listed) from one that failed to run.
+          npm audit --json > ../npm-audit.json || true
+          python3 ../scripts/npm_audit_report.py ../npm-audit.json --package-json package.json
+
       - name: Type-check
         working-directory: dashboard
         run: npm run typecheck
 
       - name: Component tests (vitest)
         working-directory: dashboard
-        run: npm run test:run
+        run: python3 ../scripts/measure.py run --label "vitest (dashboard)" -- npm run test:run
 
       - name: Build SPA into engine/static
         working-directory: dashboard
-        run: npm run build
+        run: python3 ../scripts/measure.py run --label "vite build (dashboard)" -- npm run build
 
       - name: Verify build output
         run: test -f engine/static/index.html
@@ -288,6 +297,7 @@ jobs:
           # and /admin/system must report inference available — no silent skip.
           python scripts/dashboard_smoke.py --base-url http://127.0.0.1:8124 \
             | tee -a "$GITHUB_STEP_SUMMARY"
+          python scripts/measure.py pid --label "engine, real-model dashboard smoke" "$SRV"
 
       - name: Model lifecycle smoke (import → load → generate → unload → delete)
         run: |
@@ -317,6 +327,7 @@ jobs:
           python scripts/load_test.py --base-url http://127.0.0.1:8126 \
             --model tiny --concurrency 16 --requests 64 --max-tokens 16 \
             | tee -a "$GITHUB_STEP_SUMMARY"
+          python scripts/measure.py pid --label "engine, 64-request load test" "$SRV"
 
       - name: Remote adapters (vLLM + SGLang) against a real OpenAI-compatible server
         run: |
@@ -423,6 +434,7 @@ jobs:
           IE_E2E_MODEL_PATH="$HOME/models/tiny.gguf" \
             python -m pytest e2e -v -p no:cacheprovider --junitxml=e2e-report.xml \
             | tee e2e-output.txt
+          python scripts/measure.py pid --label "engine, browser acceptance" "$SRV"
           {
             echo "### Browser acceptance (Chromium, real engine, real GGUF)"
             echo '```'
@@ -463,7 +475,7 @@ jobs:
       - name: Build sdist and wheel
         run: |
           python -m pip install --upgrade pip build
-          python -m build
+          python scripts/measure.py run --label "python -m build (sdist + wheel)" -- python -m build
 
       - name: Verify release version + dashboard bundled in the wheel
         run: |
@@ -555,6 +567,10 @@ jobs:
 
       - name: Build image (CPU, llama.cpp backend included)
         run: |
+          # BuildKit runs inside the Docker daemon, outside this step's process
+          # tree, so build memory is not attributable here — report it honestly.
+          echo "MEASURE docker build: peak memory unmeasured (BuildKit runs in the daemon)"
+          echo "- \`docker build\`: peak memory unmeasured (BuildKit runs in the Docker daemon)" >> "$GITHUB_STEP_SUMMARY"
           docker build \
             --build-arg IE_VERSION="$(python3 scripts/release.py check-version)" \
             --build-arg IE_BUILD_SHA="${GITHUB_SHA::7}" \
@@ -582,6 +598,9 @@ jobs:
           test "$(docker exec ie id -u)" != "0"
           # The CPU llama.cpp backend is always present in the image.
           docker exec ie python -c "import llama_cpp; print('llama_cpp', llama_cpp.__version__)"
+
+      - name: Container peak memory (whole cgroup)
+        run: python3 scripts/measure.py cgroup --label "container, start + smoke" --container ie
 
       - name: Graceful stop
         run: |

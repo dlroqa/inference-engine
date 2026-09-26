@@ -14,7 +14,15 @@ export interface Route {
 export function parseHash(hash: string, fallback = "overview"): Route {
   const raw = hash.replace(/^#\/?/, "");
   const [pathPart, query = ""] = raw.split("?", 2);
-  const parts = pathPart.split("/").filter(Boolean).map(decodeURIComponent);
+  let parts: string[];
+  try {
+    parts = pathPart.split("/").filter(Boolean).map(decodeURIComponent);
+  } catch (error) {
+    if (!(error instanceof URIError)) throw error;
+    // Treat the whole malformed path as unavailable, including bad client IDs.
+    // Keep the shell usable so the operator can navigate away without reloading.
+    return { view: pathPart, segments: [], params: new URLSearchParams(query) };
+  }
   return {
     view: parts[0] ?? fallback,
     segments: parts.slice(1),

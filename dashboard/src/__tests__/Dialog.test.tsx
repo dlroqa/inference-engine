@@ -47,6 +47,22 @@ describe("hash routes", () => {
     expect(route.params.get("x")).toBe("1");
   });
 
+  it.each(["%", "%2", "%GG", "%E0%A4%A", "clients/%", "clients/%FF"])(
+    "treats malformed path %s as unavailable without partially decoding it",
+    (path) => {
+      const route = parseHash(`#/${path}?x=1`);
+      expect(route.view).toBe(path);
+      expect(route.segments).toEqual([]);
+      expect(route.params.get("x")).toBe("1");
+    },
+  );
+
+  it("preserves valid encoded percent and Unicode segments", () => {
+    const route = parseHash(buildHash("clients", { segments: ["100% café"] }));
+    expect(route.view).toBe("clients");
+    expect(route.segments).toEqual(["100% café"]);
+  });
+
   it("falls back to the default view", () => {
     expect(parseHash("").view).toBe("overview");
     expect(parseHash("#/").view).toBe("overview");

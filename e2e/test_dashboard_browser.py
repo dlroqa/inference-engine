@@ -70,6 +70,25 @@ def test_deep_links_and_browser_history(page: Page, engine: Engine) -> None:
     expect(page.get_by_role("heading", name="Page not available")).to_be_visible()
 
 
+def test_malformed_hash_recovers_without_reloading(page: Page, engine: Engine) -> None:
+    errors: list[str] = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    login(page, engine)
+    expect(page.get_by_role("heading", name="Overview")).to_be_visible()
+    # Fresh document with a malformed initial hash and an already saved key.
+    page.goto(f"{engine.dashboard}#/%")
+    page.reload()
+    expect(page.get_by_role("heading", name="Page not available")).to_be_visible()
+    page.get_by_role("button", name="Go to Overview").click()
+    expect(page.get_by_role("heading", name="Overview")).to_be_visible()
+    # An in-document hash change must not throw or leave the previous view stale.
+    page.evaluate("window.location.hash = '#/clients/%FF'")
+    expect(page.get_by_role("heading", name="Page not available")).to_be_visible()
+    page.get_by_role("link", name="Models").click()
+    expect(page.get_by_role("heading", name="Models")).to_be_visible()
+    assert not errors, "browser reported an uncaught error during route recovery"
+
+
 def test_model_import_load_and_generate(page: Page, engine: Engine) -> None:
     login(page, engine)
     page.get_by_role("link", name="Models").click()
