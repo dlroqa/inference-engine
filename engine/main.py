@@ -14,7 +14,7 @@ import ipaddress
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -59,7 +59,7 @@ from engine.quota.store import UsageStore
 from engine.quota.windows import week_start
 from engine.store.db import connect
 from engine.store.migrations import apply_migrations, migrations_at_head
-from engine.store.ownership import StoreLock, lock_path_for
+from engine.store.ownership import StoreOwnership, canonical
 from engine.telemetry.counters import Counters
 from engine.telemetry.events import EventBus
 from engine.telemetry.logbuffer import LogCollector
@@ -126,6 +126,14 @@ def create_app(
     """
     global _active_settings
     settings = settings or load_config()
+    # Canonical store paths: the ownership locks and every component use the
+    # same absolute, symlink-resolved database and model-directory paths.
+    settings = settings.model_copy(
+        update={
+            "db_path": canonical(settings.db_path),  # type: ignore[arg-type]
+            "models_dir": canonical(settings.models_dir),  # type: ignore[arg-type]
+        }
+    )
     _active_settings = settings
     injected_backend = backend is not None
 
@@ -150,6 +158,7 @@ def create_app(
         ring_size=settings.log_ring_size,
         max_rows=settings.log_events_max_rows,
     )
+    log_collector.persist = False  # until the lifespan owns the store
     logging.getLogger().addHandler(log_collector)
 
     # Controlled concurrency (Block 7): admission control in front of the backend.
@@ -166,17 +175,45 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        # One serving engine per data store: startup recovery below relies on no
-        # other process owning downloads in this database. Raises
-        # StoreLockedError (startup fails) if another engine holds it. The OS
-        # drops the lock when the process exits, however it exits.
-        store_lock = StoreLock(lock_path_for(settings.db_path))  # type: ignore[arg-type]
-        store_lock.acquire()
+        # One serving engine per writable store (its database AND its managed
+        # model directory), before anything in the store is written: startup
+        # recovery and model operations rely on no other process owning it.
+        # Raises StoreLockedError (another engine) or StoreLockUnavailableError
+        # (permissions, no lock support); startup then fails with nothing held.
+        # The OS drops both locks when the process exits, however it exits.
+        ownership = StoreOwnership(settings.db_path, settings.models_dir)  # type: ignore[arg-type]
+        ownership.acquire()
+        log_collector.persist = True
         try:
             async with _serve(app):
                 yield
         finally:
-            store_lock.release()
+            # Ownership outlives every worker that can write the store: drain the
+            # download workers here even if an earlier cleanup step failed or the
+            # shutdown is being cancelled. Only then release (reverse order).
+            try:
+                await _drain_owned_work()
+            finally:
+                if model_service.owns_work():
+                    # A worker is still running (the drain was interrupted): keep
+                    # both locks; the OS releases them when the process exits.
+                    log.warning("store_ownership_retained", extra={"reason": "worker_running"})
+                else:
+                    log_collector.persist = False
+                    ownership.release()
+
+    async def _drain_owned_work() -> None:
+        """Awaits model-service shutdown to completion, through cancellation."""
+        drain = asyncio.ensure_future(model_service.shutdown())
+        interrupted = False
+        while not drain.done():
+            try:
+                await asyncio.shield(drain)
+            except asyncio.CancelledError:
+                interrupted = True
+        drain.result()
+        if interrupted:
+            raise asyncio.CancelledError
 
     @asynccontextmanager
     async def _serve(app: FastAPI) -> AsyncIterator[None]:
@@ -245,89 +282,122 @@ def create_app(
                     extra={"backend": worker.name, "error": str(exc)},
                 )
 
-        # Periodic backend liveness refresh so routing skips a remote that went down.
         health_task: asyncio.Task[None] | None = None
-        if settings.backend_health_interval_s > 0 and (
-            settings.remote_workers or settings.external_providers
-        ):
-            registry = app.state.backend_registry
-
-            async def _health_loop() -> None:
-                while True:
-                    await asyncio.sleep(settings.backend_health_interval_s)
-                    try:
-                        await registry.refresh_health()
-                    except Exception:  # pragma: no cover - defensive
-                        log.warning("backend_health_refresh_failed")
-
-            health_task = asyncio.create_task(_health_loop())
-
-        # Outbound webhook delivery worker (Block 11.2): drains the delivery queue
-        # with retries/backoff. Off unless webhooks are enabled.
         webhook_task: asyncio.Task[None] | None = None
-        if settings.webhooks_enabled:
-            worker = DeliveryWorker(
-                webhook_store,
-                max_attempts=settings.webhook_max_attempts,
-                backoff_schedule_s=tuple(settings.webhook_backoff_schedule_s),
-                delivery_timeout_s=settings.webhook_delivery_timeout_s,
-            )
-            webhook_task = asyncio.create_task(worker.run_loop(settings.webhook_poll_interval_s))
-            log.info("webhook_worker_started")
-
-        # Start the metrics sampler once the loop is running (skip if disabled).
-        if settings.metrics_interval_s > 0:
-            telemetry.start(lambda: getattr(app.state, "backend", None))
-
-        # gRPC edge (Block 10.6): an independently secured service on its own port,
-        # sharing this app's state (auth, registry, router, metering).
         grpc_server = None
-        if settings.grpc_enabled:
-            from engine.grpc.server import create_grpc_server
-
-            grpc_server, bound = await create_grpc_server(
-                app,
-                host=settings.grpc_host,
-                port=settings.grpc_port,
-                tls_cert=settings.grpc_tls_cert,
-                tls_key=settings.grpc_tls_key,
-            )
-            await grpc_server.start()
-            app.state.grpc_port = bound
-            log.info(
-                "grpc_started", extra={"port": bound, "tls": settings.grpc_tls_cert is not None}
-            )
-
         try:
+            # Periodic backend liveness refresh so routing skips a remote that went down.
+            if settings.backend_health_interval_s > 0 and (
+                settings.remote_workers or settings.external_providers
+            ):
+                registry = app.state.backend_registry
+
+                async def _health_loop() -> None:
+                    while True:
+                        await asyncio.sleep(settings.backend_health_interval_s)
+                        try:
+                            await registry.refresh_health()
+                        except Exception:  # pragma: no cover - defensive
+                            log.warning("backend_health_refresh_failed")
+
+                health_task = asyncio.create_task(_health_loop())
+
+            # Outbound webhook delivery worker (Block 11.2): drains the delivery queue
+            # with retries/backoff. Off unless webhooks are enabled.
+            if settings.webhooks_enabled:
+                worker = DeliveryWorker(
+                    webhook_store,
+                    max_attempts=settings.webhook_max_attempts,
+                    backoff_schedule_s=tuple(settings.webhook_backoff_schedule_s),
+                    delivery_timeout_s=settings.webhook_delivery_timeout_s,
+                )
+                webhook_task = asyncio.create_task(
+                    worker.run_loop(settings.webhook_poll_interval_s)
+                )
+                log.info("webhook_worker_started")
+
+            # Start the metrics sampler once the loop is running (skip if disabled).
+            if settings.metrics_interval_s > 0:
+                telemetry.start(lambda: getattr(app.state, "backend", None))
+
+            # gRPC edge (Block 10.6): an independently secured service on its own port,
+            # sharing this app's state (auth, registry, router, metering).
+            if settings.grpc_enabled:
+                from engine.grpc.server import create_grpc_server
+
+                grpc_server, bound = await create_grpc_server(
+                    app,
+                    host=settings.grpc_host,
+                    port=settings.grpc_port,
+                    tls_cert=settings.grpc_tls_cert,
+                    tls_key=settings.grpc_tls_key,
+                )
+                await grpc_server.start()
+                app.state.grpc_port = bound
+                log.info(
+                    "grpc_started",
+                    extra={"port": bound, "tls": settings.grpc_tls_cert is not None},
+                )
+
             yield
         finally:
-            if grpc_server is not None:
-                await grpc_server.stop(grace=5.0)
-                log.info("grpc_stopped")
-            # Graceful drain (Block 9): stop admitting new work and let bounded
-            # in-flight generations finish (or time out) before releasing the model,
-            # so a rolling restart never severs active requests.
-            scheduler.begin_drain()
-            drained = await scheduler.wait_drained(settings.drain_timeout_s)
-            log.info("drain_complete", extra={"drained": drained})
-            if health_task is not None:
-                health_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await health_task
-            if webhook_task is not None:
-                webhook_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await webhook_task
-            for worker in getattr(app.state, "remote_workers", []):
-                with contextlib.suppress(Exception):
-                    await worker.unload()
-            await telemetry.stop()
-            await model_service.shutdown()
+            # Every step runs even if an earlier one fails (the first error is
+            # re-raised at the end), so no store writer (webhook delivery,
+            # download workers) outlives cleanup because a step before it threw.
+            # This also runs when startup fails after these tasks started.
+            errors: list[Exception] = []
+
+            async def step(name: str, action: Callable[[], Awaitable[object]]) -> None:
+                try:
+                    await action()
+                except Exception as exc:
+                    errors.append(exc)
+                    log.warning(
+                        "shutdown_step_failed",
+                        extra={"step": name, "error_type": type(exc).__name__},
+                    )
+
+            async def stop_grpc() -> None:
+                if grpc_server is not None:
+                    await grpc_server.stop(grace=5.0)
+                    log.info("grpc_stopped")
+
+            async def drain_requests() -> None:
+                # Graceful drain (Block 9): stop admitting new work and let bounded
+                # in-flight generations finish (or time out) before releasing the
+                # model, so a rolling restart never severs active requests.
+                scheduler.begin_drain()
+                drained = await scheduler.wait_drained(settings.drain_timeout_s)
+                log.info("drain_complete", extra={"drained": drained})
+
+            async def stop_task(task: asyncio.Task[None] | None) -> None:
+                if task is not None:
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+
+            async def unload_remote_workers() -> None:
+                for worker in getattr(app.state, "remote_workers", []):
+                    with contextlib.suppress(Exception):
+                        await worker.unload()
+
+            async def unload_backend() -> None:
+                active: InferenceBackend | None = getattr(app.state, "backend", None)
+                if active is not None and not injected_backend:
+                    await active.unload()
+
+            await step("grpc", stop_grpc)
+            await step("drain", drain_requests)
+            await step("health_task", lambda: stop_task(health_task))
+            await step("webhook_task", lambda: stop_task(webhook_task))
+            await step("remote_workers", unload_remote_workers)
+            await step("telemetry", telemetry.stop)
+            await step("model_service", model_service.shutdown)
             logging.getLogger().removeHandler(log_collector)
-            active: InferenceBackend | None = getattr(app.state, "backend", None)
-            if active is not None and not injected_backend:
-                await active.unload()
+            await step("backend", unload_backend)
             log.info("shutdown")
+            if errors:
+                raise errors[0]
 
     app = FastAPI(
         title="Inference Engine",

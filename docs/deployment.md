@@ -216,15 +216,67 @@ To recover, delete the model (dashboard Delete or `DELETE /admin/models/{id}`,
 which needs model management enabled). This removes the engine-managed file
 and `.part` file it kept. Then download it again.
 
-**One engine per data store.** Recovery is only correct if no other process
-owns downloads in the same database. So a serving engine holds an exclusive
-lock on `<database>.lock` (`inference_engine.db.lock` by default) for its
-lifetime, and a second engine started on the same data directory refuses to
-start (`StoreLockedError`). The operating system releases the lock when the
-process exits, including on a forced kill, so no stale lock survives a crash.
-Run one engine per data directory; scale out with separate data directories
-(or remote workers), not by sharing one. Maintenance commands that open the
-database directly, such as backups, do not take this lock.
+**One engine per writable store.** A serving engine (which can serve any
+number of clients) exclusively owns two things: its **database** and its
+**managed model directory** (`models_dir`, `/data/models` by default). Recovery
+and model operations are only correct if no other engine writes either one. For
+its whole lifetime the engine holds two exclusive, non-blocking OS locks:
+
+- `<database>.lock`, next to the database (`inference_engine.db.lock` by
+  default);
+- `.engine-model-store.lock`, inside the model directory. Engines that reach the
+  same directory through different paths or container mount points contend on
+  this same file.
+
+Both paths are resolved to canonical absolute paths first (relative paths,
+`..` and symlinked directories). The database lock is taken first and released
+last. A second engine that shares either resource refuses to start, with
+`StoreLockedError` naming the resource: "another engine process already owns
+this database" or "... this model directory". It writes nothing to that store,
+not even log rows. A lock file that cannot be opened or locked (permissions, a
+filesystem without lock support) fails startup with
+`StoreLockUnavailableError` instead. The engine user needs write access to
+both lock files.
+
+| Arrangement | Supported |
+| --- | --- |
+| One engine serving many clients | Yes: one exclusively owned store |
+| Several engines, each with its own database and model directory | Yes |
+| Several engines sharing a database or a writable model directory | No: the second refuses to start |
+| Shared read-only model assets | Not in this version (see `docs/rfcs/shared-read-only-model-assets.md`) |
+
+Locks and shutdown:
+
+- The OS releases both locks when the process exits, however it exits
+  (including a forced kill). The lock files stay behind, unlocked. That is
+  normal: they are reused, never cleaned up, and do not mean another engine is
+  running.
+- Do not delete, move or replace a lock file to get around a refusal. Stop the
+  other engine instead.
+- On a normal shutdown, the locks are released only after every download
+  worker has stopped. This still holds if another cleanup step fails or the
+  shutdown is interrupted. If a worker is still running when shutdown is cut
+  short, the locks stay held until the process exits.
+
+Requirements and limits:
+
+- Use distinct, non-overlapping stores. Do not nest one store inside another,
+  do not import files across stores, and do not create hard-link aliases of a
+  database.
+- Keep the directory configuration trusted and stable. An administrator
+  replacing lock files, or hostile path changes, are not defended against.
+- The locks are qualified on local filesystems and Docker named volumes: the
+  portable tests on GitHub-hosted Linux, macOS and Windows runners (one
+  architecture each, as the CI runner inventory reports), and the image test
+  on Linux x86-64. Other native targets are not qualified by this. Exclusion
+  across hosts on NFS, SMB, FUSE or object-store mounts is not promised.
+- The locks are advisory. They coordinate engines of this version, not external
+  tools or older releases that do not take the model-directory lock. Stop every
+  old engine before rolling out this version.
+- Run offline maintenance with all engines stopped. Maintenance commands that
+  open the database directly, such as backups, do not take these locks.
+
+Scale out with separate stores (or remote workers), not by sharing one.
 
 ## Readiness & liveness
 

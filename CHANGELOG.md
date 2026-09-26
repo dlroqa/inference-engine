@@ -56,9 +56,17 @@ release notes and refuses to publish without it (see `docs/releasing.md`).
   found, nothing is marked ready, the update is conditional (a repeated start
   changes nothing), and a database failure fails startup. Delete the model,
   then download again.
-- A serving engine now holds an exclusive lock on `<database>.lock` for its
-  lifetime. A second engine on the same data directory refuses to start
-  (`StoreLockedError`). The OS releases the lock on any exit, including a kill.
+- A serving engine now exclusively owns its writable store: its database and
+  its managed model directory. It holds two OS locks for its lifetime:
+  `<database>.lock` and `.engine-model-store.lock` inside the model directory,
+  both resolved to canonical paths and taken database-first. A second engine
+  sharing either resource refuses to start (`StoreLockedError`, naming the
+  resource) and writes nothing to the store. Other lock failures raise
+  `StoreLockUnavailableError`. The locks are released only after download
+  workers have stopped, even if another cleanup step fails or shutdown is
+  cancelled; the OS releases them on any exit. Shutdown cleanup now runs every
+  step even when an earlier one fails (the first error is re-raised), and also
+  runs when startup fails after background tasks have started.
 - New model records no longer keep any part of a URL download's address.
   - `source_ref` is `address not stored`.
   - The file name is generated (`download-<random>.gguf`) unless a safe

@@ -152,7 +152,7 @@ guarantees hold only while the process is allowed to finish. A supervisor that
 kills the process first can leave a `.part` file, or a promoted file whose
 metadata was not recorded. The next engine start marks such a download `error`
 ("download interrupted"), keeps its files as found, and never marks it ready.
-It does this only while it holds the data store's single-engine lock. See
+It does this only while it holds the store's locks (database and model directory). See
 [deployment: graceful shutdown](deployment.md#graceful-shutdown--drain).
 
 If the database is unavailable when a failure is recorded, the state change is

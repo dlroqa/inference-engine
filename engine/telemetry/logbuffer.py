@@ -47,6 +47,10 @@ class LogCollector(logging.Handler):
         self._max_rows = max_rows
         self._lock = threading.Lock()
         self._since_trim = 0
+        # Rows are written to the database only while persistence is on. The
+        # engine turns it on once it owns its store, and off before releasing
+        # it, so an engine that loses the ownership check never writes.
+        self.persist = True
 
     def _record_dict(self, record: logging.LogRecord) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -74,7 +78,7 @@ class LogCollector(logging.Handler):
             payload = self._record_dict(record)
             with self._lock:
                 self._ring.append(payload)
-            if record.levelno >= self._db_level and self._db_path is not None:
+            if self.persist and record.levelno >= self._db_level and self._db_path is not None:
                 self._write_row(payload)
         except Exception:  # pragma: no cover - logging must never raise
             self.handleError(record)

@@ -451,6 +451,10 @@ class ModelService:
 
     # -- ownership and delete ---------------------------------------------
 
+    def owns_work(self) -> bool:
+        """Whether any download (its worker thread or finalization) is still owned."""
+        return bool(self._tasks)
+
     def is_busy(self, record: ModelRecord) -> bool:
         """Whether work the service owns is running for this model or its file.
 

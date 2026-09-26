@@ -1,7 +1,7 @@
 """A disposable engine-like process for restart-recovery tests.
 
 Run as ``python -m tests.support.download_child <data_dir> <barrier> <marker>``.
-It takes the store lock (as a serving engine does), starts a real URL download
+It takes both store locks (as a serving engine does), starts a real URL download
 through ``ModelService`` against a controlled fake response, and stops at a
 deterministic barrier:
 
@@ -29,7 +29,7 @@ from engine.models.registry import ModelRegistry
 from engine.models.service import ModelService
 from engine.store.db import connect
 from engine.store.migrations import apply_migrations
-from engine.store.ownership import StoreLock, lock_path_for
+from engine.store.ownership import StoreOwnership
 
 A = b"A" * 8
 B = b"B" * 8
@@ -56,10 +56,10 @@ class _Response:
         pass
 
 
-def main(data_dir: str, barrier: str, marker: str) -> None:
-    settings = Settings(data_dir=Path(data_dir))
-    lock = StoreLock(lock_path_for(settings.db_path))  # type: ignore[arg-type]
-    lock.acquire()  # held until this process is killed
+def main(data_dir: str, barrier: str, marker: str, db_path: str = "") -> None:
+    settings = Settings(data_dir=Path(data_dir), **({"db_path": Path(db_path)} if db_path else {}))
+    ownership = StoreOwnership(settings.db_path, settings.models_dir)  # type: ignore[arg-type]
+    ownership.acquire()  # both locks, held until this process is killed
     conn = connect(settings.db_path)  # type: ignore[arg-type]
     try:
         apply_migrations(conn)
@@ -99,4 +99,4 @@ def main(data_dir: str, barrier: str, marker: str) -> None:
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:4])
+    main(*sys.argv[1:5])
