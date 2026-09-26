@@ -241,5 +241,52 @@ Kill switches are the configuration switches that must be on for the control to
 work (read-only in the dashboard).
 
 <!-- wiring-table:start -->
-_Not generated yet: the first CI run prints this block._
+_Generated from `dashboard/src/lib/wiring.ts` and `routes.generated.json`; do not edit by hand._
+
+**Controls that call the engine**
+
+| Control | ID | Endpoint | Passes through | Access | Audited | Kill switches | Docs |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Signed-in identity | `app.identity` | `GET /admin/identity` | Gateway → Keystore | `operator` | no | — | [Security: operator access](security.md#operator-access) |
+| Feature-switch status | `app.system` | `GET /admin/system` | Gateway → Store → Backend pool → Scheduler | `operator` | no | — | [Security: kill switches](security.md#kill-switches) |
+| Recent deliveries | `clients.deliveries` | `GET /admin/billing/webhooks/deliveries` | Webhooks | `operator` | no | — | — |
+| Webhook endpoints | `clients.endpoints` | `GET /admin/billing/webhooks/endpoints` | Webhooks | `operator` | no | — | [Webhooks](webhooks.md) |
+| Clients | `clients.list` | `GET /admin/billing/clients` | Billing | `operator` | no | — | [Billing](billing.md) |
+| Create key | `keys.create` | `POST /admin/keys` | Keystore → Audit log | `operator` | yes | — | — |
+| Delete revoked key | `keys.delete` | `DELETE /admin/keys/{key_id}` | Keystore → Audit log | `operator` | yes | — | — |
+| API keys | `keys.list` | `GET /admin/keys` | Keystore | `operator` | no | — | — |
+| Revoke key | `keys.revoke` | `DELETE /admin/keys/{key_id}` | Keystore → Gateway → Audit log | `operator` | yes | — | — |
+| Logs | `logs.list` | `GET /logs` | Log buffer | `operator` | no | — | [Operability](operability.md) |
+| Cancel download | `models.cancel` | `POST /admin/models/{model_id}/cancel` | Model service | `operator` | no | — | — |
+| Delete model | `models.delete` | `DELETE /admin/models/{model_id}` | Model service → Model registry → Audit log | `operator` | yes | Model management (`allow_model_management`) | — |
+| Model details | `models.detail` | `GET /admin/models/{model_id}` | Model registry → Model service | `operator` | no | — | [README: model lifecycle](../README.md#model-lifecycle-block-6) |
+| Download model | `models.download` | `POST /admin/models/download` | Model service → Model registry → Audit log | `operator` | yes | Model management (`allow_model_management`); Network model downloads (`allow_network_downloads`) | — |
+| Import model | `models.import` | `POST /admin/models/import` | Model service → Model registry → Audit log | `operator` | yes | Model management (`allow_model_management`) | — |
+| Models | `models.list` | `GET /admin/models` | Model registry → Model service | `operator` | no | — | [README: model lifecycle](../README.md#model-lifecycle-block-6) |
+| Load model | `models.load` | `POST /admin/models/{model_id}/load` | Model service → Backend pool → Backend → Audit log | `operator` | yes | Model management (`allow_model_management`) | — |
+| Unload model | `models.unload` | `POST /admin/models/{model_id}/unload` | Model service → Backend → Audit log | `operator` | yes | Model management (`allow_model_management`) | — |
+| Alerts | `monitoring.alerts` | `GET /admin/alerts` | Billing → Webhooks → Backend pool | `operator` | no | — | [Monitoring](monitoring.md) |
+| Key attribution | `monitoring.attribution` | `GET /admin/usage/attribution` | Quota & usage → Keystore → Billing | `operator` | no | — | — |
+| Error taxonomy | `monitoring.taxonomy` | `GET /admin/errors/taxonomy` | Log buffer | `operator` | no | — | — |
+| Inference live feed | `overview.feed` | `WS /ws/feed` | Telemetry | `operator` | no | — | — |
+| Live metrics | `overview.metrics` | `WS /ws/metrics` | Telemetry → Scheduler → Backend | `operator` | no | — | [Operability](operability.md) |
+| Metrics snapshot (polling fallback) | `overview.metrics-fallback` | `GET /metrics` | Telemetry | `operator` | no | — | — |
+| Engine version and readiness | `overview.readiness` | `GET /admin/overview` | Store → Backend | `operator` | no | — | — |
+| Audit log and integrity check | `security.audit` | `GET /admin/audit` | Audit log | `operator` | no | — | [Security: tamper-evident audit log](security.md#tamper-evident-audit-log) |
+
+**Controls with no backend call** (they change only what this browser shows or stores)
+
+| Control | ID | What it does | Afterwards |
+| --- | --- | --- | --- |
+| Model source tabs | `local.add-source` | Switches which fields the form shows. Nothing is sent until you submit. | — |
+| Close detail | `local.close-detail` | Closes this panel and updates the page address. | — |
+| Close details | `local.close-drawer` | Closes the model details and returns the page address to #/models (back to the list entry you came from, when you opened them from the list). | — |
+| Copy checksum | `local.copy-checksum` | Copies the model's SHA-256 checksum text to your clipboard. Nothing is sent to the engine. | — |
+| Copy token | `local.copy-token` | Copies the new token to your clipboard. It is not sent anywhere and cannot be shown again. | — |
+| Cancel | `local.dialog-cancel` | Closes this confirmation. Nothing is sent and nothing changes. | — |
+| Text filter | `local.logs-filter` | Filters the log events already loaded in this browser. The server is not queried again. | — |
+| Navigation | `local.navigation` | Changes the page address (#/view) in this browser. | The view that opens then loads its own data from the engine. |
+| Saved operator key | `local.saved-key` | Stores the key in this browser's local storage, or removes it. | The dashboard then calls GET /admin/identity, sending the saved key (if any) as a Bearer token, to re-check who it is signed in as. |
+| Select a client | `local.select-client` | Opens or closes the client's detail panel and updates the page address (#/clients/<id>). Click a row, or use the client's button with Enter or Space; keyboard focus stays on that button. | The panel then loads the client's webhook endpoints and recent deliveries. |
+| Show wiring | `local.show-wiring` | Shows or hides the endpoint (METHOD /path) next to every "How this works" button. The choice is kept in this browser only; it is off by default. | — |
 <!-- wiring-table:end -->

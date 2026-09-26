@@ -47,8 +47,7 @@ def _seed(
 CASES = {
     "exact source URL": (
         "https://bob:s3cr3t-pass@cdn.example.com/m.gguf?token=tok-abc123&v=2",
-        "HTTP 403 fetching "
-        "https://bob:s3cr3t-pass@cdn.example.com/m.gguf?token=tok-abc123&v=2.",
+        "HTTP 403 fetching https://bob:s3cr3t-pass@cdn.example.com/m.gguf?token=tok-abc123&v=2.",
     ),
     "different redirect URL": (
         "https://cdn.example.com/m.gguf",
