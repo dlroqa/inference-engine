@@ -41,6 +41,8 @@ from tests.support.gguf_writer import write_gguf
 
 LOOPBACK = ("127.0.0.1", 40000)
 URL = "https://cdn.example.com/m.gguf"
+# URL downloads get a generated filename unless one is given.
+DOWNLOAD = {"source_type": "url", "url": URL, "filename": "m.gguf"}
 BUSY = "model_busy"
 
 
@@ -59,7 +61,7 @@ def _models_dir(client: TestClient) -> Path:
 
 
 def _start(client: TestClient) -> str:
-    resp = client.post("/admin/models/download", json={"source_type": "url", "url": URL})
+    resp = client.post("/admin/models/download", json=DOWNLOAD)
     assert resp.status_code == 200
     return str(resp.json()["id"])
 
@@ -325,7 +327,7 @@ def test_download_is_refused_for_a_file_being_imported(
     thread, out = _in_thread(lambda: client.post("/admin/models/import", json={"path": str(path)}))
     try:
         assert entered.wait(WAIT)
-        resp = client.post("/admin/models/download", json={"source_type": "url", "url": URL})
+        resp = client.post("/admin/models/download", json=DOWNLOAD)
         assert resp.status_code == 409 and resp.json()["error"]["code"] == BUSY
     finally:
         release.set()

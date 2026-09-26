@@ -194,8 +194,10 @@ otherwise the card gives the engine's reason. A source name alone, such as
 - **Local imports:** the engine's `source_ref` for a local import is the file's
   path. The drawer never shows it and says "Local import (path not shown)" instead.
 - **Remote sources:** a Hugging Face or URL source is shown as plain text, not as
-  a link. The engine removes credentials from it before sending it: URL
-  userinfo, and query values whose names look credential-bearing.
+  a link. A URL download made with this version records no address, so it shows
+  "URL: address not stored". For older records, the engine removes credentials
+  before sending the source: URL userinfo, and query values whose names look
+  credential-bearing.
 - **Error text:** it is shown as text. The engine applies the same credential
   redaction to every URL and query parameter in it, in list and detail
   responses alike.
@@ -204,9 +206,9 @@ otherwise the card gives the engine's reason. A source name alone, such as
 
 - This is not a promise that no text can ever contain a filesystem path. A model
   name, or an error the engine reported, may still name one.
-- The engine's download-failure log line uses the same redaction (see
-  [Security: log redaction](security.md#log-redaction)); the registry itself
-  still stores the raw error text.
+- New download failures are stored and logged only as fixed messages (see
+  [Security: log redaction](security.md#log-redaction)). Records from earlier
+  versions may still hold raw error text in the database; responses redact it.
 
 **Refresh.** The drawer refreshes from the model list's polling, not from a
 separate loop:

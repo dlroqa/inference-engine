@@ -37,6 +37,8 @@ from tests.models.test_download_worker_lifetime import (
 
 LOOPBACK = ("127.0.0.1", 40000)
 URL = "https://cdn.example.com/m.gguf"
+# URL downloads get a generated filename unless one is given.
+DOWNLOAD = {"source_type": "url", "url": URL, "filename": "m.gguf"}
 REFUSED = "model_cancel_not_accepted"
 
 
@@ -47,7 +49,7 @@ def client(tmp_settings: Settings) -> Iterator[TestClient]:
 
 
 def _start(client: TestClient) -> str:
-    resp = client.post("/admin/models/download", json={"source_type": "url", "url": URL})
+    resp = client.post("/admin/models/download", json=DOWNLOAD)
     assert resp.status_code == 200
     return str(resp.json()["id"])
 

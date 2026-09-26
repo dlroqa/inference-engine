@@ -31,7 +31,17 @@ ProgressCallback = Callable[[int, int | None], None]
 
 
 class DownloadError(Exception):
-    """A download failed (network, HTTP, or size-limit)."""
+    """A download failed (network, HTTP, or size-limit).
+
+    ``safe`` marks a message built only from fixed text, numbers and exception
+    type names: never a URL, a path, or text a server or the OS supplied. Every
+    error this module raises is safe. The model service stores and logs only
+    safe messages; anything else is recorded as a fixed label.
+    """
+
+    def __init__(self, message: str, *, safe: bool = False) -> None:
+        super().__init__(message)
+        self.safe = safe
 
 
 class DownloadCancelled(Exception):
@@ -80,6 +90,15 @@ class CancelEvent(threading.Event):
             return True
 
 
+def _describe(exc: BaseException) -> str:
+    """A transport failure as type names and an errno only (no message text)."""
+    reason = getattr(exc, "reason", None)
+    cause = reason if isinstance(reason, BaseException) else exc
+    errno = getattr(cause, "errno", None)
+    text = type(cause).__name__
+    return f"{text}, errno {errno}" if isinstance(errno, int) else text
+
+
 def _check(cancel: threading.Event | None) -> None:
     if cancel is not None and cancel.is_set():
         raise DownloadCancelled("download cancelled")
@@ -111,7 +130,7 @@ def _read(response: http.client.HTTPResponse, size: int) -> bytes:
     try:
         return response.read(size)
     except (OSError, http.client.HTTPException) as exc:
-        raise DownloadError(f"network error reading model: {exc}") from exc
+        raise DownloadError(f"network error reading model ({_describe(exc)})", safe=True) from exc
 
 
 def download(
@@ -145,7 +164,7 @@ def download(
     except (ValueError, http.client.InvalidURL) as exc:
         # The URL was rejected before or while the request was built. Both
         # exceptions quote the URL, so only the type is kept (no chaining).
-        raise DownloadError(f"invalid model URL ({type(exc).__name__})") from None
+        raise DownloadError(f"invalid model URL ({type(exc).__name__})", safe=True) from None
     except urllib.error.HTTPError as exc:
         if resume_from and exc.code == 416:  # range not satisfiable -> restart clean
             part.unlink(missing_ok=True)
@@ -158,9 +177,9 @@ def download(
                 cancel=cancel,
                 max_bytes=max_bytes,
             )
-        raise DownloadError(f"HTTP {exc.code} fetching model") from exc
+        raise DownloadError(f"HTTP {int(exc.code)} fetching model", safe=True) from exc
     except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
-        raise DownloadError(f"network error fetching model: {exc}") from exc
+        raise DownloadError(f"network error fetching model ({_describe(exc)})", safe=True) from exc
 
     try:
         _check(cancel)
@@ -175,7 +194,7 @@ def download(
         if length and length.isdigit():
             total = int(length) + (resume_from if partial else 0)
         if max_bytes and total and total > max_bytes:
-            raise DownloadError(f"model exceeds max_model_bytes ({total} > {max_bytes})")
+            raise DownloadError(f"model exceeds max_model_bytes ({total} > {max_bytes})", safe=True)
 
         downloaded = resume_from
         mode = "ab" if (resume_from and partial) else "wb"
@@ -192,7 +211,7 @@ def download(
                 fh.write(chunk)
                 downloaded += len(chunk)
                 if max_bytes and downloaded > max_bytes:
-                    raise DownloadError(f"model exceeds max_model_bytes ({max_bytes})")
+                    raise DownloadError(f"model exceeds max_model_bytes ({max_bytes})", safe=True)
                 _check(cancel)
                 if progress_cb is not None:
                     progress_cb(downloaded, total)
@@ -202,7 +221,10 @@ def download(
     _check(cancel)
     digest = sha256_file(part, chunk_bytes, cancel=cancel)
     if expected_sha256 and digest.lower() != expected_sha256.lower():
-        raise ChecksumMismatch(f"checksum mismatch: expected {expected_sha256}, got {digest}")
+        raise ChecksumMismatch(
+            f"checksum mismatch: the file's SHA-256 ({digest}) is not the expected value",
+            safe=True,
+        )
     _promote(part, dest, cancel)
     return digest
 

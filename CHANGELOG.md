@@ -49,6 +49,19 @@ release notes and refuses to publish without it (see `docs/releasing.md`).
     grace period it logs `model_download_shutdown_waiting` and keeps waiting
     rather than abandoning the worker, so shutdown can take longer while a
     download is in flight (see `docs/deployment.md`).
+- New model records no longer keep any part of a URL download's address.
+  - `source_ref` is `address not stored`.
+  - The file name is generated (`download-<random>.gguf`) unless a safe
+    `filename` is given (letters, digits, `.`, `_`, `-`; anything else answers
+    `400`). The model name defaults to its stem. Previously both came from the
+    URL path.
+  - Download failures are stored and logged only as fixed messages built from
+    numbers and exception type names (`HTTP 403 fetching model`,
+    `network error fetching model (URLError)`,
+    `download failed during download (RuntimeError)`). Exception text is not
+    kept.
+  - Hugging Face references and local import paths are unchanged. Rows written
+    by earlier versions are not rewritten; see `docs/security.md`.
 - `DELETE /admin/models/{id}` no longer cancels an in-flight download and removes
   its files at once. It answers `409 model_busy` while the engine owns work for
   the model: a download until its worker has stopped (also after an accepted
