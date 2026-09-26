@@ -49,6 +49,15 @@ release notes and refuses to publish without it (see `docs/releasing.md`).
     grace period it logs `model_download_shutdown_waiting` and keeps waiting
     rather than abandoning the worker, so shutdown can take longer while a
     download is in flight (see `docs/deployment.md`).
+- `DELETE /admin/models/{id}` no longer cancels an in-flight download and removes
+  its files at once. It answers `409 model_busy` while the engine owns work for
+  the model: a download until its worker has stopped (also after an accepted
+  cancel and during finalization), a load, or an import of the same file. A
+  refused delete changes nothing. Cancel, wait for the download to stop, then
+  delete. Loads and imports now also answer `409 model_busy` when the model or
+  file is in use by another operation. If deleting files or the row fails, the
+  answer is `500 model_delete_failed`, the row is kept, and a repeated delete
+  converges. The delete audit event is written only after success.
 - `POST /admin/models/{id}/cancel` now answers `409 model_cancel_not_accepted`
   when the engine refuses the request: the file is already committed (the
   download is finishing), or no worker is running for the model. Previously

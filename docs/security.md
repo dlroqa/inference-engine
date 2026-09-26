@@ -128,6 +128,19 @@ once the file is committed and the download is finishing, or when no worker is
 running for the model (for example after a forced kill). It never answers as if
 a refused request had been accepted.
 
+`DELETE /admin/models/{id}` refuses with `409 model_busy` while the engine owns
+work for the model: a download from its start until its worker has stopped
+(including after an accepted cancel, and while the file is committed but still
+being finalized), a load in progress, or an import of the same file. A refused
+delete changes nothing: it does not cancel the download or remove any file. To
+delete a downloading model, cancel it, wait until it shows `cancelled` (or
+`ready`/`error`), then delete it. The decision and the deletion happen without
+yielding to other requests, so no new download, import or load can start using
+the model in between. If removing a file or the registry row fails, the delete
+answers `500 model_delete_failed` with a fixed message and keeps the row. A
+repeated delete finishes the job and skips files that are already gone. The
+audit event is recorded only after the delete succeeds.
+
 On shutdown, the engine requests cancellation of every download and waits until
 each worker has stopped and its outcome is recorded. The 10-second grace period
 is a warning threshold, not a limit: after it, the engine logs

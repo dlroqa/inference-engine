@@ -76,6 +76,34 @@ describe("Models view", () => {
     await waitFor(() => expect(del).toHaveBeenCalledWith("m1"));
   });
 
+  it("shows a busy delete as an error, without claiming deletion or ending the session", async () => {
+    vi.spyOn(api, "listModels").mockResolvedValue({ models: [model()] });
+    const busy =
+      "the model has a download, load or import in progress; wait for it to finish (cancel a download first if needed), then retry";
+    const del = vi.spyOn(api, "deleteModel").mockRejectedValue(new ApiError(busy, 409, "model_busy"));
+    const sessionLost = vi.fn();
+    const report = vi.fn((e: unknown) => {
+      if (!isAuthFailure(e)) return false;
+      sessionLost();
+      return true;
+    });
+    render(
+      <AuthScopeProvider value={report}>
+        <Models />
+      </AuthScopeProvider>,
+    );
+    await screen.findByText("tiny");
+    await userEvent.click(screen.getByRole("button", { name: /Delete tiny/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete tiny?" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete model" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(busy);
+    expect(del).toHaveBeenCalledTimes(1);
+    expect(sessionLost).not.toHaveBeenCalled();
+    expect(screen.getByText("tiny")).toBeInTheDocument(); // still listed
+    expect(screen.getByRole("button", { name: /Delete tiny/ })).toBeEnabled();
+  });
+
   it("explains the delete file policy in the row hint and inside the confirmation", async () => {
     vi.spyOn(api, "listModels").mockResolvedValue({ models: [model()] });
     render(<Models />);

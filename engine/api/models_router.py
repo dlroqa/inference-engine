@@ -27,7 +27,12 @@ from engine.inference.base import InferenceBackend
 from engine.inference.types import BackendError, BackendState
 from engine.models.redaction import redact_source_ref, redact_urls_in_text
 from engine.models.registry import ModelRecord, ModelRegistry, ModelStatus
-from engine.models.service import ModelService, ModelServiceError
+from engine.models.service import (
+    ModelBusyError,
+    ModelDeleteError,
+    ModelService,
+    ModelServiceError,
+)
 
 router = APIRouter(prefix="/admin/models", tags=["models"])
 
@@ -103,6 +108,15 @@ def _serialize(request: Request, record: ModelRecord) -> dict[str, Any]:
     }
 
 
+def _busy(exc: ModelBusyError) -> OpenAIError:
+    return OpenAIError(
+        f"{exc}; wait for it to finish (cancel a download first if needed), then retry",
+        status_code=409,
+        type="invalid_request_error",
+        code="model_busy",
+    )
+
+
 def _require(request: Request, model_id: str) -> ModelRecord:
     record = _registry(request).get(model_id)
     if record is None:
@@ -150,6 +164,8 @@ async def import_model(request: Request, body: ImportBody) -> dict[str, Any]:
     _require_management(request)
     try:
         record = await _service(request).import_local(Path(body.path), body.name)
+    except ModelBusyError as exc:
+        raise _busy(exc) from exc
     except ModelServiceError as exc:
         raise OpenAIError(
             str(exc), status_code=400, type="invalid_request_error", code="model_import_failed"
@@ -174,6 +190,8 @@ async def download_model(request: Request, body: DownloadBody) -> dict[str, Any]
             url=body.url,
             expected_sha256=body.expected_sha256,
         )
+    except ModelBusyError as exc:
+        raise _busy(exc) from exc
     except ModelServiceError as exc:
         raise OpenAIError(
             str(exc), status_code=400, type="invalid_request_error", code="model_download_failed"
@@ -232,25 +250,30 @@ async def load_model(request: Request, model_id: str) -> dict[str, Any]:
             code="model_name_conflict",
         )
     service = _service(request)
-    backend = service.build_backend(record)
     try:
-        await backend.load()
-    except BackendError as exc:
-        raise OpenAIError(
-            f"model failed to load: {exc}",
-            status_code=503,
-            type="service_unavailable",
-            code="model_load_failed",
-        ) from exc
+        # Held until the swap is done, so the model cannot be deleted mid-load.
+        with service.operation(record):
+            backend = service.build_backend(record)
+            try:
+                await backend.load()
+            except BackendError as exc:
+                raise OpenAIError(
+                    f"model failed to load: {exc}",
+                    status_code=503,
+                    type="service_unavailable",
+                    code="model_load_failed",
+                ) from exc
 
-    previous: InferenceBackend | None = getattr(request.app.state, "backend", None)
-    request.app.state.backend = backend
-    _registry(request).set_active(model_id)
-    if previous is not None and previous is not backend:
-        try:
-            await previous.unload()
-        except BackendError:  # pragma: no cover - best-effort cleanup
-            pass
+            previous: InferenceBackend | None = getattr(request.app.state, "backend", None)
+            request.app.state.backend = backend
+            _registry(request).set_active(model_id)
+            if previous is not None and previous is not backend:
+                try:
+                    await previous.unload()
+                except BackendError:  # pragma: no cover - best-effort cleanup
+                    pass
+    except ModelBusyError as exc:
+        raise _busy(exc) from exc
     _audit(request, "model.load", model_id, name=record.name)
     return {"result": "loaded", "model": _serialize(request, _require(request, model_id))}
 
@@ -281,9 +304,18 @@ async def delete_model(request: Request, model_id: str) -> dict[str, Any]:
             type="invalid_request_error",
             code="model_loaded",
         )
-    _service(request).cancel(model_id)  # stop any in-flight download first
-    service = _service(request)
-    service.delete_files(record)
-    _registry(request).delete(model_id)
+    # Refused while a download (including its finalization), a load or an
+    # import is in progress: cancel a download and wait for it to stop first.
+    try:
+        _service(request).delete_model(record)
+    except ModelBusyError as exc:
+        raise _busy(exc) from exc
+    except ModelDeleteError as exc:
+        raise OpenAIError(
+            "the model could not be deleted completely; it is still listed. Retry the delete.",
+            status_code=500,
+            type="server_error",
+            code="model_delete_failed",
+        ) from exc
     _audit(request, "model.delete", model_id, name=record.name)
     return {"deleted": True, "id": model_id}
