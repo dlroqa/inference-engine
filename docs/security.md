@@ -212,6 +212,75 @@ rotate the affected credentials, or let signed URLs expire, following your
 provider's procedures. Fixing the code does not revoke a credential or remove
 copies already logged.
 
+### Historical model records and logs: operator runbook
+
+Engine versions before the stored-data policy above kept a URL download's full
+address in `models.source_ref` and raw exception text in `models.error`. Their
+download-failure log lines and support bundles could also carry them. This
+runbook is for the operator: upgrading the engine changes neither old records
+nor copies. Each step needs the authorization your organization requires. It
+never needs production data or secrets to be pasted into chats, tickets, pull
+requests or CI.
+
+1. **Decide whether it applies.** Were URL downloads with credentials in the
+   address (userinfo, signed or tokenized query or path) used with an earlier
+   version? This check reports counts and IDs only, never values. Run it with the
+   engine stopped, on the host, against the live database:
+
+   ```sql
+   SELECT COUNT(*) FROM models
+   WHERE source_type = 'url' AND source_ref IS NOT 'address not stored';
+   SELECT id, status FROM models
+   WHERE source_type = 'url' AND source_ref IS NOT 'address not stored';
+   ```
+
+   A count of zero means this database holds no pre-policy URL rows. It says
+   nothing about logs, bundles or backups made earlier.
+2. **Contain.** Restrict access to the database file (and its `-wal`/`-shm`
+   files), backups and snapshots, centralized logs, exported support bundles
+   (`/diagnostics` includes recent log lines) and CI artifacts. Do this before
+   anything is copied for review.
+3. **Credentials.** If affected addresses carried reusable credentials, have
+   the credential owner revoke or rotate them and review their use. For signed
+   URLs, use the provider's expiry or revocation controls, and do not rotate a
+   broad signing key without assessing its impact. This is the step that ends
+   the exposure; cleaning records does not.
+4. **Preserve evidence first.** If an incident review is open, keep an
+   access-restricted copy of the database and logs as your incident process
+   requires before changing anything.
+5. **Sanitize the live database (optional, offline, dry run first).** With the
+   engine stopped and a backup taken under step 4:
+
+   ```sql
+   -- Dry run: how many rows would change.
+   SELECT COUNT(*) FROM models
+   WHERE source_type = 'url'
+     AND (source_ref IS NOT 'address not stored' OR error IS NOT NULL);
+   -- Apply in one transaction; model paths, status and hashes are untouched.
+   BEGIN;
+   UPDATE models SET source_ref = 'address not stored'
+     WHERE source_type = 'url' AND source_ref IS NOT 'address not stored';
+   UPDATE models SET error = 'error text removed during sanitation'
+     WHERE source_type = 'url' AND error IS NOT NULL;
+   COMMIT;
+   VACUUM;
+   ```
+
+   Model names and file names from earlier versions can also contain parts of
+   the URL path. Check them in the same way and rename where needed. `VACUUM`
+   rebuilds the database file without its free pages. It does not erase copies
+   in backups, snapshots, the WAL of a still-open connection, or storage-level
+   remnants, so do not treat it as proof of physical erasure.
+6. **Retained copies.** Handle logs, bundles, artifacts and backups under your
+   retention and incident policy: keep what the review needs, restrict access,
+   then delete, replace, let expire, or crypto-erase where the provider supports
+   it. Immutable backups may have to stay restricted until they expire.
+   **Restoring** a pre-policy backup brings the old rows back, so run step 5
+   again after any such restore.
+7. **Record the outcome.** Note who owns each step and its status (not started,
+   done, not applicable). There is no known incident. "No leak observed" is not
+   evidence that old logs are safe.
+
 ## Patch / CVE visibility
 
 - CI runs **`pip-audit`** against the locked dependencies on every build and prints
