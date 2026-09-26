@@ -49,6 +49,16 @@ release notes and refuses to publish without it (see `docs/releasing.md`).
     grace period it logs `model_download_shutdown_waiting` and keeps waiting
     rather than abandoning the worker, so shutdown can take longer while a
     download is in flight (see `docs/deployment.md`).
+- Downloads left running by a killed engine are recovered at the next start.
+  Before admitting model operations, the engine marks each `downloading` or
+  `verifying` row `error` with a fixed "download interrupted" message and logs
+  `model_download_interrupted` with a fixed files label. Files are kept as
+  found, nothing is marked ready, the update is conditional (a repeated start
+  changes nothing), and a database failure fails startup. Delete the model,
+  then download again.
+- A serving engine now holds an exclusive lock on `<database>.lock` for its
+  lifetime. A second engine on the same data directory refuses to start
+  (`StoreLockedError`). The OS releases the lock on any exit, including a kill.
 - New model records no longer keep any part of a URL download's address.
   - `source_ref` is `address not stored`.
   - The file name is generated (`download-<random>.gguf`) unless a safe
