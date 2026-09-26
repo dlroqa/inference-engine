@@ -15,7 +15,9 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import functools
+import re
 import time
+import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -78,6 +80,26 @@ def _path_key(path: Path) -> str:
         return str(Path(path).resolve())
     except OSError:
         return str(Path(path).absolute())
+
+
+# What a URL download records as its source. The address itself is used only
+# for the live download: a path segment or an unknown query parameter can be a
+# credential, so no part of it is stored, logged, or used to name the model.
+URL_SOURCE_DESCRIPTOR = "address not stored"
+
+# An operator-supplied filename for a URL download.
+_OPERATOR_FILENAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+
+def _url_download_filename(filename: str | None) -> str:
+    """A generated name, or the operator's filename if it is plainly safe."""
+    if not filename:
+        return f"download-{uuid.uuid4().hex[:12]}.gguf"
+    if not _OPERATOR_FILENAME.fullmatch(filename):
+        raise ModelServiceError(
+            "filename may contain only letters, digits, '.', '_' and '-' (at most 128)"
+        )
+    return filename
 
 
 def _safe_filename(name: str) -> str:
@@ -203,9 +225,9 @@ class ModelService:
         elif source_type == "url":
             if not url:
                 raise ModelServiceError("url downloads require 'url'")
-            fetch_url = url
-            source_ref = url
-            base = _safe_filename(filename or Path(url.split("?", 1)[0]).name or "model.gguf")
+            fetch_url = url  # used only by the live download, never stored
+            source_ref = URL_SOURCE_DESCRIPTOR
+            base = _url_download_filename(filename)
         else:
             raise ModelServiceError(f"unknown source_type: {source_type!r}")
 
@@ -310,10 +332,8 @@ class ModelService:
             )
         except downloader.DownloadCancelled:
             self._record_cancelled(model_id)
-        except downloader.DownloadError as exc:
-            self._record_failure(model_id, stage, exc, expected=True)
         except Exception as exc:
-            self._record_failure(model_id, stage, exc, expected=False)
+            self._record_failure(model_id, stage, exc)
         else:
             _log.info("model_download_ready", extra={"model_id": model_id})
         finally:
@@ -352,26 +372,30 @@ class ModelService:
         self._persist_terminal(model_id, ModelStatus.CANCELLED)
         _log.info("model_download_cancelled", extra={"model_id": model_id})
 
-    def _record_failure(self, model_id: str, stage: str, exc: Exception, *, expected: bool) -> None:
+    def _record_failure(self, model_id: str, stage: str, exc: Exception) -> None:
         """The single terminal path for a failed download.
 
-        The registry keeps the raw text (API responses redact it on the way
-        out); the log line only ever gets the redacted form, computed before
-        the logger is called. No exc_info: the exception chain can quote the
-        original URL. An unexpected exception is labelled with its stage and
-        type, never with the source URL.
+        Only a message the downloader built from fixed text, numbers and type
+        names (``DownloadError.safe``) is stored and logged. Any other exception
+        is recorded as its stage and type, never its text: exception text can
+        quote the URL or a server's reply, and not every secret has a known
+        shape. The log line also passes through the shared redaction, computed
+        before the logger is called; no exc_info (the chain can quote the URL).
         """
-        raw = _exception_text(exc)
-        if raw is not None and not expected:
-            raw = f"download failed during {stage} ({type(exc).__name__}): {raw}"
-        self._persist_terminal(model_id, ModelStatus.ERROR, error=WITHHELD if raw is None else raw)
+        label = f"download failed during {stage} ({type(exc).__name__})"
+        message: str | None = label
+        if isinstance(exc, downloader.DownloadError) and exc.safe:
+            message = _exception_text(exc)
+        self._persist_terminal(
+            model_id, ModelStatus.ERROR, error=WITHHELD if message is None else message
+        )
         _log.warning(
             "model_download_failed",
             extra={
                 "model_id": model_id,
                 "stage": stage,
                 "error_type": type(exc).__name__,
-                "detail": _log_safe_detail(raw),
+                "detail": _log_safe_detail(message),
             },
         )
 
