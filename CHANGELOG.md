@@ -16,6 +16,8 @@ release notes and refuses to publish without it (see `docs/releasing.md`).
   revoked keys are refused from localhost too, and keyless loopback access is
   allowed only while effective authentication is off. Previously any valid key,
   including a client's, opened every operator endpoint.
+- Credential query values (e.g. the dashboard's WebSocket `?api_key=`) are
+  redacted from server log lines and the stored log buffer.
 
 ### Added
 

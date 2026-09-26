@@ -11,8 +11,20 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import logging
+import re
 import sys
 from typing import Any
+
+# Credentials that can appear inside a logged URL, e.g. the dashboard's
+# WebSocket handshake ``/ws/feed?api_key=...`` in uvicorn's access line.
+_SECRET_QUERY = re.compile(
+    r"(?i)([?&](?:api_key|apikey|token|access_token|key|secret|password)=)[^&\s\"']+"
+)
+
+
+def redact_secrets(text: str) -> str:
+    """Mask credential-bearing query values in a log message."""
+    return _SECRET_QUERY.sub(r"\1***", text)
 
 _RESERVED = {
     "name",
@@ -47,12 +59,12 @@ class JsonFormatter(logging.Formatter):
             "ts": _dt.datetime.fromtimestamp(record.created, tz=_dt.UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
-            "event": record.getMessage(),
+            "event": redact_secrets(record.getMessage()),
         }
         # Merge any structured extras passed via ``logger.info(msg, extra={...})``.
         for key, value in record.__dict__.items():
             if key not in _RESERVED and not key.startswith("_"):
-                payload[key] = value
+                payload[key] = redact_secrets(value) if isinstance(value, str) else value
         if record.exc_info:
             payload["exc_info"] = self.formatException(record.exc_info)
         if record.stack_info:
