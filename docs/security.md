@@ -86,6 +86,25 @@ formatter's own query masking stays in place as a second layer. If the text cann
 be redacted, a fixed "error details withheld" message is logged instead. The log
 line never carries the exception or its traceback.
 
+Every ordinary failure of the background download task ends on that same path,
+not only the downloader's own download errors: an invalid URL (rejected with a
+fixed `invalid model URL (<type>)` message that does not quote it), a transport
+error while reading, an unexpected exception in the worker, or a failure while
+probing the finished file. The model is marked `error`, the warning names the
+stage (`download` or `finalize`) and the exception type, and the exception never
+escapes the task, so asyncio's "Task exception was never retrieved" report
+cannot print it. Cancellation is not a failure: a cancelled download is marked
+`cancelled` and logs `model_download_cancelled`. On shutdown the engine signals
+every download to stop and waits up to 10 seconds for the workers to do so;
+downloads still running after that are cancelled, and their workers write no
+further progress.
+
+If the database is unavailable when a failure is recorded, the state change is
+attempted once, not retried. The engine then logs
+`model_download_state_not_recorded` with the intended status and the database
+error's type (not its text), and the model can remain `downloading` in the
+registry until an operator deletes or re-downloads it.
+
 Limits:
 
 - The model registry (and therefore the database and its backups) still stores
@@ -93,16 +112,22 @@ Limits:
   both, but anyone with direct access to the database can read them.
 - Log lines, log exports and support bundles written before this change are not
   rewritten.
+- Only the owned download task is covered. This is not a global exception or
+  logging filter, and other components' logs are protected only by the JSON
+  formatter's narrower query masking.
 - Only credentials in URL userinfo or in credential-named query parameters are
   recognized. A credential in a URL path, in a parameter with an unrelated name,
   or encoded more than once inside a nested URL is not detected.
 
 Until a release with this change is deployed, prefer model sources that do not
 put credentials in the URL (for example a local import of a file fetched by an
-approved process). If credential-bearing URLs were used with an earlier release,
-treat its logs and exports as sensitive and revoke or rotate the affected
-credentials, or let signed URLs expire, following your provider's procedures.
-Fixing the code does not revoke a credential or remove copies already logged.
+approved process). There is no known incident. If credential-bearing URLs were
+used with an earlier release, that warrants an authorized review of the affected
+systems, time window and retained copies (logs, exports, support bundles,
+backups), even if no leak was noticed: treat them as sensitive, and revoke or
+rotate the affected credentials, or let signed URLs expire, following your
+provider's procedures. Fixing the code does not revoke a credential or remove
+copies already logged.
 
 ## Patch / CVE visibility
 

@@ -16,6 +16,7 @@ import asyncio
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 from engine.config import Settings
 from engine.inference.llamacpp import LlamaCppBackend
@@ -25,6 +26,9 @@ from engine.models.redaction import WITHHELD, redact_urls_in_text
 from engine.models.registry import ModelRecord, ModelRegistry, ModelStatus
 
 _log = get_logger("engine.models")
+
+# How long shutdown waits for download workers to observe cancellation.
+_SHUTDOWN_GRACE_SECONDS = 10.0
 
 
 def _exception_text(exc: BaseException) -> str | None:
@@ -203,6 +207,8 @@ class ModelService:
 
         def progress(done: int, total: int | None) -> None:
             nonlocal last, seen_total
+            if cancel.is_set():  # cancelled or shutting down: no late writes
+                return
             if total is not None and not seen_total:
                 seen_total = True
                 self.registry.update(model_id, size_bytes=total)
@@ -211,6 +217,11 @@ class ModelService:
                 last = now
                 self.registry.add_progress(model_id, done)
 
+        # This task is fire-and-forget: every ordinary exception ends here, in a
+        # recorded terminal state with a sanitized log line, and never escapes
+        # to asyncio's unhandled-task reporting (which would print it raw).
+        # Task cancellation (asyncio.CancelledError) still propagates.
+        stage = "download"
         try:
             digest = await asyncio.to_thread(
                 downloader.download,
@@ -222,22 +233,7 @@ class ModelService:
                 cancel=cancel,
                 max_bytes=self.settings.max_model_bytes,
             )
-        except downloader.DownloadCancelled:
-            self.registry.update(model_id, status=str(ModelStatus.CANCELLED))
-            _log.info("model_download_cancelled", extra={"model_id": model_id})
-        except downloader.DownloadError as exc:
-            # The registry keeps the raw text (API responses redact it on the way
-            # out); the log line only ever gets the redacted form. No exc_info:
-            # the exception chain can quote the original URL.
-            raw = _exception_text(exc)
-            self.registry.update(
-                model_id, status=str(ModelStatus.ERROR), error=WITHHELD if raw is None else raw
-            )
-            _log.warning(
-                "model_download_failed",
-                extra={"model_id": model_id, "detail": _log_safe_detail(raw)},
-            )
-        else:
+            stage = "finalize"
             info = await asyncio.to_thread(gguf.probe, dest)
             size = dest.stat().st_size
             self.registry.update(
@@ -251,10 +247,69 @@ class ModelService:
                 context_length=info.context_length,
                 error=None,
             )
+        except downloader.DownloadCancelled:
+            self._record_cancelled(model_id)
+        except asyncio.CancelledError:
+            cancel.set()  # the worker thread is not stopped by task cancellation
+            self._record_cancelled(model_id)
+            raise
+        except downloader.DownloadError as exc:
+            self._record_failure(model_id, stage, exc, expected=True)
+        except Exception as exc:
+            self._record_failure(model_id, stage, exc, expected=False)
+        else:
             _log.info("model_download_ready", extra={"model_id": model_id})
         finally:
             self._cancels.pop(model_id, None)
             self._tasks.pop(model_id, None)
+
+    def _persist_terminal(self, model_id: str, status: ModelStatus, **fields: Any) -> bool:
+        """One attempt to record a terminal state; a failure is reported, not raised.
+
+        The raw database error is not logged (only its type), and the update is
+        not retried: if the store is unavailable, the log says the state was not
+        recorded instead of claiming a transition that did not persist.
+        """
+        try:
+            self.registry.update(model_id, status=str(status), **fields)
+            return True
+        except Exception as exc:
+            _log.warning(
+                "model_download_state_not_recorded",
+                extra={
+                    "model_id": model_id,
+                    "status": str(status),
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return False
+
+    def _record_cancelled(self, model_id: str) -> None:
+        self._persist_terminal(model_id, ModelStatus.CANCELLED)
+        _log.info("model_download_cancelled", extra={"model_id": model_id})
+
+    def _record_failure(self, model_id: str, stage: str, exc: Exception, *, expected: bool) -> None:
+        """The single terminal path for a failed download.
+
+        The registry keeps the raw text (API responses redact it on the way
+        out); the log line only ever gets the redacted form, computed before
+        the logger is called. No exc_info: the exception chain can quote the
+        original URL. An unexpected exception is labelled with its stage and
+        type, never with the source URL.
+        """
+        raw = _exception_text(exc)
+        if raw is not None and not expected:
+            raw = f"download failed during {stage} ({type(exc).__name__}): {raw}"
+        self._persist_terminal(model_id, ModelStatus.ERROR, error=WITHHELD if raw is None else raw)
+        _log.warning(
+            "model_download_failed",
+            extra={
+                "model_id": model_id,
+                "stage": stage,
+                "error_type": type(exc).__name__,
+                "detail": _log_safe_detail(raw),
+            },
+        )
 
     def cancel(self, model_id: str) -> bool:
         cancel = self._cancels.get(model_id)
@@ -281,11 +336,20 @@ class ModelService:
         except (ValueError, OSError):
             return False
 
-    async def shutdown(self) -> None:
+    async def shutdown(self, grace_seconds: float = _SHUTDOWN_GRACE_SECONDS) -> None:
+        """Stop in-flight downloads.
+
+        Signals every worker to cancel, then waits up to ``grace_seconds`` for
+        them to stop between chunks and record ``cancelled`` themselves. Tasks
+        still running after that are cancelled; their worker threads have the
+        cancel event set, write no further progress, and stop at the next chunk.
+        """
         for cancel in list(self._cancels.values()):
             cancel.set()
         tasks = list(self._tasks.values())
-        for task in tasks:
+        if not tasks:
+            return
+        _, pending = await asyncio.wait(tasks, timeout=grace_seconds)
+        for task in pending:
             task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)

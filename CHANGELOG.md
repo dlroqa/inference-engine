@@ -27,8 +27,17 @@ release notes and refuses to publish without it (see `docs/releasing.md`).
   as API responses (URL userinfo, credential-like query values, encoded names,
   nested redirect targets) before the logger is called, so no handler or
   formatter sees the raw text. If redaction fails, a fixed message is logged
-  instead. The registry still stores the raw error text, and log lines written
-  before this change are not rewritten; see `docs/security.md`.
+  instead. Every ordinary failure of the download task takes this path, including
+  invalid URLs (`ValueError`/`InvalidURL`, now a `DownloadError` that does not
+  quote the URL), read errors, unexpected worker exceptions and failures while
+  probing the finished file: the model is marked `error` and the exception no
+  longer escapes to asyncio's unhandled-task report (previously such a model
+  stayed `downloading`). The warning now also carries `stage` and `error_type`.
+  A database failure while recording the outcome is logged as
+  `model_download_state_not_recorded`. Shutdown waits up to 10 seconds for
+  download workers to stop before cancelling them, and cancelled workers write
+  no further progress. The registry still stores the raw error text, and log
+  lines written before this change are not rewritten; see `docs/security.md`.
 - The model-source redaction now also removes userinfo containing quotes or
   parentheses, masks credential values containing them, and masks credentials
   inside a nested redirect URL passed as a query value.

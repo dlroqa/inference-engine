@@ -13,6 +13,7 @@ are out of scope for this block.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import threading
 import urllib.error
 import urllib.request
@@ -51,6 +52,14 @@ def sha256_file(path: Path, chunk_bytes: int = 1_048_576) -> str:
     return h.hexdigest()
 
 
+def _read(response: http.client.HTTPResponse, size: int) -> bytes:
+    """One chunk of the response body; a transport failure is a :class:`DownloadError`."""
+    try:
+        return response.read(size)
+    except (OSError, http.client.HTTPException) as exc:
+        raise DownloadError(f"network error reading model: {exc}") from exc
+
+
 def download(
     url: str,
     dest: Path,
@@ -75,9 +84,13 @@ def download(
     if resume_from:
         headers["Range"] = f"bytes={resume_from}-"
 
-    request = urllib.request.Request(url, headers=headers)
     try:
+        request = urllib.request.Request(url, headers=headers)
         response = urllib.request.urlopen(request, timeout=30)  # noqa: S310 (http(s) only)
+    except (ValueError, http.client.InvalidURL) as exc:
+        # The URL was rejected before or while the request was built. Both
+        # exceptions quote the URL, so only the type is kept (no chaining).
+        raise DownloadError(f"invalid model URL ({type(exc).__name__})") from None
     except urllib.error.HTTPError as exc:
         if resume_from and exc.code == 416:  # range not satisfiable -> restart clean
             part.unlink(missing_ok=True)
@@ -91,7 +104,7 @@ def download(
                 max_bytes=max_bytes,
             )
         raise DownloadError(f"HTTP {exc.code} fetching model") from exc
-    except (urllib.error.URLError, OSError) as exc:
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
         raise DownloadError(f"network error fetching model: {exc}") from exc
 
     # If the server ignored the Range header (200 not 206), start over.
@@ -115,7 +128,7 @@ def download(
             while True:
                 if cancel is not None and cancel.is_set():
                     raise DownloadCancelled("download cancelled")
-                chunk = response.read(chunk_bytes)
+                chunk = _read(response, chunk_bytes)
                 if not chunk:
                     break
                 fh.write(chunk)
