@@ -16,7 +16,8 @@ import asyncio
 import contextvars
 import functools
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -63,6 +64,22 @@ class ModelServiceError(Exception):
     """A model-management operation failed (bad input, missing file, conflict)."""
 
 
+class ModelBusyError(ModelServiceError):
+    """Work the service owns is still running for this model or its file."""
+
+
+class ModelDeleteError(ModelServiceError):
+    """Deleting a model failed part-way; the registry row is kept for a retry."""
+
+
+def _path_key(path: Path) -> str:
+    """A stable key for a model file path (resolved when possible)."""
+    try:
+        return str(Path(path).resolve())
+    except OSError:
+        return str(Path(path).absolute())
+
+
 def _safe_filename(name: str) -> str:
     """Reduce a filename to a safe basename (no path traversal)."""
     base = Path(name).name
@@ -76,6 +93,12 @@ class ModelService:
         self.models_dir = Path(settings.models_dir)  # type: ignore[arg-type]
         self._cancels: dict[str, downloader.CancelEvent] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        # Ownership the delete decision checks. A download is owned from its
+        # start until its worker has stopped (``_tasks``); its destination is
+        # reserved for that long. Loads hold their model id, imports their path.
+        self._download_paths: dict[str, str] = {}
+        self._operations: set[str] = set()
+        self._import_paths: set[str] = set()
 
     # -- metadata / compat -------------------------------------------------
 
@@ -99,27 +122,36 @@ class ModelService:
 
     async def import_local(self, path: Path, name: str | None = None) -> ModelRecord:
         path = Path(path).expanduser()
-        if not path.is_file():
-            raise ModelServiceError(f"file not found: {path}")
-        info = gguf.probe(path)
-        if not info.valid:
-            raise ModelServiceError(f"not a valid GGUF file: {path}")
-        # Hash off the event loop; imported files can be large.
-        digest = await asyncio.to_thread(downloader.sha256_file, path)
-        size = path.stat().st_size
-        return self.registry.create(
-            name=name or info.name or path.stem,
-            filename=path.name,
-            path=path,
-            source_type="import",
-            source_ref=str(path),
-            status=ModelStatus.READY,
-            sha256=digest,
-            size_bytes=size,
-            quant=info.quant,
-            arch=info.arch,
-            context_length=info.context_length,
-        )
+        key = _path_key(path)
+        # Reserve the path before the first await, so a delete cannot remove
+        # the file being imported and no in-flight download's file is claimed.
+        if key in self._import_paths or key in self._download_paths.values():
+            raise ModelBusyError("another operation is using this model file")
+        self._import_paths.add(key)
+        try:
+            if not path.is_file():
+                raise ModelServiceError(f"file not found: {path}")
+            info = gguf.probe(path)
+            if not info.valid:
+                raise ModelServiceError(f"not a valid GGUF file: {path}")
+            # Hash off the event loop; imported files can be large.
+            digest = await asyncio.to_thread(downloader.sha256_file, path)
+            size = path.stat().st_size
+            return self.registry.create(
+                name=name or info.name or path.stem,
+                filename=path.name,
+                path=path,
+                source_type="import",
+                source_ref=str(path),
+                status=ModelStatus.READY,
+                sha256=digest,
+                size_bytes=size,
+                quant=info.quant,
+                arch=info.arch,
+                context_length=info.context_length,
+            )
+        finally:
+            self._import_paths.discard(key)
 
     def register_configured(self, path: Path, name: str) -> ModelRecord | None:
         """Register an already-configured model file on startup (no hashing).
@@ -180,6 +212,8 @@ class ModelService:
         if not base.endswith(".gguf"):
             base += ".gguf"
         dest = self.models_dir / base
+        if _path_key(dest) in self._import_paths:
+            raise ModelBusyError("another operation is using this model file")
         if dest.exists() or self.registry.find_by_path(dest) is not None:
             raise ModelServiceError(f"a model file named {base!r} already exists")
 
@@ -194,6 +228,7 @@ class ModelService:
         )
         cancel = downloader.CancelEvent()
         self._cancels[record.id] = cancel
+        self._download_paths[record.id] = _path_key(dest)
         self._tasks[record.id] = asyncio.create_task(
             self._run_download(record.id, fetch_url, dest, expected_sha256, cancel)
         )
@@ -282,10 +317,15 @@ class ModelService:
         else:
             _log.info("model_download_ready", extra={"model_id": model_id})
         finally:
-            self._cancels.pop(model_id, None)
-            self._tasks.pop(model_id, None)
+            self._release(model_id)
         if interrupted:
             raise asyncio.CancelledError
+
+    def _release(self, model_id: str) -> None:
+        """Ends the service's ownership of a download (its worker has stopped)."""
+        self._cancels.pop(model_id, None)
+        self._tasks.pop(model_id, None)
+        self._download_paths.pop(model_id, None)
 
     def _persist_terminal(self, model_id: str, status: ModelStatus, **fields: Any) -> bool:
         """One attempt to record a terminal state; a failure is reported, not raised.
@@ -342,7 +382,48 @@ class ModelService:
             return False
         return cancel.request()
 
-    # -- delete ------------------------------------------------------------
+    # -- ownership and delete ---------------------------------------------
+
+    def is_busy(self, record: ModelRecord) -> bool:
+        """Whether work the service owns is running for this model or its file.
+
+        A download counts from its start until its worker has stopped, including
+        after a cancel request and during post-download finalization; a load or
+        an import of the same file counts while it runs.
+        """
+        return (
+            record.id in self._tasks
+            or record.id in self._operations
+            or _path_key(Path(record.path)) in self._import_paths
+        )
+
+    @contextmanager
+    def operation(self, record: ModelRecord) -> Iterator[None]:
+        """Holds a model for an operation that awaits (a load): delete refuses meanwhile."""
+        if self.is_busy(record):
+            raise ModelBusyError("another operation on this model is in progress")
+        self._operations.add(record.id)
+        try:
+            yield
+        finally:
+            self._operations.discard(record.id)
+
+    def delete_model(self, record: ModelRecord) -> None:
+        """Deletes a model's managed files, then its registry row.
+
+        Refuses (without cancelling anything or touching files) while the
+        service owns work for the model. Runs without awaiting, so nothing can
+        start using the model between the decision and the deletion. If
+        removing a file or the row fails, the row is kept and a repeated delete
+        converges (missing files are skipped).
+        """
+        if self.is_busy(record):
+            raise ModelBusyError("the model has a download, load or import in progress")
+        try:
+            self.delete_files(record)
+            self.registry.delete(record.id)
+        except Exception as exc:
+            raise ModelDeleteError(type(exc).__name__) from None
 
     def delete_files(self, record: ModelRecord) -> None:
         """Remove a model's on-disk files (only files we manage under models_dir)."""
@@ -389,5 +470,4 @@ class ModelService:
             # (and never started a worker): release it here.
             for model_id, task in list(self._tasks.items()):
                 if task.done():
-                    self._tasks.pop(model_id, None)
-                    self._cancels.pop(model_id, None)
+                    self._release(model_id)

@@ -202,7 +202,8 @@ and nothing reconciles this automatically. `POST /admin/models/{id}/cancel`
 answers `409 model_cancel_not_accepted` for such a record. Starting the same
 download again is refused while the record exists, because the file name is
 taken. To recover, delete the record with `DELETE /admin/models/{id}`, which
-needs model management enabled. The dashboard does not offer Delete for a row
+needs model management enabled. A record with no running worker is not
+"busy", so the delete is allowed. The dashboard does not offer Delete for a row
 that says downloading. Deleting removes the engine-managed model file and its
 `.part` file, if present. Then download again.
 
