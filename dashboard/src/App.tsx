@@ -3,7 +3,7 @@ import { api, ApiError, getApiKey, setApiKey, type Identity } from "./lib/api";
 import { Icon, type IconName } from "./components/Icon";
 import { Dialog } from "./components/Dialog";
 import { WiredTo } from "./components/WiredTo";
-import { buildHash, useHashRoute } from "./hooks/useHashRoute";
+import { buildHash, isDrawerEntry, tagDrawerEntry, untaggedState, useHashRoute } from "./hooks/useHashRoute";
 import { SystemProvider } from "./hooks/useSystem";
 import { AuthScopeProvider, isAuthFailure, type AuthFailureReporter } from "./hooks/useAuthScope";
 import { WiringPrefsProvider, useWiringPrefs } from "./hooks/useWiringPrefs";
@@ -20,6 +20,15 @@ type ViewId = "overview" | "monitoring" | "clients" | "models" | "logs" | "secur
 interface NavOpts {
   logQuery?: string;
   clientId?: string | null;
+  /** With `drawer: "open"`, the model whose details open (#/models/<id>). */
+  modelId?: string | null;
+  /**
+   * "open" adds a drawer entry tagged as opened from the list; "close" returns
+   * to that list entry (Back), or replaces a direct-linked drawer with the list.
+   */
+  drawer?: "open" | "close";
+  /** Keep focus on the control that navigated (e.g. a row's select button). */
+  keepFocus?: boolean;
 }
 
 interface NavItem {
@@ -234,6 +243,8 @@ function Shell(): JSX.Element {
   const [session, setSession] = useState(0);
   const main = useRef<HTMLElement>(null);
   const firstRoute = useRef(true);
+  const prevRoute = useRef(route);
+  const keepFocus = useRef(false);
 
   const newSession = useCallback(() => {
     sessionRef.current += 1;
@@ -273,25 +284,46 @@ function Shell(): JSX.Element {
   );
 
   // Move focus to the page content after navigation so keyboard and screen-reader
-  // users land on the new view (not on first render).
+  // users land on the new view (not on first render). Two exceptions keep focus
+  // where the operator is: opening or closing the model drawer (the drawer takes
+  // focus and returns it itself, including on Back/Forward), and a navigation
+  // that asked to keep focus (a client row's select button). Leaving a view,
+  // with or without a drawer open, always focuses the destination's content.
   const routeKey = `${route.view}/${route.segments.join("/")}`;
   useEffect(() => {
+    const prev = prevRoute.current;
+    prevRoute.current = route;
     if (firstRoute.current) {
       firstRoute.current = false;
       return;
     }
+    if (keepFocus.current) {
+      keepFocus.current = false;
+      return;
+    }
+    if (prev.view === "models" && route.view === "models") return;
     main.current?.focus();
   }, [routeKey]);
 
   const navigate = useCallback(
     (next: string, opts: NavOpts = {}) => {
-      if (next === "logs") {
-        go(buildHash("logs", { params: { request_id: opts.logQuery } }));
-      } else if (next === "clients" && opts.clientId) {
-        go(buildHash("clients", { segments: [opts.clientId] }));
-      } else {
-        go(buildHash(next));
+      if (next === "models" && opts.drawer === "close") {
+        if (isDrawerEntry("models")) window.history.back();
+        else go(buildHash("models"), { replace: true, state: untaggedState() });
+        return;
       }
+      let hash: string;
+      if (next === "logs") hash = buildHash("logs", { params: { request_id: opts.logQuery } });
+      else if (next === "clients" && opts.clientId) hash = buildHash("clients", { segments: [opts.clientId] });
+      else if (next === "models" && opts.drawer === "open" && opts.modelId)
+        hash = buildHash("models", { segments: [opts.modelId] });
+      else hash = buildHash(next);
+      if (window.location.hash === hash) return;
+      // Only a navigation that actually happens may consume the keep-focus flag.
+      keepFocus.current = Boolean(opts.keepFocus);
+      go(hash);
+      // Tag only the entry just added for the drawer.
+      if (next === "models" && opts.drawer === "open" && opts.modelId) tagDrawerEntry("models");
     },
     [go],
   );
@@ -413,7 +445,7 @@ function Shell(): JSX.Element {
             {view === "clients" && (
               <Clients focusClientId={route.segments[0] ?? null} onNavigate={navigate} />
             )}
-            {view === "models" && <Models />}
+            {view === "models" && <Models modelId={route.segments[0] ?? null} onNavigate={navigate} />}
             {view === "logs" && <Logs requestId={params.get("request_id") ?? undefined} onNavigate={navigate} />}
             {view === "security" && <Security />}
             {view === "keys" && <Keys />}

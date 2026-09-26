@@ -43,7 +43,43 @@ export function buildHash(
   return `#/${path}${qs ? `?${qs}` : ""}`;
 }
 
-export function useHashRoute(fallback = "overview"): [Route, (hash: string) => void] {
+// A drawer entry is tagged in `history.state` when it is opened from its list,
+// so closing it can return to that list entry (Back) instead of stacking a
+// second copy of the list. A direct link carries no tag. Other keys in the
+// state object are preserved.
+const DRAWER_KEY = "ieDrawer";
+
+function stateObject(state: unknown): Record<string, unknown> {
+  return state !== null && typeof state === "object" ? { ...(state as Record<string, unknown>) } : {};
+}
+
+/** Tags the current history entry as a drawer of `view` opened from its list. */
+export function tagDrawerEntry(view: string): void {
+  window.history.replaceState({ ...stateObject(window.history.state), [DRAWER_KEY]: view }, "");
+}
+
+/** Whether the current history entry is a drawer of `view` opened from its list. */
+export function isDrawerEntry(view: string): boolean {
+  return stateObject(window.history.state)[DRAWER_KEY] === view;
+}
+
+/** The current history state without the drawer tag, for a replacing navigation. */
+export function untaggedState(): Record<string, unknown> | null {
+  const state = stateObject(window.history.state);
+  delete state[DRAWER_KEY];
+  return Object.keys(state).length > 0 ? state : null;
+}
+
+export interface NavigateOptions {
+  /** Replace the current history entry instead of adding one. */
+  replace?: boolean;
+  /** History state for a replacing navigation (default: none). */
+  state?: unknown;
+}
+
+export function useHashRoute(
+  fallback = "overview",
+): [Route, (hash: string, opts?: NavigateOptions) => void] {
   const [route, setRoute] = useState<Route>(() => parseHash(window.location.hash, fallback));
 
   useEffect(() => {
@@ -53,7 +89,13 @@ export function useHashRoute(fallback = "overview"): [Route, (hash: string) => v
   }, [fallback]);
 
   const navigate = useCallback(
-    (hash: string) => {
+    (hash: string, opts: NavigateOptions = {}) => {
+      if (opts.replace) {
+        // Replacing does not fire `hashchange`; the route is set here.
+        window.history.replaceState(opts.state ?? null, "", hash);
+        setRoute(parseHash(hash, fallback));
+        return;
+      }
       if (window.location.hash === hash) return;
       // Assigning the hash adds a history entry and fires `hashchange`.
       window.location.hash = hash;

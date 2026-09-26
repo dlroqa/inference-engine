@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../hooks/useLiveMetrics", () => ({ useLiveMetrics: vi.fn() }));
@@ -7,7 +7,7 @@ vi.mock("../hooks/useLiveFeed", () => ({ useLiveFeed: vi.fn() }));
 import { Overview } from "../views/Overview";
 import { useLiveMetrics } from "../hooks/useLiveMetrics";
 import { useLiveFeed } from "../hooks/useLiveFeed";
-import { api, type MetricsSnapshot, type Overview as OverviewData } from "../lib/api";
+import { api, type MetricsSnapshot, type Overview as OverviewData, type SchedulerPanel } from "../lib/api";
 
 const snapshot: MetricsSnapshot = {
   ts: 1_700_000_000,
@@ -69,7 +69,7 @@ afterEach(() => vi.clearAllMocks());
 
 describe("Overview view", () => {
   it("renders counters, model banner, and meters when live", async () => {
-    vi.mocked(useLiveMetrics).mockReturnValue({ snapshot, status: "live" });
+    vi.mocked(useLiveMetrics).mockReturnValue({ snapshot, status: "live", fresh: true });
     vi.mocked(useLiveFeed).mockReturnValue({
       events: [{ type: "request.end", ts: 1_700_000_000, request_id: "chatcmpl-x", completion_tokens: 5, finish_reason: "stop", total_ms: 42 }],
       status: "live",
@@ -86,7 +86,7 @@ describe("Overview view", () => {
   });
 
   it("shows a disconnected notice when the feed drops", async () => {
-    vi.mocked(useLiveMetrics).mockReturnValue({ snapshot, status: "polling" });
+    vi.mocked(useLiveMetrics).mockReturnValue({ snapshot, status: "polling", fresh: true });
     vi.mocked(useLiveFeed).mockReturnValue({ events: [], status: "down" });
     render(<Overview />);
     expect(screen.getByText(/Feed disconnected/)).toBeInTheDocument();
@@ -96,7 +96,7 @@ describe("Overview view", () => {
   });
 
   it("renders safely before the first snapshot arrives", async () => {
-    vi.mocked(useLiveMetrics).mockReturnValue({ snapshot: null, status: "connecting" });
+    vi.mocked(useLiveMetrics).mockReturnValue({ snapshot: null, status: "connecting", fresh: false });
     vi.mocked(useLiveFeed).mockReturnValue({ events: [], status: "connecting" });
     render(<Overview />);
     expect(screen.getByText("No inference activity yet.")).toBeInTheDocument();
@@ -104,7 +104,7 @@ describe("Overview view", () => {
   });
 
   it("shows the engine version and readiness from /admin/overview", async () => {
-    vi.mocked(useLiveMetrics).mockReturnValue({ snapshot, status: "live" });
+    vi.mocked(useLiveMetrics).mockReturnValue({ snapshot, status: "live", fresh: true });
     vi.mocked(useLiveFeed).mockReturnValue({ events: [], status: "live" });
     render(<Overview />);
     expect(await screen.findByTestId("engine-readiness")).toHaveTextContent("v0.1.1 · ready");
@@ -114,11 +114,165 @@ describe("Overview view", () => {
     vi.mocked(api.overview).mockResolvedValue(
       overviewData({ ready: false, checks: { database: "ok", migrations: "pending" } }),
     );
-    vi.mocked(useLiveMetrics).mockReturnValue({ snapshot, status: "live" });
+    vi.mocked(useLiveMetrics).mockReturnValue({ snapshot, status: "live", fresh: true });
     vi.mocked(useLiveFeed).mockReturnValue({ events: [], status: "live" });
     render(<Overview />);
     expect(await screen.findByTestId("engine-readiness")).toHaveTextContent(
       "not ready (migrations: pending)",
     );
+  });
+});
+
+const withScheduler = (over: Partial<SchedulerPanel> | null): MetricsSnapshot => ({
+  ...snapshot,
+  scheduler: over === null ? null : { ...snapshot.scheduler!, ...over },
+});
+
+function renderWith(live: { snapshot: MetricsSnapshot | null; status: "connecting" | "live" | "polling" | "down"; fresh: boolean }) {
+  vi.mocked(useLiveMetrics).mockReturnValue(live);
+  vi.mocked(useLiveFeed).mockReturnValue({ events: [], status: "live" });
+  render(<Overview />);
+  return screen.getByTestId("scheduler-card");
+}
+
+describe("Scheduler card", () => {
+  it("shows actual counts and avg/max/last waits", async () => {
+    const card = renderWith({ snapshot, status: "live", fresh: true });
+    expect(within(card).getByRole("meter", { name: "In use" })).toHaveAttribute("aria-valuenow", "100");
+    expect(within(card).getByText("1 / 1 slots")).toBeInTheDocument();
+    expect(within(card).getByRole("meter", { name: "Queue" })).toHaveAttribute("aria-valuenow", "6");
+    expect(within(card).getByText("2 / 32 waiting")).toBeInTheDocument();
+    expect(within(card).getByText("Admitted").nextSibling).toHaveTextContent("10");
+    expect(within(card).getByText("Rejected").nextSibling).toHaveTextContent("1 (queue full 1 · timeout 0)");
+    expect(within(card).getByText("Cancelled").nextSibling).toHaveTextContent("0");
+    expect(within(card).getByText("Wait (avg / max / last)").nextSibling).toHaveTextContent("40 ms / 100 ms / 12 ms");
+    expect(within(card).getByRole("button", { name: "How this works: Scheduler" })).toBeInTheDocument();
+    await screen.findByTestId("engine-readiness");
+  });
+
+  it("says no waits yet when the average is null (not a measured zero)", async () => {
+    const card = renderWith({ snapshot: withScheduler({ wait_ms_avg: null }), status: "live", fresh: true });
+    expect(within(card).getByText("Wait (avg / max / last)").nextSibling).toHaveTextContent("no waits yet");
+    await screen.findByTestId("engine-readiness");
+  });
+
+  it("handles a zero-capacity queue without dividing by zero", async () => {
+    const card = renderWith({
+      snapshot: withScheduler({ max_queue_depth: 0, queue_depth: 0 }),
+      status: "live",
+      fresh: true,
+    });
+    expect(within(card).queryByRole("meter", { name: "Queue" })).toBeNull();
+    expect(within(card).getByText("queueing disabled")).toBeInTheDocument();
+    expect(card.textContent).not.toMatch(/NaN|Infinity/);
+    await screen.findByTestId("engine-readiness");
+  });
+
+  it("says the scheduler is not running when the snapshot has none", async () => {
+    const card = renderWith({ snapshot: withScheduler(null), status: "live", fresh: true });
+    expect(within(card).getByText("Scheduler not running.")).toBeInTheDocument();
+    // The Requests card does not invent a queue length either.
+    expect(screen.queryByText(/queued/)).toBeNull();
+    await screen.findByTestId("engine-readiness");
+  });
+});
+
+describe("Live metrics states", () => {
+  it.each(["connecting", "live", "polling"] as const)(
+    "shows loading, not zeros, before the first snapshot (%s)",
+    async (status) => {
+      const card = renderWith({ snapshot: null, status, fresh: false });
+      expect(within(card).getByRole("status", { name: "Loading scheduler state" })).toBeInTheDocument();
+      for (const label of ["Requests", "Tokens", "Uptime", "Energy"]) {
+        const stat = screen.getByRole("button", { name: `How this works: ${label} card` }).closest(".stat")!;
+        expect(stat.querySelector(".value")).toHaveTextContent("—");
+        expect(stat.querySelector(".sub")).toBeNull();
+      }
+      // No conclusion about a power probe without data.
+      expect(screen.queryByText(/Not measured/)).toBeNull();
+      expect(screen.queryByTestId("metrics-stale")).toBeNull();
+      await screen.findByTestId("engine-readiness");
+    },
+  );
+
+  it("shows unavailable when disconnected without any snapshot", async () => {
+    const card = renderWith({ snapshot: null, status: "down", fresh: false });
+    expect(within(card).getByText(/Scheduler state unavailable/)).toBeInTheDocument();
+    expect(screen.getByTestId("metrics-unavailable")).toHaveTextContent(/reconnecting/);
+    await screen.findByTestId("engine-readiness");
+  });
+
+  it("marks retained data as not current after a disconnect", async () => {
+    renderWith({ snapshot, status: "down", fresh: false });
+    expect(screen.getByTestId("metrics-stale")).toHaveTextContent(/Disconnected — showing the last data received/);
+    expect(screen.getByText("12")).toBeInTheDocument(); // retained, not blanked
+    await screen.findByTestId("engine-readiness");
+  });
+
+  it.each([
+    ["polling", "Polling", /Connection interrupted — showing the last data received until new data arrives/],
+    ["connecting", "Connecting…", /Connection interrupted — showing the last data received until new data arrives/],
+    ["down", "Disconnected", /Disconnected — showing the last data received; reconnecting/],
+  ] as const)(
+    "the connection badge (%s) and the stale notice agree for retained data",
+    async (status, badge, notice) => {
+      renderWith({ snapshot, status, fresh: false });
+      const badges = screen.getAllByRole("status").filter((n) => n.classList.contains("conn"));
+      expect(badges[0]).toHaveTextContent(badge);
+      expect(screen.getByTestId("metrics-stale")).toHaveTextContent(notice);
+      await screen.findByTestId("engine-readiness");
+    },
+  );
+
+  it("shows current data with the Polling state after a successful REST result", async () => {
+    renderWith({ snapshot, status: "polling", fresh: true });
+    expect(screen.queryByTestId("metrics-stale")).toBeNull();
+    expect(screen.getAllByRole("status").some((n) => n.textContent?.includes("Polling"))).toBe(true);
+    await screen.findByTestId("engine-readiness");
+  });
+});
+
+describe("Energy card", () => {
+  const energyStat = () =>
+    screen.getByRole("button", { name: "How this works: Energy card" }).closest(".stat")!;
+
+  it("gives the engine's reason when not measured", async () => {
+    renderWith({
+      snapshot: { ...snapshot, energy: { ...snapshot.energy, reason: "no RAPL powercap interface" } },
+      status: "live",
+      fresh: true,
+    });
+    expect(energyStat().querySelector(".value")).toHaveTextContent("unavailable");
+    expect(energyStat().querySelector(".sub")).toHaveTextContent("Not measured — no RAPL powercap interface");
+    await screen.findByTestId("engine-readiness");
+  });
+
+  it("does not infer a measurement from the rapl source name", async () => {
+    renderWith({
+      snapshot: {
+        ...snapshot,
+        energy: { ...snapshot.energy, state: "unavailable", source: "rapl", reason: "establishing baseline" },
+      },
+      status: "live",
+      fresh: true,
+    });
+    expect(energyStat().querySelector(".value")).toHaveTextContent("unavailable");
+    expect(energyStat().querySelector(".sub")).toHaveTextContent("Not measured — establishing baseline");
+    expect(energyStat().textContent).not.toMatch(/ W|source: rapl/);
+    await screen.findByTestId("engine-readiness");
+  });
+
+  it("shows watts and the source when measured", async () => {
+    renderWith({
+      snapshot: {
+        ...snapshot,
+        energy: { state: "measured", watts: 12.34, j_per_token: 0.5, tokens_per_joule: 2, source: "rapl" },
+      },
+      status: "live",
+      fresh: true,
+    });
+    expect(energyStat().querySelector(".value")).toHaveTextContent("12.3 W · 0.5 J/tok");
+    expect(energyStat().querySelector(".sub")).toHaveTextContent("source: rapl");
+    await screen.findByTestId("engine-readiness");
   });
 });

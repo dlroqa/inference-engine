@@ -45,3 +45,30 @@ def test_docs_reference_resolves(ref: str) -> None:
         headings = re.findall(r"^#{1,6}\s+(.+?)\s*$", page.read_text(encoding="utf-8"), re.M)
         slugs = {_slug(h) for h in headings}
         assert fragment in slugs, f"{ref}: no heading with slug {fragment!r} in {path}"
+
+
+DASHBOARD_DOC = ROOT / "docs" / "dashboard.md"
+START = "<!-- wiring-table:start -->"
+END = "<!-- wiring-table:end -->"
+
+
+def _generated_block() -> str:
+    text = DASHBOARD_DOC.read_text(encoding="utf-8")
+    assert text.count(START) == 1, "exactly one wiring-table start marker"
+    assert text.count(END) == 1, "exactly one wiring-table end marker"
+    start, end = text.index(START), text.index(END)
+    assert start < end, "the wiring-table markers are reversed"
+    return text[start + len(START) : end]
+
+
+def test_generated_table_links_resolve_from_docs() -> None:
+    """Links in the generated table resolve relative to docs/, with valid fragments."""
+    for target in re.findall(r"\]\(([^)\s]+)\)", _generated_block()):
+        assert "://" not in target, f"{target}: generated links are repository-relative"
+        path, _, fragment = target.partition("#")
+        page = (DASHBOARD_DOC.parent / path).resolve()
+        assert page.is_file(), f"{target}: {page} does not exist (resolved from docs/)"
+        assert "docs/docs/" not in page.as_posix()
+        if fragment:
+            headings = re.findall(r"^#{1,6}\s+(.+?)\s*$", page.read_text(encoding="utf-8"), re.M)
+            assert fragment in {_slug(h) for h in headings}, f"{target}: no heading {fragment!r}"

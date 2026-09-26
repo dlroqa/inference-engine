@@ -38,8 +38,9 @@ import { SystemProvider } from "../hooks/useSystem";
 // Controls: button, a[href], input, select, textarea, [role=tab], and the
 // clickable client rows (tr.clickrow). Exclusions, by design: the "How this
 // works" buttons themselves and anything inside an open popover (its docs
-// links), so help is never required for help. Client rows are pointer-only (not
-// keyboard-focusable); the audit counts and reports them as a known limitation.
+// links), so help is never required for help. A clickable row counts as
+// pointer-only unless it contains an enabled native button that does the same
+// thing (its keyboard equivalent); the audit reports any it finds.
 
 const CONTROLS = 'button, a[href], input, select, textarea, [role="tab"], tr.clickrow';
 
@@ -152,6 +153,7 @@ function mockApi() {
       ],
     }),
   );
+  vi.spyOn(api, "getModel").mockImplementation((id: string) => ok(model({ id, name: "ready" })));
   vi.spyOn(api, "logs").mockImplementation(() =>
     ok({ events: [{ ts: 1_700_000_000, level: "INFO", event: "request.end", request_id: "req-1" }] }),
   );
@@ -177,6 +179,16 @@ const reports: Report[] = [];
 
 function idsOf(el: Element, attr: string): string[] {
   return (el.getAttribute(attr) ?? "").split(" ").filter(Boolean);
+}
+
+// A row's keyboard equivalent: an enabled native button inside it, in the same
+// wiring scope as the row, with an accessible name.
+function keyboardEquivalent(row: HTMLElement): HTMLButtonElement | null {
+  const button = row.querySelector<HTMLButtonElement>("button.rowbtn");
+  if (!button || button.disabled || button.tabIndex < 0) return null;
+  if (button.closest("[data-wiring]") !== row) return null;
+  if (!(button.getAttribute("aria-label") ?? button.textContent ?? "").trim()) return null;
+  return button;
 }
 
 // Audits one active surface: the open modal dialog if there is one, else `root`.
@@ -223,7 +235,7 @@ function audit(surface: string, root: HTMLElement = document.body): Report {
   const report = {
     surface,
     controls: controls.length,
-    pointerOnly: controls.filter((el) => el.matches("tr.clickrow")).length,
+    pointerOnly: controls.filter((el) => el.matches("tr.clickrow") && !keyboardEquivalent(el)).length,
     explained: [...hints.keys()].sort(),
   };
   reports.push(report);
@@ -292,7 +304,11 @@ describe("wiring coverage of dashboard controls", () => {
       await screen.findByText("invoice.paid");
     });
     const r = audit("Clients: populated");
-    expect(r.pointerOnly).toBe(1);
+    // Populated rows exist, and every one is usable from the keyboard.
+    const rows = Array.from(document.querySelectorAll<HTMLElement>("tr.clickrow"));
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) expect(keyboardEquivalent(row)).not.toBeNull();
+    expect(r.pointerOnly).toBe(0);
   });
 
   it("Clients: error with retry", async () => {
@@ -323,6 +339,24 @@ describe("wiring coverage of dashboard controls", () => {
     // The hint opens inside the dialog and explains the real call.
     await userEvent.click(within(dialog).getByRole("button", { name: "How this works: Delete model" }));
     expect(within(dialog).getByRole("group")).toHaveTextContent("DELETE /admin/models/{model_id}");
+  });
+
+  it("Models: details drawer (ready, error, not found, loading)", async () => {
+    await show(<Models modelId="m2" onNavigate={vi.fn()} />, () => screen.findByTestId("model-details"));
+    const ready = audit("Models: details drawer");
+    expect(ready.explained).toEqual(["local.close-drawer", "local.copy-checksum", "models.detail"]);
+    cleanup();
+    vi.mocked(api.getModel).mockImplementation(boom);
+    await show(<Models modelId="m2" onNavigate={vi.fn()} />, () => screen.findByRole("button", { name: "Retry" }));
+    audit("Models: details drawer error");
+    cleanup();
+    vi.mocked(api.getModel).mockImplementation(() => Promise.reject(new ApiError("gone", 404, "model_not_found")));
+    await show(<Models modelId="gone" onNavigate={vi.fn()} />, () => screen.findByText(/no longer exists/));
+    audit("Models: details drawer not found");
+    cleanup();
+    vi.mocked(api.getModel).mockImplementation(() => new Promise(() => {}));
+    await show(<Models modelId="m2" onNavigate={vi.fn()} />, () => screen.findByRole("dialog"));
+    audit("Models: details drawer loading");
   });
 
   it("Models: empty and error", async () => {

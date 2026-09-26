@@ -85,4 +85,43 @@ describe("Clients view", () => {
       expect(params?.endpoint_id).toBeDefined();
     }
   });
+
+  it("selects and deselects a client from the keyboard with its row button", async () => {
+    baseMocks();
+    const nav = vi.fn();
+    render(<Clients onNavigate={nav} />);
+    await screen.findByText("a@x.io");
+    const button = screen.getByRole("button", { name: "Client client-1 (a@x.io)" });
+    expect(button).toHaveAttribute("aria-pressed", "false");
+
+    button.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(await screen.findByText("Keys (usage this week)")).toBeInTheDocument();
+    expect(button).toHaveAttribute("aria-pressed", "true");
+    expect(button).toHaveFocus();
+    expect(nav).toHaveBeenCalledTimes(1);
+    expect(nav).toHaveBeenLastCalledWith("clients", { clientId: "client-1", keepFocus: true });
+
+    await userEvent.keyboard(" ");
+    await waitFor(() => expect(screen.queryByText("Keys (usage this week)")).toBeNull());
+    expect(button).toHaveAttribute("aria-pressed", "false");
+    expect(button).toHaveFocus();
+    expect(nav).toHaveBeenCalledTimes(2);
+    expect(nav).toHaveBeenLastCalledWith("clients", { keepFocus: true });
+  });
+
+  it("navigates once per activation, from the button or the row", async () => {
+    baseMocks();
+    const nav = vi.fn();
+    render(<Clients onNavigate={nav} />);
+    await screen.findByText("a@x.io");
+    // A click on the button does not also run the row's handler.
+    await userEvent.click(screen.getByRole("button", { name: "Client client-2 (b@x.io)" }));
+    expect(nav).toHaveBeenCalledTimes(1);
+    expect(nav).toHaveBeenLastCalledWith("clients", { clientId: "client-2", keepFocus: true });
+    // Pointer selection anywhere on the row still works (once).
+    await userEvent.click(screen.getByText("a@x.io"));
+    expect(nav).toHaveBeenCalledTimes(2);
+    expect(nav).toHaveBeenLastCalledWith("clients", { clientId: "client-1", keepFocus: false });
+  });
 });

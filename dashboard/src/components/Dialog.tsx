@@ -5,27 +5,42 @@ const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 // Accessible modal: labelled by its title, traps Tab focus, closes on Escape or a
-// click on the scrim, and returns focus to whatever opened it.
+// click on the scrim, and returns focus to whatever opened it. The "drawer"
+// variant is the same modal presented as a side sheet.
+//
+// `returnFocus` overrides the opener as the focus target on close. It is read
+// when the dialog closes (not when it opened), so the caller can decide from
+// its current state; returning null leaves focus alone (e.g. the page itself
+// is going away and the shell focuses the next one).
 export function Dialog({
   title,
   onClose,
   children,
   initialFocus,
+  variant,
+  returnFocus,
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
   initialFocus?: "first" | "panel";
+  variant?: "drawer";
+  returnFocus?: () => HTMLElement | null;
 }): JSX.Element {
   const titleId = useId();
   const panel = useRef<HTMLDivElement>(null);
+  const returnRef = useRef(returnFocus);
+  returnRef.current = returnFocus;
 
   useEffect(() => {
     const opener = document.activeElement as HTMLElement | null;
     const first = panel.current?.querySelector<HTMLElement>(FOCUSABLE);
     if (initialFocus !== "panel" && first) first.focus();
     else panel.current?.focus();
-    return () => opener?.focus?.();
+    return () => {
+      const target = returnRef.current ? returnRef.current() : opener;
+      target?.focus?.();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -54,14 +69,14 @@ export function Dialog({
 
   return (
     <div
-      className="scrim"
+      className={variant === "drawer" ? "scrim drawer-scrim" : "scrim"}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
       <div
         ref={panel}
-        className="dialog"
+        className={variant === "drawer" ? "dialog drawer" : "dialog"}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

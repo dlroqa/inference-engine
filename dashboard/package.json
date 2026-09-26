@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "vitest",
-    "test:run": "vitest run"
+    "test:run": "vitest run",
+    "docs:wiring": "UPDATE_WIRING_DOCS=1 vitest run src/__tests__/wiringDocs.test.ts"
   },
   "dependencies": {
     "react": "^18.3.1",

@@ -18,6 +18,11 @@ release notes and refuses to publish without it (see `docs/releasing.md`).
   including a client's, opened every operator endpoint.
 - Credential query values (e.g. the dashboard's WebSocket `?api_key=`) are
   redacted from server log lines and the stored log buffer.
+- Model list and detail responses now redact credentials from the stored
+  `error` text too: URL userinfo and credential-like query values, in every URL
+  or query parameter the error mentions. Malformed source URLs are redacted
+  conservatively instead of failing the request. Server log lines of download
+  failures are not changed by this.
 
 ### Added
 
@@ -42,6 +47,18 @@ release notes and refuses to publish without it (see `docs/releasing.md`).
   is shown. A late failure from an earlier session is ignored.
 - Dashboard: a "Show wiring" toggle (off by default, remembered in the browser)
   that shows each control's `METHOD /path` beside its "How this works" hint.
+- Dashboard: a Scheduler card on the Overview. It shows concurrency in use,
+  queue depth, admitted, rejected and cancelled requests, and waits as
+  avg / max / last. Energy gives the engine's reason when it is not measured.
+- Dashboard: live metrics show a loading state rather than zeros before the
+  first data arrives. Data kept across a disconnect is marked as not current.
+- Dashboard: a model details drawer (`#/models/<id>`, `GET /admin/models/{id}`)
+  with the checksum and a copy button. A local import's path is not shown.
+  Back and Forward work, and focus returns to where the drawer was opened.
+- Dashboard: client rows can be selected from the keyboard (Enter or Space on
+  the client's button).
+- `docs/dashboard.md` gains a UI → subsystem → endpoint table generated from
+  the wiring registry. CI checks it for drift and prints the regenerated diff.
 
 ## [0.1.1] - 2026-09-25
 

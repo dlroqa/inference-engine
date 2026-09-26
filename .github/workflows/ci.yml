@@ -144,6 +144,13 @@ jobs:
       - name: Runner inventory
         run: python3 scripts/runner_inventory.py --job "Operator dashboard (build + tests)"
 
+      - name: Wiring docs step failure paths (harness)
+        # Runs scripts/ci_wiring_docs.sh against throwaway repositories with a
+        # stand-in generator: generator failure after mutation, drift, failed
+        # restore (with and without drift), truncation, missing dependencies.
+        shell: bash
+        run: bash scripts/ci_wiring_docs_harness.sh
+
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -171,6 +178,26 @@ jobs:
       - name: Component tests (vitest)
         working-directory: dashboard
         run: python3 ../scripts/measure.py run --label "vitest (dashboard)" -- npm run test:run
+
+      - name: Wiring docs (generated diff)
+        # Regenerates the UI -> subsystem -> endpoint table in the root
+        # docs/dashboard.md, captures the complete document and diff, restores
+        # the tracked file (EXIT trap; a failed restore fails the step), and
+        # fails on drift, naming any failed operation. It also runs after a
+        # failed vitest step so drift can be diagnosed in one run. Nothing is
+        # committed from CI. See scripts/ci_wiring_docs.sh.
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: bash scripts/ci_wiring_docs.sh "$GITHUB_WORKSPACE" "$RUNNER_TEMP/wiring-docs"
+
+      - name: Upload generated wiring docs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wiring-docs
+          path: ${{ runner.temp }}/wiring-docs/
+          if-no-files-found: ignore
+          retention-days: 3
 
       - name: Build SPA into engine/static
         working-directory: dashboard
@@ -465,6 +492,7 @@ jobs:
           IE_E2E_BASE_URL=http://127.0.0.1:8140 \
           IE_E2E_OPERATOR_KEY="$OWNER" \
           IE_E2E_MODEL_PATH="$HOME/models/tiny.gguf" \
+          IE_E2E_MODEL_SHA256="$MODEL_SHA256" \
           IE_E2E_RESTRICTED_BASE_URL=http://127.0.0.1:8141 \
           IE_E2E_RESTRICTED_OPERATOR_KEY="$ROWNER" \
           IE_E2E_SCREENSHOT_DIR=e2e-screenshots \
