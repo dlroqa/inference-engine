@@ -57,8 +57,15 @@ changes configuration.
   - Download also needs `allow_network_downloads`.
   - Listing models, model details and cancelling a download are not gated.
 - **One fetch per operator session.** The switch state is fetched once per
-  session and discarded when the key changes, is forgotten, or access is lost. A
-  late answer from an earlier session is ignored.
+  session and discarded when the key changes, is forgotten, or access is lost
+  (see [Losing access mid-session](#losing-access-mid-session)). A late answer
+  from an earlier session is ignored.
+- **The `app.system` subsystem chain.** The "How this works" chain for this call
+  lists the subsystems it reads, not a literal forwarding path. The handler reads
+  the configured switches and routing summary (configuration, no subsystem call)
+  and the readiness checks: a read-only SQLite probe and migration flag (Store)
+  and backend availability (Backend pool). It also reads the scheduler's drain
+  flag (Scheduler).
 - **Refreshes.** The state refreshes from the Models **Refresh** button, when the
   browser comes back online, and after the engine refuses an action because of a
   switch.
@@ -75,6 +82,43 @@ changes configuration.
   dashboard treats that switch as off at once and refreshes. Any other 403,
   including `operator_role_required`, is reported as an authorization or server
   error, never as a disabled feature.
+
+## Losing access mid-session
+
+Some failures mean the saved key no longer grants operator access: a 401 (key
+revoked or invalid, or authentication now required), or a 403 with
+`operator_role_required` (a client key). If one of these comes back from any
+protected request, the dashboard ends the session.
+
+**Where it is detected.** Every protected request is covered:
+
+- a view's data load;
+- model-list polling;
+- a switch-state refresh;
+- a Models, Keys or Security action.
+
+**What happens.**
+
+- The failure is classified by the same rules as the sign-in gate, so the
+  existing key prompt appears ("not accepted"), or the operator-access-required
+  screen for a client key. No extra identity request is made, so an identity
+  failure cannot trigger a loop.
+- Everything tied to the session is discarded: its views, its switch state and
+  any switches the engine refused during it. None of it is kept or shown as
+  "stale".
+- Each session has its own reporter. A failure that arrives late from an earlier
+  session is ignored, so an old key's 401 cannot sign out a newly signed-in
+  operator. A burst of failures ends a session only once.
+
+**What does not end the session.**
+
+- Feature 403s: these explain the switch and refresh the switch state.
+- Other 403s, network errors and 5xx: these keep their normal error, Retry or
+  last-known-state handling.
+- Opening and cancelling **Change key**.
+
+**Enforcement.** The engine enforces access on every request. This behaviour only
+keeps the dashboard honest about the session.
 
 ## Documentation links
 

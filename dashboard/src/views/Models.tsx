@@ -8,6 +8,7 @@ import { WiredTo } from "../components/WiredTo";
 import { bytes } from "../lib/format";
 import { useConfirm } from "../hooks/useConfirm";
 import { useSystem } from "../hooks/useSystem";
+import { useAuthFailure } from "../hooks/useAuthScope";
 import { SystemNotice } from "../components/SystemNotice";
 import { describeActionError, featureSwitchFor, switchReason } from "../lib/switches";
 import { wiringFor } from "../lib/wiring";
@@ -55,6 +56,7 @@ function AddModel({ onAdded }: { onAdded: () => void }): JSX.Element {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const sys = useSystem();
+  const reportAuthFailure = useAuthFailure();
 
   const submitId = mode === "import" ? "models.import" : "models.download";
   // Every switch this mode needs that is known to be off.
@@ -95,6 +97,7 @@ function AddModel({ onAdded }: { onAdded: () => void }): JSX.Element {
       setSha("");
       onAdded();
     } catch (err) {
+      if (reportAuthFailure(err)) return;
       setError(describeActionError(err));
       const denied = featureSwitchFor(err);
       if (denied) sys.reportDenied(denied);
@@ -254,6 +257,7 @@ function ModelRow({
   const [error, setError] = useState<string | null>(null);
   const [confirm, confirmDialog] = useConfirm();
   const sys = useSystem();
+  const reportAuthFailure = useAuthFailure();
 
   // Switches (known to be off) that block a row action; none for cancel.
   const blockedBy = (id: string) => sys.offSwitches(switchesFor(id));
@@ -273,6 +277,7 @@ function ModelRow({
       await fn();
       onChange();
     } catch (err) {
+      if (reportAuthFailure(err)) return;
       setError(describeActionError(err));
       const denied = featureSwitchFor(err);
       if (denied) sys.reportDenied(denied);

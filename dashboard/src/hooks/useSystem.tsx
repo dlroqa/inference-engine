@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from "react";
 import { api, ApiError, type SwitchName, type SystemInfo } from "../lib/api";
+import { useAuthFailure } from "./useAuthScope";
 
 // One shared copy of GET /admin/system for the signed-in dashboard, used to
 // explain which actions a feature switch disables. It is fetched once per
@@ -9,6 +10,8 @@ import { api, ApiError, type SwitchName, type SystemInfo } from "../lib/api";
 //
 // Unknown state (loading, or a failed fetch) never counts as "enabled" or
 // "disabled": actions stay available and the engine enforces the switch.
+// A 401 or operator_role_required is not a failed fetch: it ends the session
+// (the shell remounts this provider), so no earlier data is kept as "stale".
 
 export type SystemStatus = "absent" | "loading" | "ready" | "error";
 
@@ -78,6 +81,9 @@ export function SystemProvider({ children }: { children: ReactNode }): JSX.Eleme
   // The latest state, for async handlers that re-check after an await.
   const latest = useRef(state);
   latest.current = state;
+  const reportAuthFailure = useAuthFailure();
+  const authRef = useRef(reportAuthFailure);
+  authRef.current = reportAuthFailure;
 
   const refresh = useCallback(() => {
     const mine = ++generation.current;
@@ -89,6 +95,7 @@ export function SystemProvider({ children }: { children: ReactNode }): JSX.Eleme
       },
       (e: unknown) => {
         if (!alive.current || mine !== generation.current) return;
+        if (authRef.current(e)) return;
         setState((p) => ({
           ...p,
           status: p.info ? "ready" : "error",

@@ -4,6 +4,7 @@ import type { JSX } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Models } from "../views/Models";
 import { SystemProvider, useSystem } from "../hooks/useSystem";
+import { AuthScopeProvider } from "../hooks/useAuthScope";
 import { api, ApiError, type ModelInfo, type SwitchName, type SystemInfo } from "../lib/api";
 import {
   FEATURE_ERROR_SWITCH,
@@ -452,5 +453,43 @@ describe("Models with feature switches", () => {
     // Neither the button nor Enter in the field reaches the engine.
     await userEvent.type(screen.getByLabelText("Local file path"), "{Enter}");
     expect(imp).not.toHaveBeenCalled();
+  });
+});
+
+describe("Models hands session-ending failures to the shell", () => {
+  it("a 401 from an action goes to the session's reporter instead of a row error", async () => {
+    vi.spyOn(api, "listModels").mockResolvedValue({ models: ROWS });
+    vi.spyOn(api, "system").mockResolvedValue(system());
+    vi.spyOn(api, "loadModelById").mockRejectedValue(new ApiError("invalid or revoked API key", 401));
+    const report = vi.fn((e: unknown) => e instanceof ApiError && e.status === 401);
+    render(
+      <AuthScopeProvider value={report}>
+        <SystemProvider>
+          <Models />
+        </SystemProvider>
+      </AuthScopeProvider>,
+    );
+    await screen.findByText("ready", { selector: ".mono" });
+    await userEvent.click(screen.getByRole("button", { name: /^Load/ }));
+    await waitFor(() => expect(report).toHaveBeenCalledWith(expect.objectContaining({ status: 401 })));
+    expect(screen.queryByText("invalid or revoked API key")).toBeNull();
+  });
+
+  it("a 401 from list polling and from the switch fetch goes to the reporter", async () => {
+    vi.spyOn(api, "listModels").mockRejectedValue(new ApiError("list: revoked", 401));
+    vi.spyOn(api, "system").mockRejectedValue(new ApiError("system: revoked", 401));
+    const report = vi.fn((e: unknown) => e instanceof ApiError && e.status === 401);
+    render(
+      <AuthScopeProvider value={report}>
+        <SystemProvider>
+          <Models />
+        </SystemProvider>
+      </AuthScopeProvider>,
+    );
+    const messages = () => report.mock.calls.map(([e]) => (e as Error).message);
+    await waitFor(() => expect(messages()).toEqual(expect.arrayContaining(["list: revoked", "system: revoked"])));
+    // Neither is shown as an ordinary failure or as unknown switch state.
+    expect(screen.queryByText(/Feature-switch status unavailable/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   });
 });

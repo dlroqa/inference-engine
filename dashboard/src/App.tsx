@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type JSX, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from "react";
 import { api, ApiError, getApiKey, setApiKey, type Identity } from "./lib/api";
 import { Icon, type IconName } from "./components/Icon";
 import { Dialog } from "./components/Dialog";
 import { WiredTo } from "./components/WiredTo";
 import { buildHash, useHashRoute } from "./hooks/useHashRoute";
 import { SystemProvider } from "./hooks/useSystem";
+import { AuthScopeProvider, isAuthFailure, type AuthFailureReporter } from "./hooks/useAuthScope";
 import { WiringPrefsProvider, useWiringPrefs } from "./hooks/useWiringPrefs";
 import { Overview } from "./views/Overview";
 import { Monitoring } from "./views/Monitoring";
@@ -225,14 +226,22 @@ function Shell(): JSX.Element {
   const [route, go] = useHashRoute("overview");
   const [gate, setGate] = useState<GateState>({ kind: "checking" });
   const [changingKey, setChangingKey] = useState(false);
-  // Bumped on every identity check, so switch state never outlives the session
-  // (key submitted, key forgotten, or access lost) it was fetched for.
+  // A new session starts on every identity check and whenever access is lost,
+  // so session state (the authenticated views, switch state and its refused-
+  // switch overrides) never outlives the key it was fetched with. The ref is the
+  // current session for async callbacks; the state remounts the session tree.
+  const sessionRef = useRef(0);
   const [session, setSession] = useState(0);
   const main = useRef<HTMLElement>(null);
   const firstRoute = useRef(true);
 
+  const newSession = useCallback(() => {
+    sessionRef.current += 1;
+    setSession(sessionRef.current);
+  }, []);
+
   const check = useCallback(() => {
-    setSession((n) => n + 1);
+    newSession();
     setGate({ kind: "checking" });
     api
       .identity()
@@ -241,6 +250,27 @@ function Shell(): JSX.Element {
   }, []);
 
   useEffect(() => check(), [check]);
+
+  // Auth loss reported by a protected request of session `owner`. Only the first
+  // report for the current session acts; later ones (a burst of failing polls)
+  // and reports from an earlier session are ignored. The error is classified by
+  // the same rules as the identity gate, so no extra request is made and a
+  // failing identity check cannot loop.
+  const endSession = useCallback(
+    (owner: number, e: unknown): boolean => {
+      if (!isAuthFailure(e)) return false;
+      if (owner !== sessionRef.current) return true;
+      newSession();
+      setChangingKey(false);
+      setGate(classify(e));
+      return true;
+    },
+    [newSession],
+  );
+  const reportAuthFailure = useMemo<AuthFailureReporter>(
+    () => (e) => endSession(session, e),
+    [endSession, session],
+  );
 
   // Move focus to the page content after navigation so keyboard and screen-reader
   // users land on the new view (not on first render).
@@ -341,62 +371,64 @@ function Shell(): JSX.Element {
   const params = route.params;
 
   return (
-    <SystemProvider key={session}>
-      <div className="app">
-        <nav className="sidebar" aria-label="Primary">
-          <div className="brand">
-            <span className="dot" /> Inference Engine
-            <WiredTo id="local.navigation" label="Navigation" />
-          </div>
-          <ShowWiringToggle />
-          {NAV_SECTIONS.map((section) => (
-            <div className="navsection" key={section.label} data-wiring="local.navigation">
-              <div className="navsection-label" id={`nav-${section.label}`}>
-                {section.label}
-              </div>
-              <ul aria-labelledby={`nav-${section.label}`}>
-                {section.items.map((item) => (
-                  <li key={item.id}>
-                    <a
-                      className="navbtn"
-                      href={buildHash(item.id)}
-                      aria-current={view === item.id ? "page" : undefined}
-                    >
-                      <Icon name={item.icon} />
-                      {item.label}
-                    </a>
-                  </li>
-                ))}
-              </ul>
+    <AuthScopeProvider value={reportAuthFailure}>
+      <SystemProvider key={session}>
+        <div className="app">
+          <nav className="sidebar" aria-label="Primary">
+            <div className="brand">
+              <span className="dot" /> Inference Engine
+              <WiredTo id="local.navigation" label="Navigation" />
             </div>
-          ))}
-          <IdentityMenu
-            identity={gate.identity}
-            onChangeKey={() => setChangingKey(true)}
-            onForgetKey={forgetKey}
-          />
-        </nav>
-        <main className="main" ref={main} tabIndex={-1}>
-          {view === "overview" && <Overview />}
-          {view === "monitoring" && <Monitoring onNavigate={navigate} />}
-          {view === "clients" && (
-            <Clients focusClientId={route.segments[0] ?? null} onNavigate={navigate} />
+            <ShowWiringToggle />
+            {NAV_SECTIONS.map((section) => (
+              <div className="navsection" key={section.label} data-wiring="local.navigation">
+                <div className="navsection-label" id={`nav-${section.label}`}>
+                  {section.label}
+                </div>
+                <ul aria-labelledby={`nav-${section.label}`}>
+                  {section.items.map((item) => (
+                    <li key={item.id}>
+                      <a
+                        className="navbtn"
+                        href={buildHash(item.id)}
+                        aria-current={view === item.id ? "page" : undefined}
+                      >
+                        <Icon name={item.icon} />
+                        {item.label}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+            <IdentityMenu
+              identity={gate.identity}
+              onChangeKey={() => setChangingKey(true)}
+              onForgetKey={forgetKey}
+            />
+          </nav>
+          <main className="main" ref={main} tabIndex={-1}>
+            {view === "overview" && <Overview />}
+            {view === "monitoring" && <Monitoring onNavigate={navigate} />}
+            {view === "clients" && (
+              <Clients focusClientId={route.segments[0] ?? null} onNavigate={navigate} />
+            )}
+            {view === "models" && <Models />}
+            {view === "logs" && <Logs requestId={params.get("request_id") ?? undefined} onNavigate={navigate} />}
+            {view === "security" && <Security />}
+            {view === "keys" && <Keys />}
+            {!VIEW_IDS.has(view) && <NotFound view={view} onHome={() => go(buildHash("overview"))} />}
+          </main>
+          {changingKey && (
+            <Dialog title="Change operator key" onClose={() => setChangingKey(false)}>
+              <p className="muted" style={{ marginTop: 0 }}>
+                The key is stored only in this browser and sent as a Bearer token.
+              </p>
+              <KeyForm onSubmit={submitKey} onCancel={() => setChangingKey(false)} />
+            </Dialog>
           )}
-          {view === "models" && <Models />}
-          {view === "logs" && <Logs requestId={params.get("request_id") ?? undefined} onNavigate={navigate} />}
-          {view === "security" && <Security />}
-          {view === "keys" && <Keys />}
-          {!VIEW_IDS.has(view) && <NotFound view={view} onHome={() => go(buildHash("overview"))} />}
-        </main>
-        {changingKey && (
-          <Dialog title="Change operator key" onClose={() => setChangingKey(false)}>
-            <p className="muted" style={{ marginTop: 0 }}>
-              The key is stored only in this browser and sent as a Bearer token.
-            </p>
-            <KeyForm onSubmit={submitKey} onCancel={() => setChangingKey(false)} />
-          </Dialog>
-        )}
-      </div>
-    </SystemProvider>
+        </div>
+      </SystemProvider>
+    </AuthScopeProvider>
   );
 }

@@ -6,12 +6,14 @@ import { Badge } from "../components/widgets";
 import { Icon } from "../components/Icon";
 import { WiredTo } from "../components/WiredTo";
 import { clockTime } from "../lib/format";
+import { useAuthFailure } from "../hooks/useAuthScope";
 
 export function Security(): JSX.Element {
   const [verify, setVerify] = useState<AuditPage["verify"] | null>(null);
   const [verifying, setVerifying] = useState(false);
   const [verifyError, setVerifyError] = useState<string | null>(null);
   const { status, data, error, reload } = useAsync(() => api.audit({ limit: 200 }), []);
+  const reportAuthFailure = useAuthFailure();
 
   const runVerify = async () => {
     setVerifying(true);
@@ -20,6 +22,7 @@ export function Security(): JSX.Element {
       const res = await api.audit({ limit: 1000, verify: true });
       setVerify(res.verify ?? null);
     } catch (err) {
+      if (reportAuthFailure(err)) return;
       // A failed request is not a verification result: say so instead of
       // silently showing nothing.
       setVerify(null);

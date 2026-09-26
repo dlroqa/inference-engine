@@ -24,6 +24,9 @@ key appears in the page text or in any form field value.
 from __future__ import annotations
 
 import os
+import shutil
+import time
+import uuid
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -104,6 +107,55 @@ def restricted() -> RestrictedEngine:
 
 
 SHOTS = Path(os.environ.get("IE_E2E_SCREENSHOT_DIR", "e2e-screenshots"))
+
+
+def mask(secret: str) -> None:
+    """Ask the Actions runner to redact a credential created during a test."""
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::add-mask::{secret}", flush=True)
+
+
+@dataclass(frozen=True)
+class DisposableKey:
+    id: str
+    token: str
+    label: str
+
+
+def create_operator_key(engine: Engine, label_prefix: str) -> DisposableKey:
+    """A fresh operator key owned by one test, created with the suite owner key."""
+    label = f"{label_prefix}-{uuid.uuid4().hex[:8]}"
+    with engine.api(engine.operator_key) as c:
+        resp = c.post("/admin/keys", json={"label": label})
+        assert resp.status_code in (200, 201), resp.status_code
+        body = resp.json()
+    mask(body["token"])
+    return DisposableKey(id=body["id"], token=body["token"], label=label)
+
+
+def purge_key(engine: Engine, key_id: str) -> None:
+    with engine.api(engine.operator_key) as c:
+        c.delete(f"/admin/keys/{key_id}")
+        c.delete(f"/admin/keys/{key_id}", params={"purge": "true"})
+
+
+def import_ready_copy(engine: Engine, directory: Path, name_prefix: str) -> dict[str, str]:
+    """Import this test's own copy of the fixture and wait until it is ready."""
+    name = f"{name_prefix}-{uuid.uuid4().hex[:8]}"
+    copy = directory / f"{name}.gguf"
+    shutil.copyfile(engine.model_path, copy)
+    with engine.api(engine.operator_key) as c:
+        resp = c.post("/admin/models/import", json={"path": str(copy), "name": name})
+        assert resp.status_code in (200, 201, 202), resp.status_code
+        model_id = resp.json()["id"]
+        deadline = time.monotonic() + 120
+        while True:
+            status = c.get(f"/admin/models/{model_id}").json()["status"]
+            if status == "ready":
+                return {"id": model_id, "name": name}
+            assert status not in ("error", "cancelled"), status
+            assert time.monotonic() < deadline, "imported fixture copy not ready in 120 s"
+            time.sleep(0.5)
 
 
 def assert_no_secrets(page: Page, secrets: Iterable[str]) -> None:
