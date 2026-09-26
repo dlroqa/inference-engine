@@ -28,6 +28,10 @@ SECRETS = (
     "synthetic-secret",
     "synthetic-sig",
     "synthetic-pass",
+    "synthetic(pw)",
+    "synthetic'q",
+    "q)-13",
+    "nested-tok",
 )
 
 
@@ -99,6 +103,22 @@ CASES = {
     "malformed port": (
         "https://u:pw-malformed@cdn.example.com:notaport/m.gguf?token=tok-abc123",
         "bad URL https://u:pw-malformed@cdn.example.com:notaport/m.gguf?token=tok-abc123",
+    ),
+    # Shapes a free-text URL matcher cuts short: the shared redactor finds
+    # userinfo and parameter values across the whole text.
+    "parentheses in userinfo": (
+        "https://u:synthetic(pw)-12@cdn.example.com/m.gguf",
+        "fetching https://u:synthetic(pw)-12@cdn.example.com/m.gguf",
+    ),
+    "quote and parentheses in credential values": (
+        "https://cdn.example.com/m.gguf",
+        "rejected '/m.gguf?token=synthetic'q-12' then "
+        "https://cdn.example.com/m?sig=synthetic(q)-13 (denied)",
+    ),
+    "nested redirect targets": (
+        "https://cdn.example.com/go?next=https://s3.example.com/m?token=nested-tok-14",
+        "redirect https://cdn.example.com/go?next=https://s3.example.com/m?token=nested-tok-14 "
+        "or ?next=https%3A%2F%2Fs3.example.com%2Fm%3Fsig%3Dnested-tok-15",
     ),
 }
 

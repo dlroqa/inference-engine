@@ -304,7 +304,7 @@ export const WIRING: WiringEntry[] = [
   {
     id: "models.cancel",
     label: "Cancel download",
-    what: "Stops an in-progress download.",
+    what: "Asks an in-progress download to stop; it stops at its next checkpoint. Refused once the file is committed (the download is finishing).",
     chain: ["model_service"],
     endpoint: { method: "POST", path: "/admin/models/{model_id}/cancel" },
     client: "cancelDownload",

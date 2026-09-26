@@ -21,8 +21,44 @@ release notes and refuses to publish without it (see `docs/releasing.md`).
 - Model list and detail responses now redact credentials from the stored
   `error` text too: URL userinfo and credential-like query values, in every URL
   or query parameter the error mentions. Malformed source URLs are redacted
-  conservatively instead of failing the request. Server log lines of download
-  failures are not changed by this.
+  conservatively instead of failing the request.
+- Model download failures are sanitized before they are logged: the
+  `model_download_failed` warning's `detail` gets the same credential redaction
+  as API responses (URL userinfo, credential-like query values, encoded names,
+  nested redirect targets) before the logger is called, so no handler or
+  formatter sees the raw text. If redaction fails, a fixed message is logged
+  instead. Every ordinary failure of the download task takes this path, including
+  invalid URLs (`ValueError`/`InvalidURL`, now a `DownloadError` that does not
+  quote the URL), read errors, unexpected worker exceptions and failures while
+  probing the finished file: the model is marked `error` and the exception no
+  longer escapes to asyncio's unhandled-task report (previously such a model
+  stayed `downloading`). The warning now also carries `stage` and `error_type`.
+  A database failure while recording the outcome is logged as
+  `model_download_state_not_recorded`. The registry still stores the raw error
+  text, and log lines written before this change are not rewritten; see
+  `docs/security.md`.
+- Model download cancellation now waits for the worker thread.
+  - A cancel during a blocked read discards whatever the read returns, and the
+    checksum stops between chunks.
+  - The final rename is a commit point: a cancel accepted before it prevents it,
+    and after it, cancel requests are refused (the download finishes).
+  - Task cancellation no longer releases a download whose worker is still
+    running. The outcome is recorded after the worker stops, then the
+    cancellation is re-raised.
+  - Shutdown waits until every download worker has stopped. After a 10-second
+    grace period it logs `model_download_shutdown_waiting` and keeps waiting
+    rather than abandoning the worker, so shutdown can take longer while a
+    download is in flight (see `docs/deployment.md`).
+- `POST /admin/models/{id}/cancel` now answers `409 model_cancel_not_accepted`
+  when the engine refuses the request: the file is already committed (the
+  download is finishing), or no worker is running for the model. Previously
+  it answered `{"cancelling": true}` regardless. An accepted request still
+  answers `{"cancelling": true, "id": ...}`, meaning the request was accepted,
+  not that the download has already stopped. The dashboard shows the refusal as
+  the row's error, and its Cancel explanation now says so.
+- The model-source redaction now also removes userinfo containing quotes or
+  parentheses, masks credential values containing them, and masks credentials
+  inside a nested redirect URL passed as a query value.
 
 ### Added
 

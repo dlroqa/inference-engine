@@ -74,6 +74,103 @@ and API-key secrets are never logged**, and the `/diagnostics` bundle passes con
 through a redactor. Audit `detail` fields are non-secret metadata only. Turn the
 diagnostics bundle off entirely with `diagnostics_enabled=false`.
 
+**Model download failures.** A failed download's error text can quote the
+download URL, a redirect target, or a request target. Before the
+`model_download_failed` warning is logged, its `detail` is passed through the same
+redaction the model API applies to responses: URL userinfo is removed, and query
+values whose names look credential-bearing (`token`, `key`, `secret`, `sig`,
+`auth`, `password`, `credential`, after one URL decode) are masked, including
+inside a redirect URL passed as a query value. The redaction happens before the
+logger is called, so every handler sees only the redacted text; the JSON
+formatter's own query masking stays in place as a second layer. If the text cannot
+be redacted, a fixed "error details withheld" message is logged instead. The log
+line never carries the exception or its traceback.
+
+Every ordinary failure of the background download task ends on that same path,
+not only the downloader's own download errors: an invalid URL (rejected with a
+fixed `invalid model URL (<type>)` message that does not quote it), a transport
+error while reading, an unexpected exception in the worker, or a failure while
+probing the finished file. The model is marked `error`, the warning names the
+stage (`download` or `finalize`) and the exception type, and the exception never
+escapes the task, so asyncio's "Task exception was never retrieved" report
+cannot print it. Cancellation is not a failure: a cancelled download is marked
+`cancelled` and logs `model_download_cancelled`.
+
+**Download cancellation and worker lifetime.** A download runs in a worker
+thread, and Python cannot force a thread to stop, so these steps are separate:
+
+1. *Cancellation requested.* A cancel request (the API, task cancellation, or
+   shutdown) sets the download's cooperative cancel flag at once.
+2. *Worker stopped.* The worker checks the flag before starting and again after
+   every network read, whatever the read returned. A cancel that arrives during
+   a blocked read therefore discards the bytes or end-of-file it returns. It also
+   checks between checksum chunks and at the final rename. When it stops, its
+   response and file are closed, and the `.part` file is kept as a valid,
+   resumable prefix.
+3. *Outcome recorded.* Only after the worker has stopped does the engine record
+   `cancelled` (or the worker's real outcome, if it failed or completed first)
+   and log the event.
+4. *Ownership released.* The engine keeps tracking the download until then, even
+   if the task awaiting it was cancelled. Task cancellation is re-raised to its
+   caller only after the worker has stopped.
+
+The final rename of `.part` to the model file is the commit point. A cancel
+request accepted before it prevents the rename. Once the file is renamed, the
+download has committed: later cancel requests are refused, and it finishes as
+`ready`, or `error` if post-download checks fail. The check and the rename share
+a lock that is held only for the rename, never during network reads.
+
+The cancel endpoint reports the engine's actual decision. An accepted request
+answers `{"cancelling": true, "id": ...}`. That means the request was accepted,
+not that the worker has already stopped; the model shows `cancelled` once it
+has. A refused request answers `409 model_cancel_not_accepted`. This happens
+once the file is committed and the download is finishing, or when no worker is
+running for the model (for example after a forced kill). It never answers as if
+a refused request had been accepted.
+
+On shutdown, the engine requests cancellation of every download and waits until
+each worker has stopped and its outcome is recorded. The 10-second grace period
+is a warning threshold, not a limit: after it, the engine logs
+`model_download_shutdown_waiting` and keeps waiting. It never abandons a worker
+that could still change model files. How long this takes depends on the worker.
+It is usually one chunk. The 30-second network timeout applies to each blocking
+read, not to the whole shutdown, and checksumming stops between chunks. These
+guarantees hold only while the process is allowed to finish. A supervisor that
+kills the process first can leave a `.part` file, a promoted file whose metadata
+was not recorded, or a registry record stuck at `downloading`. See
+[deployment: graceful shutdown](deployment.md#graceful-shutdown--drain).
+
+If the database is unavailable when a failure is recorded, the state change is
+attempted once, not retried. The engine then logs
+`model_download_state_not_recorded` with the intended status and the database
+error's type (not its text), and the model can remain `downloading` in the
+registry until an operator deletes or re-downloads it. The worker has still
+stopped safely; only the durable record of its outcome is missing.
+
+Limits:
+
+- The model registry (and therefore the database and its backups) still stores
+  the raw error text and the download URL as the source. API responses redact
+  both, but anyone with direct access to the database can read them.
+- Log lines, log exports and support bundles written before this change are not
+  rewritten.
+- Only the owned download task is covered. This is not a global exception or
+  logging filter, and other components' logs are protected only by the JSON
+  formatter's narrower query masking.
+- Only credentials in URL userinfo or in credential-named query parameters are
+  recognized. A credential in a URL path, in a parameter with an unrelated name,
+  or encoded more than once inside a nested URL is not detected.
+
+Until a release with this change is deployed, prefer model sources that do not
+put credentials in the URL (for example a local import of a file fetched by an
+approved process). There is no known incident. If credential-bearing URLs were
+used with an earlier release, that warrants an authorized review of the affected
+systems, time window and retained copies (logs, exports, support bundles,
+backups), even if no leak was noticed: treat them as sensitive, and revoke or
+rotate the affected credentials, or let signed URLs expire, following your
+provider's procedures. Fixing the code does not revoke a credential or remove
+copies already logged.
+
 ## Patch / CVE visibility
 
 - CI runs **`pip-audit`** against the locked dependencies on every build and prints

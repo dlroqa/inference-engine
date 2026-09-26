@@ -15,10 +15,8 @@ and load/unload/delete them from the registry:
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import parse_qsl, unquote_plus, urlencode, urlsplit, urlunsplit
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
@@ -27,6 +25,7 @@ from engine.api.deps import operator_identity, require_operator
 from engine.api.errors import OpenAIError
 from engine.inference.base import InferenceBackend
 from engine.inference.types import BackendError, BackendState
+from engine.models.redaction import redact_source_ref, redact_urls_in_text
 from engine.models.registry import ModelRecord, ModelRegistry, ModelStatus
 from engine.models.service import ModelService, ModelServiceError
 
@@ -79,107 +78,6 @@ def _is_loaded(request: Request, record: ModelRecord) -> bool:
         and backend.state in _LOADED
         and backend.capabilities().model_id == record.name
     )
-
-
-_SENSITIVE_QUERY_HINTS = ("token", "key", "secret", "sig", "auth", "password", "credential")
-_MASK = "***"
-
-# A URL inside free-form text (an exception message): scheme://... up to
-# whitespace, a quote, a parenthesis or a brace. Square brackets are allowed:
-# they delimit IPv6 hosts (``https://[::1]:8443/...``).
-_URL_IN_TEXT = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://[^\s'\"<>(){}]+")
-# Userinfo right after "://" (``user:pass@``), for the conservative fallback.
-_USERINFO = re.compile(r"(?<=://)[^/?#\s]*@")
-# A query parameter anywhere in text, e.g. a request target without a scheme
-# (``/m.gguf?token=abc``) as some HTTP errors report it.
-_QUERY_PARAM = re.compile(r"([?&])([^=&#\s'\"<>]+)=([^&#\s'\"<>]*)")
-
-
-def _is_sensitive(name: str) -> bool:
-    """Whether a query parameter name (already URL-decoded) looks credential-bearing."""
-    return any(h in name.lower() for h in _SENSITIVE_QUERY_HINTS)
-
-
-def _is_sensitive_raw(raw_name: str) -> bool:
-    """The same check for a name as written in text (e.g. ``%74oken``).
-
-    The name is decoded exactly once, as ``parse_qsl`` decodes names in a full
-    URL (percent-escapes and ``+``), so both paths classify the same name the
-    same way. Invalid escapes are kept as written; decoding never raises.
-    """
-    return _is_sensitive(unquote_plus(raw_name, errors="replace"))
-
-
-def _conservative_redact(url: str) -> str:
-    """Redaction when a URL cannot be parsed: drop userinfo and the whole query."""
-    url = _USERINFO.sub("", url.split("#", 1)[0])
-    base, sep, _ = url.partition("?")
-    return f"{base}?{_MASK}" if sep else base
-
-
-def redact_source_ref(source_ref: str | None) -> str | None:
-    """Strip credentials from a model's recorded source before it leaves the API.
-
-    Removes URL userinfo (``user:pass@``) and masks query parameters whose names
-    look credential-bearing (``?token=``, ``X-Amz-Signature`` ...). Hugging Face
-    ``repo/file`` references and plain paths pass through unchanged. A URL that
-    cannot be parsed (e.g. a malformed port) is redacted conservatively instead
-    of failing the request.
-    """
-    if not source_ref or "://" not in source_ref:
-        return source_ref
-    try:
-        parts = urlsplit(source_ref)
-        netloc = parts.hostname or ""
-        if ":" in netloc:
-            netloc = f"[{netloc}]"  # an IPv6 host keeps its brackets
-        if parts.port is not None:
-            netloc = f"{netloc}:{parts.port}"
-        query = [
-            (k, _MASK if _is_sensitive(k) else v)
-            for k, v in parse_qsl(parts.query, keep_blank_values=True)
-        ]
-        return urlunsplit((parts.scheme, netloc, parts.path, urlencode(query, safe="*"), ""))
-    except ValueError:
-        return _conservative_redact(source_ref)
-
-
-def _split_trailing(token: str) -> tuple[str, str]:
-    """Separates sentence punctuation that follows a URL or value in prose."""
-    end = len(token)
-    while end > 0 and token[end - 1] in ".,;:!":
-        end -= 1
-    return token[:end], token[end:]
-
-
-def redact_urls_in_text(text: str | None) -> str | None:
-    """Redact credentials from every URL and query parameter in free-form text.
-
-    Used for the model ``error`` string, which records raw exception messages
-    that can quote the download URL, a redirect target, or a request target.
-    Uses the same sensitive-name policy as :func:`redact_source_ref`: a name is
-    classified after one URL decode, so ``?%74oken=`` is treated as ``?token=``,
-    and the query-parameter pass covers the whole text, so protection does not
-    depend on the URL matcher consuming a complete URL. Anything
-    that is not credential-bearing is kept, so the error stays useful. If the
-    text cannot be processed at all, it is withheld rather than returned raw.
-    """
-    if not text:
-        return text
-
-    def url(match: re.Match[str]) -> str:
-        found, trail = _split_trailing(match.group(0))
-        return (redact_source_ref(found) or "") + trail
-
-    def param(match: re.Match[str]) -> str:
-        sep, name, raw = match.groups()
-        value, trail = _split_trailing(raw)
-        return f"{sep}{name}={_MASK if _is_sensitive_raw(name) and value else value}{trail}"
-
-    try:
-        return _QUERY_PARAM.sub(param, _URL_IN_TEXT.sub(url, text))
-    except Exception:  # never return unredacted text
-        return "error details withheld (they could not be redacted safely)"
 
 
 def _serialize(request: Request, record: ModelRecord) -> dict[str, Any]:
@@ -295,7 +193,17 @@ def cancel_download(request: Request, model_id: str) -> dict[str, Any]:
             type="invalid_request_error",
             code="not_downloading",
         )
-    _service(request).cancel(model_id)
+    # The service decides atomically: it refuses once the file is committed
+    # (the download is finishing) or when no worker is tracked for the model.
+    if not _service(request).cancel(model_id):
+        raise OpenAIError(
+            "cancellation was not accepted: the download may have already finished "
+            "or be finalizing. Refresh the model status.",
+            status_code=409,
+            type="invalid_request_error",
+            code="model_cancel_not_accepted",
+        )
+    # Accepted means the request was taken, not that the worker has stopped.
     return {"cancelling": True, "id": model_id}
 
 
