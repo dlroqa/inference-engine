@@ -212,9 +212,7 @@ class Gateway:
             )
         return LOCAL_KEY_ID
 
-    def operator_access(
-        self, *, client_host: str | None, token: str | None
-    ) -> OperatorDecision:
+    def operator_access(self, *, client_host: str | None, token: str | None) -> OperatorDecision:
         """Decide access to an operator surface (admin, metrics, logs, feed, ...).
 
         Credentials are evaluated **before** the loopback exception, so a client
