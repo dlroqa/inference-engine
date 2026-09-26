@@ -292,7 +292,7 @@ def test_cancel_request_during_blocked_read_records_cancelled_after_the_worker_s
     _serve(monkeypatch, response)
 
     async def go() -> str:
-        model_id = service.start_download(source_type="url", url=URL).id
+        model_id = service.start_download(source_type="url", url=URL, filename="m.gguf").id
         task = service._tasks[model_id]
         try:
             assert await asyncio.to_thread(response.blocked.wait, WAIT)
@@ -322,7 +322,7 @@ def test_shutdown_grace_expiry_keeps_ownership_until_the_worker_stops(
     _serve(monkeypatch, response)
 
     async def go() -> str:
-        model_id = service.start_download(source_type="url", url=URL).id
+        model_id = service.start_download(source_type="url", url=URL, filename="m.gguf").id
         try:
             assert await asyncio.to_thread(response.blocked.wait, WAIT)
             shutdown = asyncio.create_task(service.shutdown(grace_seconds=0.05))
@@ -360,7 +360,7 @@ def test_repeated_task_cancellation_keeps_the_worker_owned(
     _serve(monkeypatch, response)
 
     async def go() -> str:
-        model_id = service.start_download(source_type="url", url=URL).id
+        model_id = service.start_download(source_type="url", url=URL, filename="m.gguf").id
         task = service._tasks[model_id]
         try:
             assert await asyncio.to_thread(response.blocked.wait, WAIT)
@@ -395,7 +395,7 @@ def test_late_worker_failure_after_cancellation_is_contained(
     _serve(monkeypatch, response)
 
     async def go() -> str:
-        model_id = service.start_download(source_type="url", url=URL).id
+        model_id = service.start_download(source_type="url", url=URL, filename="m.gguf").id
         task = service._tasks[model_id]
         try:
             assert await asyncio.to_thread(response.blocked.wait, WAIT)
@@ -439,7 +439,7 @@ def test_shutdown_during_finalize_waits_and_the_committed_download_completes(
     entered, release = _blocking_probe(monkeypatch)
 
     async def go() -> str:
-        model_id = service.start_download(source_type="url", url=URL).id
+        model_id = service.start_download(source_type="url", url=URL, filename="m.gguf").id
         try:
             assert await asyncio.to_thread(entered.wait, WAIT)
             assert _dest(service).read_bytes() == A + B  # committed
@@ -469,7 +469,7 @@ def test_cancel_after_the_commit_point_is_refused_and_the_download_completes(
     entered, release = _blocking_probe(monkeypatch)
 
     async def go() -> str:
-        model_id = service.start_download(source_type="url", url=URL).id
+        model_id = service.start_download(source_type="url", url=URL, filename="m.gguf").id
         task = service._tasks[model_id]
         try:
             assert await asyncio.to_thread(entered.wait, WAIT)

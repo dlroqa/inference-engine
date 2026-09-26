@@ -160,11 +160,37 @@ error's type (not its text), and the model can remain `downloading` in the
 registry until an operator deletes or re-downloads it. The worker has still
 stopped safely; only the durable record of its outcome is missing.
 
+**What new model records store.** From this version, a URL download's address
+is used only by the live download. A path segment or an unrecognized query
+parameter can itself be a credential, and pattern redaction cannot rule that
+out. So no part of the address is stored, logged, or used to name the model:
+
+- `source_ref` is the fixed text `address not stored` (`source_type` stays
+  `url`).
+- The file name is generated (`download-<random>.gguf`) unless the operator
+  supplies a `filename` of plain letters, digits, `.`, `_` and `-`; anything
+  else is rejected. The model name defaults to that file name's stem.
+- A failure is stored and logged only as a message built from fixed text,
+  numbers and exception type names: `HTTP 403 fetching model`,
+  `network error fetching model (URLError)`, a checksum or size message, or
+  `download failed during <stage> (<type>)` for anything else. Exception text
+  is never stored or logged: it can quote the URL or a server's reply.
+- Hugging Face references (`repo/file@revision`) and local import paths are
+  unchanged. They carry no credential in this engine: gated repositories are
+  not supported.
+
+This covers what the engine stores and logs. It does not cover the running
+process's memory, the network transport, or a crash dump, and it does not stop
+an operator from putting a secret into a label such as the model name.
+
 Limits:
 
-- The model registry (and therefore the database and its backups) still stores
-  the raw error text and the download URL as the source. API responses redact
-  both, but anyone with direct access to the database can read them.
+- Records written **before** the stored-data policy above still hold the raw
+  error text and the download URL, in the database and in any backup or
+  snapshot. API responses redact both, but anyone with direct access to the
+  database can read them. The engine does not rewrite old rows, and updating a
+  row would not erase earlier copies (SQLite free pages, WAL or journal files,
+  backups).
 - Log lines, log exports and support bundles written before this change are not
   rewritten.
 - Only the owned download task is covered. This is not a global exception or
