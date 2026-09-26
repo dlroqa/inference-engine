@@ -100,3 +100,9 @@ jobs:
           npm run test:run
           npm run build
           test -f ../engine/static/index.html
+          # Emit the exact generated manifests (line-prefixed, with checksums) so a
+          # maintainer can apply them verbatim in a PR; nothing is pushed from here.
+          for f in package.json package-lock.json; do
+            echo "MANIFEST-SHA256 $f $(sha256sum "$f" | cut -d' ' -f1)"
+            sed "s/^/MANIFEST|$f|/" "$f"
+          done
