@@ -174,17 +174,32 @@ describe("useLiveMetrics transport and freshness", () => {
     expect(result.current.snapshot?.ts).toBe(5);
   });
 
-  it("overlapping polls cannot roll back the latest accepted result", async () => {
+  // Both cases stay within one polling epoch (no socket ever connects), so they
+  // exercise the per-epoch sequence guard, not the epoch guard.
+  async function twoOverlappingPolls() {
     noSocket();
     const polls = controlledPolls();
-    const { result } = renderHook(() => useLiveMetrics(20));
+    const hook = renderHook(() => useLiveMetrics(20));
     await waitFor(() => expect(polls.length).toBeGreaterThanOrEqual(2));
+    // The newer request answers first; the older one is still pending.
     await act(async () => polls[1].resolve(snap(20)));
-    expect(result.current.snapshot?.ts).toBe(20);
-    await act(async () => polls[0].resolve(snap(10)));
-    expect(result.current.snapshot?.ts).toBe(20);
-    await act(async () => polls[0].reject(new ApiError("late", 500)));
+    expect(hook.result.current).toMatchObject({ status: "polling", fresh: true });
+    expect(hook.result.current.snapshot?.ts).toBe(20);
+    return { ...hook, older: polls[0] };
+  }
+
+  it("an older poll that succeeds late cannot replace the newer accepted result", async () => {
+    const { result, older } = await twoOverlappingPolls();
+    await act(async () => older.resolve(snap(10)));
     expect(result.current).toMatchObject({ status: "polling", fresh: true });
+    expect(result.current.snapshot?.ts).toBe(20);
+  });
+
+  it("an older poll that fails late cannot mark a delivering fallback down or stale", async () => {
+    const { result, older } = await twoOverlappingPolls();
+    await act(async () => older.reject(new ApiError("late", 500)));
+    expect(result.current).toMatchObject({ status: "polling", fresh: true });
+    expect(result.current.snapshot?.ts).toBe(20);
   });
 
   it("a failed reconnect does not spoil a REST fallback that is delivering", async () => {
