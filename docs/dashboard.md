@@ -94,6 +94,8 @@ protected request, the dashboard ends the session.
 
 - a view's data load;
 - model-list polling;
+- the live-metrics polling fallback (used when the metrics socket is unavailable
+  or rejected);
 - a switch-state refresh;
 - a Models, Keys or Security action.
 

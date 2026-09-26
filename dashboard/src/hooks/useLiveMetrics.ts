@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, wsUrl, type MetricsSnapshot } from "../lib/api";
+import { useAuthFailure } from "./useAuthScope";
 
 export type ConnStatus = "connecting" | "live" | "polling" | "down";
 
@@ -10,6 +11,8 @@ export interface LiveMetrics {
 
 // Streams metrics over /ws/metrics and falls back to REST polling of /metrics
 // when the socket is unavailable, so the Overview keeps updating either way.
+// A rejected socket (close 1008) falls back to polling; a polling 401 or
+// operator_role_required then ends the session through the shell.
 export function useLiveMetrics(pollMs = 3000): LiveMetrics {
   const [snapshot, setSnapshot] = useState<MetricsSnapshot | null>(null);
   const [status, setStatus] = useState<ConnStatus>("connecting");
@@ -17,6 +20,9 @@ export function useLiveMetrics(pollMs = 3000): LiveMetrics {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const closedRef = useRef(false);
+  const reportAuthFailure = useAuthFailure();
+  const authRef = useRef(reportAuthFailure);
+  authRef.current = reportAuthFailure;
 
   useEffect(() => {
     closedRef.current = false;
@@ -39,8 +45,9 @@ export function useLiveMetrics(pollMs = 3000): LiveMetrics {
             setSnapshot(snap);
             setStatus((s) => (s === "live" ? s : "polling"));
           })
-          .catch(() => {
-            if (!closedRef.current) setStatus("down");
+          .catch((e: unknown) => {
+            if (closedRef.current || authRef.current(e)) return;
+            setStatus("down");
           });
       tick();
       pollRef.current = setInterval(tick, pollMs);
