@@ -524,7 +524,7 @@ describe("WiredTo: live switch state", () => {
     );
     await userEvent.click(screen.getByRole("button", { name: /^How this works/ }));
     await waitFor(() =>
-      expect(within(screen.getByRole("group")).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      expect(Array.from(screen.getByRole("group").querySelectorAll(".wired-switches li")).map((li) => li.textContent)).toEqual([
         "allow_model_management — currently off",
         "allow_network_downloads — currently on",
       ]),
