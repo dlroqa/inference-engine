@@ -49,6 +49,13 @@ release notes and refuses to publish without it (see `docs/releasing.md`).
     grace period it logs `model_download_shutdown_waiting` and keeps waiting
     rather than abandoning the worker, so shutdown can take longer while a
     download is in flight (see `docs/deployment.md`).
+- `POST /admin/models/{id}/cancel` now answers `409 model_cancel_not_accepted`
+  when the engine refuses the request: the file is already committed (the
+  download is finishing), or no worker is running for the model. Previously
+  it answered `{"cancelling": true}` regardless. An accepted request still
+  answers `{"cancelling": true, "id": ...}`, meaning the request was accepted,
+  not that the download has already stopped. The dashboard shows the refusal as
+  the row's error, and its Cancel explanation now says so.
 - The model-source redaction now also removes userinfo containing quotes or
   parentheses, masks credential values containing them, and masks credentials
   inside a nested redirect URL passed as a query value.

@@ -2,6 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Models } from "../views/Models";
+import { AuthScopeProvider, isAuthFailure } from "../hooks/useAuthScope";
 import { api, ApiError, type ModelInfo } from "../lib/api";
 
 const model = (over: Partial<ModelInfo> = {}): ModelInfo => ({
@@ -103,6 +104,58 @@ describe("Models view", () => {
     const meter = screen.getByRole("meter", { name: "Download progress" });
     expect(meter).toHaveAttribute("aria-valuenow", "50");
     expect(screen.getByRole("button", { name: /Cancel/ })).toBeInTheDocument();
+  });
+
+  it("shows a refused cancel as an error, without claiming success or ending the session", async () => {
+    const downloading = model({ status: "downloading", downloaded_bytes: 500, progress: 0.5 });
+    let finished = false; // the engine's real state; flips when finalization completes
+    vi.spyOn(api, "listModels").mockImplementation(async () => ({
+      models: [finished ? model() : downloading],
+    }));
+    const refusal =
+      "cancellation was not accepted: the download may have already finished or be finalizing. Refresh the model status.";
+    const cancel = vi
+      .spyOn(api, "cancelDownload")
+      .mockRejectedValue(new ApiError(refusal, 409, "model_cancel_not_accepted"));
+    const sessionLost = vi.fn();
+    const report = vi.fn((e: unknown) => {
+      if (!isAuthFailure(e)) return false;
+      sessionLost();
+      return true;
+    });
+    render(
+      <AuthScopeProvider value={report}>
+        <Models />
+      </AuthScopeProvider>,
+    );
+    await screen.findByText("tiny");
+    const button = screen.getByRole("button", { name: /Cancel/ });
+    await userEvent.click(button);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(refusal);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(sessionLost).not.toHaveBeenCalled();
+    expect(button).toBeEnabled(); // the busy state cleared
+    // Not optimistically marked cancelled: the row still shows the engine's state.
+    expect(screen.queryByText("cancelled")).toBeNull();
+    expect(screen.getByText("downloading")).toBeInTheDocument();
+
+    // A refresh shows the download's real outcome.
+    finished = true;
+    await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(await screen.findByText("ready")).toBeInTheDocument();
+  });
+
+  it("an accepted cancel refreshes the list and shows no error", async () => {
+    vi.spyOn(api, "listModels").mockResolvedValue({
+      models: [model({ status: "downloading", downloaded_bytes: 500, progress: 0.5 })],
+    });
+    const cancel = vi.spyOn(api, "cancelDownload").mockResolvedValue({ cancelling: true, id: "m1" });
+    render(<Models />);
+    await screen.findByText("tiny");
+    await userEvent.click(screen.getByRole("button", { name: /Cancel/ }));
+    await waitFor(() => expect(cancel).toHaveBeenCalledWith("m1"));
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("downloads from a URL via the add form", async () => {

@@ -193,7 +193,17 @@ def cancel_download(request: Request, model_id: str) -> dict[str, Any]:
             type="invalid_request_error",
             code="not_downloading",
         )
-    _service(request).cancel(model_id)
+    # The service decides atomically: it refuses once the file is committed
+    # (the download is finishing) or when no worker is tracked for the model.
+    if not _service(request).cancel(model_id):
+        raise OpenAIError(
+            "cancellation was not accepted: the download may have already finished "
+            "or be finalizing. Refresh the model status.",
+            status_code=409,
+            type="invalid_request_error",
+            code="model_cancel_not_accepted",
+        )
+    # Accepted means the request was taken, not that the worker has stopped.
     return {"cancelling": True, "id": model_id}
 
 

@@ -171,15 +171,40 @@ stops admitting new work (`/readyz` reports not-ready), lets in-flight generatio
 finish for up to `drain_timeout_s` (default 30s), then releases the model and exits.
 The Compose `stop_grace_period` (40s) must stay longer than the drain timeout.
 
-In-flight model downloads are stopped during shutdown too. Shutdown signals each
-download to cancel and waits until its worker has actually stopped, so no worker
-can change model files after shutdown finishes. A worker usually stops at its
-next chunk. It can take longer, though, if a network read is stalled (reads time
-out after 30s) or the worker is checksumming a large file. After 10s the engine
-logs `model_download_shutdown_waiting` and keeps waiting. If you start a download
-shortly before stopping, the stop can outlast `stop_grace_period`. The container
-is then killed: the `.part` file stays resumable, but the model can remain
-`downloading` in the registry until you delete or re-download it.
+In-flight model downloads are stopped during shutdown too. Shutdown requests
+cancellation of each download and waits until its worker has actually stopped.
+While the process is allowed to finish, no worker changes model files after
+shutdown returns. A worker usually stops at its next chunk.
+
+There is no fixed upper bound on this wait:
+
+- The 10s download grace period is only a warning threshold. After it, the engine
+  logs `model_download_shutdown_waiting` and keeps waiting.
+- The 30s network timeout applies to each blocking read, not to the whole
+  shutdown.
+- Checksumming a large file stops between chunks.
+
+**Forced termination.** Compose, Kubernetes or systemd may kill the process
+before shutdown finishes, for example when `stop_grace_period` elapses. No
+engine guarantee holds past a forced kill. What remains depends on how far the
+download had got:
+
+- **Before the final rename:** a `.part` file may remain. If it does and is
+  intact, a later download of the same file can resume from it under the normal
+  resume and checksum rules. It is not guaranteed to exist, or to be intact,
+  after every crash.
+- **After the final rename:** the model file may already be in place while its
+  metadata probe or its registry update was unfinished. There is then no
+  `.part` file.
+
+Either way, the registry can still say `downloading` for a model with no worker,
+and nothing reconciles this automatically. `POST /admin/models/{id}/cancel`
+answers `409 model_cancel_not_accepted` for such a record. Starting the same
+download again is refused while the record exists, because the file name is
+taken. To recover, delete the record with `DELETE /admin/models/{id}`, which
+needs model management enabled. The dashboard does not offer Delete for a row
+that says downloading. Deleting removes the engine-managed model file and its
+`.part` file, if present. Then download again.
 
 ## Readiness & liveness
 

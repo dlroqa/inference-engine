@@ -120,13 +120,24 @@ download has committed: later cancel requests are refused, and it finishes as
 `ready`, or `error` if post-download checks fail. The check and the rename share
 a lock that is held only for the rename, never during network reads.
 
+The cancel endpoint reports the engine's actual decision. An accepted request
+answers `{"cancelling": true, "id": ...}`. That means the request was accepted,
+not that the worker has already stopped; the model shows `cancelled` once it
+has. A refused request answers `409 model_cancel_not_accepted`. This happens
+once the file is committed and the download is finishing, or when no worker is
+running for the model (for example after a forced kill). It never answers as if
+a refused request had been accepted.
+
 On shutdown, the engine requests cancellation of every download and waits until
 each worker has stopped and its outcome is recorded. The 10-second grace period
-is a waiting interval, not a limit: after it, the engine logs
+is a warning threshold, not a limit: after it, the engine logs
 `model_download_shutdown_waiting` and keeps waiting. It never abandons a worker
-that could still change model files. How long this takes depends on the worker:
-usually one chunk, but a stalled network read times out only after 30 seconds,
-and checksumming stops between chunks. See
+that could still change model files. How long this takes depends on the worker.
+It is usually one chunk. The 30-second network timeout applies to each blocking
+read, not to the whole shutdown, and checksumming stops between chunks. These
+guarantees hold only while the process is allowed to finish. A supervisor that
+kills the process first can leave a `.part` file, a promoted file whose metadata
+was not recorded, or a registry record stuck at `downloading`. See
 [deployment: graceful shutdown](deployment.md#graceful-shutdown--drain).
 
 If the database is unavailable when a failure is recorded, the state change is
