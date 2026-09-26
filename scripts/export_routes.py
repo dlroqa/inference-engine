@@ -50,16 +50,34 @@ def _gate(path: str, module: str, source: str) -> str:
     return "public"
 
 
-def _walk(routes: Iterable[Any], prefix: str = "") -> Iterator[tuple[str, Any]]:
-    """Yield ``(full_path, route)`` for every route, descending into mounts and
-    included routers (duck-typed, so it does not depend on FastAPI's classes)."""
-    for route in routes:
-        path = prefix + getattr(route, "path", "")
-        children = getattr(route, "routes", None)
-        if children and getattr(route, "endpoint", None) is None:
-            yield from _walk(children, path)
+_CHILD_ATTRS = ("routes", "router", "original_router", "_router", "app")
+
+
+def _children(route: Any) -> list[Any] | None:
+    """Sub-routes of a container (a mount or an included router), duck-typed."""
+    for attr in _CHILD_ATTRS:
+        value = getattr(route, attr, None)
+        if value is None or value is route:
             continue
-        yield path, route
+        if isinstance(value, list | tuple):
+            return list(value)
+        nested = getattr(value, "routes", None)
+        if isinstance(nested, list | tuple):
+            return list(nested)
+    return None
+
+
+def _walk(routes: Iterable[Any], prefix: str = "") -> Iterator[tuple[str, Any]]:
+    """Yield ``(full_path, route)`` for every leaf route, descending into mounts
+    and included routers without depending on FastAPI's private classes."""
+    for route in routes:
+        if getattr(route, "endpoint", None) is not None:
+            yield prefix + getattr(route, "path", ""), route
+            continue
+        children = _children(route)
+        if children:
+            own = getattr(route, "path", None) or getattr(route, "prefix", None) or ""
+            yield from _walk(children, prefix + own)
 
 
 def build_inventory() -> list[dict[str, Any]]:
@@ -68,14 +86,21 @@ def build_inventory() -> list[dict[str, Any]]:
 
     with tempfile.TemporaryDirectory() as tmp:
         app = create_app(Settings(data_dir=Path(tmp) / "data"))
+        # OpenAPI is FastAPI's own resolution of full HTTP paths; the walk must
+        # agree with it exactly, so a routing-internals change fails loudly.
+        spec_paths = app.openapi()["paths"]
+    documented = {
+        (method.upper(), path)
+        for path, ops in spec_paths.items()
+        for method in ops
+        if method.upper() in {"GET", "POST", "PUT", "PATCH", "DELETE"}
+    }
     rows: list[dict[str, Any]] = []
     for path, route in _walk(app.router.routes):
-        endpoint = getattr(route, "endpoint", None)
-        if endpoint is None or not getattr(route, "include_in_schema", True):
-            continue
+        endpoint = route.endpoint
         module = getattr(endpoint, "__module__", "")
-        if not module.startswith("engine."):
-            continue  # FastAPI's own docs/openapi routes
+        if not module.startswith("engine.") or not getattr(route, "include_in_schema", True):
+            continue  # FastAPI's own docs routes, the dashboard redirect
         methods = getattr(route, "methods", None)
         if methods:
             source = inspect.getsource(endpoint)
@@ -100,9 +125,18 @@ def build_inventory() -> list[dict[str, Any]]:
                 }
             )
     rows.sort(key=lambda r: (r["path"], r["method"]))
-    if not rows:
+    walked = {(r["method"], r["path"]) for r in rows if r["method"] != "WS"}
+    if not rows or walked != documented:
         kinds = sorted({type(r).__name__ for r in app.router.routes})
-        raise SystemExit(f"no engine routes found (top-level route types: {kinds})")
+        sample = next((r for r in app.router.routes if getattr(r, "endpoint", None) is None), None)
+        attrs = sorted(a for a in dir(sample) if not a.startswith("__")) if sample else []
+        raise SystemExit(
+            "route walk disagrees with OpenAPI\n"
+            f"  missing from walk: {sorted(documented - walked)}\n"
+            f"  extra in walk:     {sorted(walked - documented)}\n"
+            f"  top-level types:   {kinds}\n"
+            f"  container attrs:   {attrs}"
+        )
     return rows
 
 
