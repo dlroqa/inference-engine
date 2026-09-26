@@ -94,16 +94,47 @@ probing the finished file. The model is marked `error`, the warning names the
 stage (`download` or `finalize`) and the exception type, and the exception never
 escapes the task, so asyncio's "Task exception was never retrieved" report
 cannot print it. Cancellation is not a failure: a cancelled download is marked
-`cancelled` and logs `model_download_cancelled`. On shutdown the engine signals
-every download to stop and waits up to 10 seconds for the workers to do so;
-downloads still running after that are cancelled, and their workers write no
-further progress.
+`cancelled` and logs `model_download_cancelled`.
+
+**Download cancellation and worker lifetime.** A download runs in a worker
+thread, and Python cannot force a thread to stop, so these steps are separate:
+
+1. *Cancellation requested.* A cancel request (the API, task cancellation, or
+   shutdown) sets the download's cooperative cancel flag at once.
+2. *Worker stopped.* The worker checks the flag before starting and again after
+   every network read, whatever the read returned. A cancel that arrives during
+   a blocked read therefore discards the bytes or end-of-file it returns. It also
+   checks between checksum chunks and at the final rename. When it stops, its
+   response and file are closed, and the `.part` file is kept as a valid,
+   resumable prefix.
+3. *Outcome recorded.* Only after the worker has stopped does the engine record
+   `cancelled` (or the worker's real outcome, if it failed or completed first)
+   and log the event.
+4. *Ownership released.* The engine keeps tracking the download until then, even
+   if the task awaiting it was cancelled. Task cancellation is re-raised to its
+   caller only after the worker has stopped.
+
+The final rename of `.part` to the model file is the commit point. A cancel
+request accepted before it prevents the rename. Once the file is renamed, the
+download has committed: later cancel requests are refused, and it finishes as
+`ready`, or `error` if post-download checks fail. The check and the rename share
+a lock that is held only for the rename, never during network reads.
+
+On shutdown, the engine requests cancellation of every download and waits until
+each worker has stopped and its outcome is recorded. The 10-second grace period
+is a waiting interval, not a limit: after it, the engine logs
+`model_download_shutdown_waiting` and keeps waiting. It never abandons a worker
+that could still change model files. How long this takes depends on the worker:
+usually one chunk, but a stalled network read times out only after 30 seconds,
+and checksumming stops between chunks. See
+[deployment: graceful shutdown](deployment.md#graceful-shutdown--drain).
 
 If the database is unavailable when a failure is recorded, the state change is
 attempted once, not retried. The engine then logs
 `model_download_state_not_recorded` with the intended status and the database
 error's type (not its text), and the model can remain `downloading` in the
-registry until an operator deletes or re-downloads it.
+registry until an operator deletes or re-downloads it. The worker has still
+stopped safely; only the durable record of its outcome is missing.
 
 Limits:
 

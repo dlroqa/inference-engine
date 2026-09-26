@@ -13,10 +13,12 @@ leaving a resumable ``.part`` file.
 from __future__ import annotations
 
 import asyncio
-import threading
+import contextvars
+import functools
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from engine.config import Settings
 from engine.inference.llamacpp import LlamaCppBackend
@@ -27,8 +29,11 @@ from engine.models.registry import ModelRecord, ModelRegistry, ModelStatus
 
 _log = get_logger("engine.models")
 
-# How long shutdown waits for download workers to observe cancellation.
+# How long shutdown waits for download workers to stop before it warns. This is
+# a cooperative interval, not a bound on shutdown: workers are never abandoned.
 _SHUTDOWN_GRACE_SECONDS = 10.0
+
+_T = TypeVar("_T")
 
 
 def _exception_text(exc: BaseException) -> str | None:
@@ -69,7 +74,7 @@ class ModelService:
         self.settings = settings
         self.registry = registry
         self.models_dir = Path(settings.models_dir)  # type: ignore[arg-type]
-        self._cancels: dict[str, threading.Event] = {}
+        self._cancels: dict[str, downloader.CancelEvent] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
 
     # -- metadata / compat -------------------------------------------------
@@ -187,7 +192,7 @@ class ModelService:
             status=ModelStatus.DOWNLOADING,
             expected_sha256=expected_sha256,
         )
-        cancel = threading.Event()
+        cancel = downloader.CancelEvent()
         self._cancels[record.id] = cancel
         self._tasks[record.id] = asyncio.create_task(
             self._run_download(record.id, fetch_url, dest, expected_sha256, cancel)
@@ -200,7 +205,7 @@ class ModelService:
         url: str,
         dest: Path,
         expected_sha256: str | None,
-        cancel: threading.Event,
+        cancel: downloader.CancelEvent,
     ) -> None:
         last = 0.0
         seen_total = False
@@ -220,10 +225,29 @@ class ModelService:
         # This task is fire-and-forget: every ordinary exception ends here, in a
         # recorded terminal state with a sanitized log line, and never escapes
         # to asyncio's unhandled-task reporting (which would print it raw).
-        # Task cancellation (asyncio.CancelledError) still propagates.
+        #
+        # It also owns its worker threads. Cancelling the task (directly, or by
+        # loop teardown) cannot stop a thread, so it sets the cooperative
+        # cancel event and keeps waiting for the thread; only then is the
+        # outcome recorded, tracking released, and CancelledError re-raised.
+        interrupted = False
+
+        async def owned(fn: Callable[..., _T], *args: Any, **kwargs: Any) -> _T:
+            nonlocal interrupted
+            loop = asyncio.get_running_loop()
+            call = functools.partial(contextvars.copy_context().run, fn, *args, **kwargs)
+            # A plain executor future, not a task, so nothing else cancels it.
+            work: asyncio.Future[_T] = loop.run_in_executor(None, call)
+            while True:
+                try:
+                    return await asyncio.shield(work)
+                except asyncio.CancelledError:
+                    interrupted = True
+                    cancel.set()
+
         stage = "download"
         try:
-            digest = await asyncio.to_thread(
+            digest = await owned(
                 downloader.download,
                 url,
                 dest,
@@ -233,8 +257,10 @@ class ModelService:
                 cancel=cancel,
                 max_bytes=self.settings.max_model_bytes,
             )
+            # The file is now promoted, so the download has committed: later
+            # cancel requests are refused and it finishes as ready (or error).
             stage = "finalize"
-            info = await asyncio.to_thread(gguf.probe, dest)
+            info = await owned(gguf.probe, dest)
             size = dest.stat().st_size
             self.registry.update(
                 model_id,
@@ -249,10 +275,6 @@ class ModelService:
             )
         except downloader.DownloadCancelled:
             self._record_cancelled(model_id)
-        except asyncio.CancelledError:
-            cancel.set()  # the worker thread is not stopped by task cancellation
-            self._record_cancelled(model_id)
-            raise
         except downloader.DownloadError as exc:
             self._record_failure(model_id, stage, exc, expected=True)
         except Exception as exc:
@@ -262,6 +284,8 @@ class ModelService:
         finally:
             self._cancels.pop(model_id, None)
             self._tasks.pop(model_id, None)
+        if interrupted:
+            raise asyncio.CancelledError
 
     def _persist_terminal(self, model_id: str, status: ModelStatus, **fields: Any) -> bool:
         """One attempt to record a terminal state; a failure is reported, not raised.
@@ -312,11 +336,11 @@ class ModelService:
         )
 
     def cancel(self, model_id: str) -> bool:
+        """Requests cancellation; False if not downloading or already committed."""
         cancel = self._cancels.get(model_id)
         if cancel is None:
             return False
-        cancel.set()
-        return True
+        return cancel.request()
 
     # -- delete ------------------------------------------------------------
 
@@ -337,19 +361,33 @@ class ModelService:
             return False
 
     async def shutdown(self, grace_seconds: float = _SHUTDOWN_GRACE_SECONDS) -> None:
-        """Stop in-flight downloads.
+        """Stop in-flight downloads and wait until their workers have stopped.
 
-        Signals every worker to cancel, then waits up to ``grace_seconds`` for
-        them to stop between chunks and record ``cancelled`` themselves. Tasks
-        still running after that are cancelled; their worker threads have the
-        cancel event set, write no further progress, and stop at the next chunk.
+        Signals every download to cancel and waits for each to finish: its
+        worker has returned, its file handles are closed, and its outcome is
+        recorded. If that takes longer than ``grace_seconds``, a fixed warning
+        is logged and shutdown keeps waiting; it never returns while a worker
+        can still change model files. How long that takes depends on the
+        worker (a blocked network read times out after 30 seconds). A
+        download that has already committed its file finishes as ready.
+        Safe to call repeatedly.
         """
-        for cancel in list(self._cancels.values()):
-            cancel.set()
-        tasks = list(self._tasks.values())
-        if not tasks:
-            return
-        _, pending = await asyncio.wait(tasks, timeout=grace_seconds)
-        for task in pending:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        warned = False
+        while self._tasks:
+            for cancel in list(self._cancels.values()):
+                cancel.set()
+            tasks = list(self._tasks.values())
+            # asyncio.wait (unlike gather) never cancels the tasks it waits on.
+            _, pending = await asyncio.wait(tasks, timeout=None if warned else grace_seconds)
+            if pending and not warned:
+                warned = True
+                _log.warning(
+                    "model_download_shutdown_waiting",
+                    extra={"downloads": len(pending), "grace_seconds": grace_seconds},
+                )
+            # A task cancelled before it ever ran never reached its own cleanup
+            # (and never started a worker): release it here.
+            for model_id, task in list(self._tasks.items()):
+                if task.done():
+                    self._tasks.pop(model_id, None)
+                    self._cancels.pop(model_id, None)

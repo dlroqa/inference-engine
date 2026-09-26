@@ -34,10 +34,21 @@ release notes and refuses to publish without it (see `docs/releasing.md`).
   longer escapes to asyncio's unhandled-task report (previously such a model
   stayed `downloading`). The warning now also carries `stage` and `error_type`.
   A database failure while recording the outcome is logged as
-  `model_download_state_not_recorded`. Shutdown waits up to 10 seconds for
-  download workers to stop before cancelling them, and cancelled workers write
-  no further progress. The registry still stores the raw error text, and log
-  lines written before this change are not rewritten; see `docs/security.md`.
+  `model_download_state_not_recorded`. The registry still stores the raw error
+  text, and log lines written before this change are not rewritten; see
+  `docs/security.md`.
+- Model download cancellation now waits for the worker thread.
+  - A cancel during a blocked read discards whatever the read returns, and the
+    checksum stops between chunks.
+  - The final rename is a commit point: a cancel accepted before it prevents it,
+    and after it, cancel requests are refused (the download finishes).
+  - Task cancellation no longer releases a download whose worker is still
+    running. The outcome is recorded after the worker stops, then the
+    cancellation is re-raised.
+  - Shutdown waits until every download worker has stopped. After a 10-second
+    grace period it logs `model_download_shutdown_waiting` and keeps waiting
+    rather than abandoning the worker, so shutdown can take longer while a
+    download is in flight (see `docs/deployment.md`).
 - The model-source redaction now also removes userinfo containing quotes or
   parentheses, masks credential values containing them, and masks credentials
   inside a nested redirect URL passed as a query value.

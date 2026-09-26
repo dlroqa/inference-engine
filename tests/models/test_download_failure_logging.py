@@ -581,20 +581,33 @@ def test_shutdown_waits_for_workers_to_stop(
     assert service._tasks == {} and service._cancels == {}
 
 
-def test_shutdown_after_grace_cancels_and_blocks_late_progress(
+def test_cancelled_task_keeps_ownership_and_blocks_late_progress(
     service: ModelService,
     records: list[logging.LogRecord],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Supplementary (fake worker): the real-downloader cases are in
+    ``test_download_worker_lifetime.py``."""
     started, stopped, release = threading.Event(), threading.Event(), threading.Event()
     monkeypatch.setattr(downloader, "download", _blocking_worker(started, stopped, release))
 
     async def go() -> str:
         model_id = service.start_download(source_type="url", url="https://h.example/m.gguf").id
-        await asyncio.to_thread(started.wait, 10)
-        await service.shutdown(grace_seconds=0.05)
-        release.set()  # the worker now reports progress after teardown
-        assert await asyncio.to_thread(stopped.wait, 10), "the worker kept running"
+        task = service._tasks[model_id]
+        try:
+            await asyncio.to_thread(started.wait, 10)
+            task.cancel()
+            done, _ = await asyncio.wait({task}, timeout=0.3)
+            # The worker is still running: nothing is reported or released yet.
+            assert not done, "the task finished while its worker was running"
+            assert model_id in service._tasks and service._cancels[model_id].is_set()
+            stored = service.registry.get(model_id)
+            assert stored is not None and stored.status == ModelStatus.DOWNLOADING.value
+        finally:
+            release.set()  # the worker now reports progress after cancellation
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert stopped.is_set()
         return model_id
 
     model_id = asyncio.run(go())

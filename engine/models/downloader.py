@@ -6,6 +6,13 @@ an HTTP ``Range`` request, so an interrupted transfer is recoverable rather than
 restarted. A ``threading.Event`` cancels between chunks (leaving the ``.part`` for
 a later resume). Blocking by design — callers run it in a worker thread.
 
+Cancellation is checked before any network or file work, after every read (so
+bytes or an EOF that a blocked read returns after a cancel are not accepted),
+between checksum chunks, and at the commit point: promoting ``.part`` to the
+destination. With a :class:`CancelEvent`, the commit point is atomic with
+respect to a cancel request: a cancel accepted before promotion prevents it,
+and once the file is promoted, later cancel requests are refused.
+
 Only ``http(s)`` public URLs are supported; gated/authenticated Hugging Face repos
 are out of scope for this block.
 """
@@ -35,16 +42,63 @@ class ChecksumMismatch(DownloadError):
     """The downloaded file's SHA-256 did not match the expected value."""
 
 
+class CancelEvent(threading.Event):
+    """A cooperative cancel flag with a commit point (the final rename).
+
+    ``set()`` / :meth:`request` and :meth:`commit` share a lock held only for
+    the local rename, never across network reads, so a cancel request is
+    never delayed by a blocked download.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._commit_lock = threading.Lock()
+        self._committed = False
+
+    @property
+    def committed(self) -> bool:
+        return self._committed
+
+    def set(self) -> None:
+        self.request()
+
+    def request(self) -> bool:
+        """Requests cancellation; False if the download has already committed."""
+        with self._commit_lock:
+            if self._committed:
+                return False
+            super().set()
+            return True
+
+    def commit(self, promote: Callable[[], object]) -> bool:
+        """Runs ``promote`` unless cancellation was accepted first."""
+        with self._commit_lock:
+            if self.is_set():
+                return False
+            promote()
+            self._committed = True
+            return True
+
+
+def _check(cancel: threading.Event | None) -> None:
+    if cancel is not None and cancel.is_set():
+        raise DownloadCancelled("download cancelled")
+
+
 def hf_url(endpoint: str, repo: str, filename: str, revision: str = "main") -> str:
     """Build a Hugging Face ``resolve`` URL for a repo file."""
     endpoint = endpoint.rstrip("/")
     return f"{endpoint}/{repo}/resolve/{revision}/{filename}"
 
 
-def sha256_file(path: Path, chunk_bytes: int = 1_048_576) -> str:
+def sha256_file(
+    path: Path, chunk_bytes: int = 1_048_576, *, cancel: threading.Event | None = None
+) -> str:
+    """SHA-256 of a file; with ``cancel``, stops between chunks once it is set."""
     h = hashlib.sha256()
     with open(path, "rb") as fh:
         while True:
+            _check(cancel)
             chunk = fh.read(chunk_bytes)
             if not chunk:
                 break
@@ -84,6 +138,7 @@ def download(
     if resume_from:
         headers["Range"] = f"bytes={resume_from}-"
 
+    _check(cancel)  # before any network or file work
     try:
         request = urllib.request.Request(url, headers=headers)
         response = urllib.request.urlopen(request, timeout=30)  # noqa: S310 (http(s) only)
@@ -107,41 +162,56 @@ def download(
     except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
         raise DownloadError(f"network error fetching model: {exc}") from exc
 
-    # If the server ignored the Range header (200 not 206), start over.
-    partial = response.status == 206
-    if resume_from and not partial:
-        resume_from = 0
-        part.unlink(missing_ok=True)
-
-    total: int | None = None
-    length = response.headers.get("Content-Length")
-    if length and length.isdigit():
-        total = int(length) + (resume_from if partial else 0)
-    if max_bytes and total and total > max_bytes:
-        response.close()
-        raise DownloadError(f"model exceeds max_model_bytes ({total} > {max_bytes})")
-
-    downloaded = resume_from
-    mode = "ab" if (resume_from and partial) else "wb"
     try:
+        _check(cancel)
+        # If the server ignored the Range header (200 not 206), start over.
+        partial = response.status == 206
+        if resume_from and not partial:
+            resume_from = 0
+            part.unlink(missing_ok=True)
+
+        total: int | None = None
+        length = response.headers.get("Content-Length")
+        if length and length.isdigit():
+            total = int(length) + (resume_from if partial else 0)
+        if max_bytes and total and total > max_bytes:
+            raise DownloadError(f"model exceeds max_model_bytes ({total} > {max_bytes})")
+
+        downloaded = resume_from
+        mode = "ab" if (resume_from and partial) else "wb"
         with open(part, mode) as fh:
             while True:
-                if cancel is not None and cancel.is_set():
-                    raise DownloadCancelled("download cancelled")
+                _check(cancel)
                 chunk = _read(response, chunk_bytes)
+                # A read can block for a long time: whatever it returned (bytes
+                # or EOF) is discarded if cancellation arrived meanwhile, so the
+                # .part file stays a valid prefix for resume.
+                _check(cancel)
                 if not chunk:
                     break
                 fh.write(chunk)
                 downloaded += len(chunk)
                 if max_bytes and downloaded > max_bytes:
                     raise DownloadError(f"model exceeds max_model_bytes ({max_bytes})")
+                _check(cancel)
                 if progress_cb is not None:
                     progress_cb(downloaded, total)
     finally:
         response.close()
 
-    digest = sha256_file(part, chunk_bytes)
+    _check(cancel)
+    digest = sha256_file(part, chunk_bytes, cancel=cancel)
     if expected_sha256 and digest.lower() != expected_sha256.lower():
         raise ChecksumMismatch(f"checksum mismatch: expected {expected_sha256}, got {digest}")
-    part.replace(dest)
+    _promote(part, dest, cancel)
     return digest
+
+
+def _promote(part: Path, dest: Path, cancel: threading.Event | None) -> None:
+    """The commit point: rename the verified ``.part`` into place unless cancelled."""
+    if isinstance(cancel, CancelEvent):
+        if not cancel.commit(lambda: part.replace(dest)):
+            raise DownloadCancelled("download cancelled")
+        return
+    _check(cancel)
+    part.replace(dest)

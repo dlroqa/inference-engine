@@ -171,6 +171,16 @@ stops admitting new work (`/readyz` reports not-ready), lets in-flight generatio
 finish for up to `drain_timeout_s` (default 30s), then releases the model and exits.
 The Compose `stop_grace_period` (40s) must stay longer than the drain timeout.
 
+In-flight model downloads are stopped during shutdown too. Shutdown signals each
+download to cancel and waits until its worker has actually stopped, so no worker
+can change model files after shutdown finishes. A worker usually stops at its
+next chunk. It can take longer, though, if a network read is stalled (reads time
+out after 30s) or the worker is checksumming a large file. After 10s the engine
+logs `model_download_shutdown_waiting` and keeps waiting. If you start a download
+shortly before stopping, the stop can outlast `stop_grace_period`. The container
+is then killed: the `.part` file stays resumable, but the model can remain
+`downloading` in the registry until you delete or re-download it.
+
 ## Readiness & liveness
 
 | Endpoint | Meaning |
