@@ -1012,6 +1012,8 @@ a.navbtn {
 .scrim.drawer-scrim {
   place-items: stretch end;
   padding: 0;
+  /* The sheet slides in from off-edge; never let that create page overflow. */
+  overflow: hidden;
 }
 .dialog.drawer {
   width: min(480px, 100vw);

@@ -29,7 +29,13 @@ def _no_horizontal_scroll(page: Page, where: str) -> None:
     assert overflow <= 0, f"{where}: page scrolls horizontally by {overflow}px"
 
 
+def _settled(dialog: Locator) -> None:
+    """Waits for the drawer's slide-in to finish, so layout is measured at rest."""
+    dialog.evaluate("el => Promise.all(el.getAnimations().map((a) => a.finished))")
+
+
 def _fits(dialog: Locator, width: int, where: str) -> None:
+    _settled(dialog)
     box = dialog.bounding_box()
     assert box is not None, f"{where}: drawer has no box"
     assert box["x"] >= -0.5 and box["x"] + box["width"] <= width + 0.5, f"{where}: {box}"
@@ -72,8 +78,8 @@ def test_model_drawer_keyboard_checksum_history_and_layout(
     expect(dialog.get_by_text("Checksum copied to the clipboard.")).to_be_visible()
     assert page.evaluate("() => navigator.clipboard.readText()") == engine.model_sha256
 
-    _no_horizontal_scroll(page, "drawer at 1280")
     _fits(dialog, 1280, "drawer at 1280")
+    _no_horizontal_scroll(page, "drawer at 1280")
     safe_screenshot(page, "model-drawer-1280", secrets)
 
     # Escape closes an open hint popover first, then the drawer.
@@ -118,8 +124,8 @@ def test_model_drawer_keyboard_checksum_history_and_layout(
     details.click()
     expect(dialog).to_be_visible()
     expect(dialog.get_by_test_id("model-details")).to_be_visible()
-    _no_horizontal_scroll(page, "drawer at 390")
     _fits(dialog, 390, "drawer at 390")
+    _no_horizontal_scroll(page, "drawer at 390")
     safe_screenshot(page, "model-drawer-390", secrets)
     dialog.get_by_role("button", name="Close", exact=True).click()
     expect(dialog).to_be_hidden()
