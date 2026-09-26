@@ -8,6 +8,8 @@ name: Dashboard dependency audit
 #
 # Runs on demand, or on a push to a `ci/dashboard-deps*` branch (so it can be
 # used before this file reaches main, where workflow_dispatch becomes available).
+# A `ci/dashboard-deps-major*` branch additionally previews the semver-major
+# upgrade npm names as the fix (vite, vitest), for review — still never pushed.
 on:
   workflow_dispatch:
   push:
@@ -80,3 +82,21 @@ jobs:
           npm run typecheck
           npm run test:run
           npm run build
+
+      - name: Semver-major upgrade preview (major branches only)
+        if: startsWith(github.ref_name, 'ci/dashboard-deps-major')
+        working-directory: dashboard
+        run: |
+          git checkout -- package.json package-lock.json
+          npm install --save-dev vite@8 vitest@5 @vitejs/plugin-react@latest
+          echo "### Proposed semver-major changes"
+          git --no-pager diff -- package.json
+          git --no-pager diff --stat -- package-lock.json
+          npm ls vite vitest @vitejs/plugin-react esbuild || true
+          npm audit --json > ../audit-major.json || true
+          python3 ../scripts/npm_audit_report.py ../audit-major.json \
+            --package-json package.json --title "npm audit — semver-major preview"
+          npm run typecheck
+          npm run test:run
+          npm run build
+          test -f ../engine/static/index.html
