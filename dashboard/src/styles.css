@@ -704,6 +704,8 @@ a.navbtn {
 }
 .clickrow.selected td {
   background: var(--color-surface-2);
+}
+.clickrow.selected td:first-child {
   box-shadow: inset 2px 0 0 var(--color-accent);
 }
 
