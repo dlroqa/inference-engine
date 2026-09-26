@@ -96,6 +96,18 @@ def test_network_downloads_kill_switch(tmp_settings: Settings) -> None:
     assert resp.json()["error"]["code"] == "downloads_disabled"
 
 
+def test_download_also_requires_model_management(tmp_settings: Settings) -> None:
+    # Downloads need both switches: allow_model_management and allow_network_downloads.
+    app = _app(tmp_settings, allow_model_management=False, allow_network_downloads=True)
+    with TestClient(app, client=LOOPBACK) as c:
+        resp = c.post(
+            "/admin/models/download",
+            json={"source_type": "url", "name": "n", "url": "http://x/y.gguf"},
+        )
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "model_management_disabled"
+
+
 def test_diagnostics_kill_switch(tmp_settings: Settings) -> None:
     app = _app(tmp_settings, diagnostics_enabled=False)
     with TestClient(app, client=LOOPBACK) as c:

@@ -12,7 +12,9 @@ Required environment:
 - ``IE_E2E_MODEL_PATH``    path to the checksum-verified GGUF fixture
 
 Secrets hygiene: keys are read from the environment and never printed; no
-screenshots, traces, or videos are recorded.
+traces or videos are recorded. The only screenshots are the wiring popover
+evidence in ``test_wiring_popovers.py``, clipped to a control and its popover,
+taken after asserting that no key is on the page.
 """
 
 from __future__ import annotations

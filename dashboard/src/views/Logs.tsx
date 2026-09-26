@@ -4,6 +4,7 @@ import { useAsync } from "../hooks/useAsync";
 import { AsyncBoundary } from "../components/Panel";
 import { Badge, categoryTone } from "../components/widgets";
 import { Icon } from "../components/Icon";
+import { WiredTo } from "../components/WiredTo";
 import { clockTime } from "../lib/format";
 
 const LEVELS = ["", "ERROR", "WARNING", "INFO"];
@@ -49,26 +50,38 @@ export function Logs({
   return (
     <>
       <div className="topbar">
-        <h1>Logs</h1>
-        <button className="btn" onClick={reload}>
-          <Icon name="refresh" size={16} /> Refresh
-        </button>
+        <div className="row">
+          <h1>Logs</h1>
+          <WiredTo id="logs.list" />
+        </div>
+        <div className="row">
+          <button className="btn" onClick={reload} data-wiring="logs.list">
+            <Icon name="refresh" size={16} /> Refresh
+          </button>
+          <WiredTo id="logs.list" label="Refresh" />
+        </div>
       </div>
 
-      <div className="card col-12">
+      <div className="card col-12" data-wiring="logs.list">
         {requestId && (
           <div className="banner info row spread" role="status">
             <span>
               Showing events for request <span className="mono">{requestId}</span>
             </span>
-            <button className="btn" onClick={() => onNavigate?.("logs")}>
-              Clear request filter
-            </button>
+            <span className="row">
+              <button className="btn" onClick={() => onNavigate?.("logs")} data-wiring="logs.list">
+                Clear request filter
+              </button>
+              <WiredTo id="logs.list" label="Clear request filter" />
+            </span>
           </div>
         )}
         <div className="row" style={{ marginBottom: 16 }}>
-          <div className="field" style={{ margin: 0 }}>
-            <label htmlFor="lvl">Level</label>
+          <div className="field" style={{ margin: 0 }} data-wiring="logs.list">
+            <div className="row label-row">
+              <label htmlFor="lvl">Level</label>
+              <WiredTo id="logs.list" label="Level filter" />
+            </div>
             <select id="lvl" className="input" value={level} onChange={(e) => setLevel(e.target.value)}>
               {LEVELS.map((l) => (
                 <option key={l || "all"} value={l}>
@@ -77,8 +90,11 @@ export function Logs({
               ))}
             </select>
           </div>
-          <div className="field" style={{ margin: 0, flex: 1, minWidth: 200 }}>
-            <label htmlFor="q">Filter</label>
+          <div className="field" style={{ margin: 0, flex: 1, minWidth: 200 }} data-wiring="local.logs-filter">
+            <div className="row label-row">
+              <label htmlFor="q">Filter</label>
+              <WiredTo id="local.logs-filter" />
+            </div>
             <input
               id="q"
               className="input"

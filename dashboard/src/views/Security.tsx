@@ -4,6 +4,7 @@ import { useAsync } from "../hooks/useAsync";
 import { AsyncBoundary } from "../components/Panel";
 import { Badge } from "../components/widgets";
 import { Icon } from "../components/Icon";
+import { WiredTo } from "../components/WiredTo";
 import { clockTime } from "../lib/format";
 
 export function Security(): JSX.Element {
@@ -37,13 +38,15 @@ export function Security(): JSX.Element {
       <div className="topbar">
         <h1>Security &amp; audit</h1>
         <div className="row">
-          <button className="btn" onClick={runVerify} disabled={verifying}>
+          <button className="btn" onClick={runVerify} disabled={verifying} data-wiring="security.audit">
             {verifying ? <span className="spinner" /> : <Icon name="shield" size={16} />}
             Verify integrity
           </button>
-          <button className="btn" onClick={reload}>
+          <WiredTo id="security.audit" label="Verify integrity" />
+          <button className="btn" onClick={reload} data-wiring="security.audit">
             <Icon name="refresh" size={16} /> Refresh
           </button>
+          <WiredTo id="security.audit" label="Refresh" />
         </div>
       </div>
 
@@ -67,8 +70,11 @@ export function Security(): JSX.Element {
         </div>
       )}
 
-      <div className="card col-12">
-        <h2>Operator audit log</h2>
+      <div className="card col-12" data-wiring="security.audit">
+        <div className="row panel-title">
+          <h2>Operator audit log</h2>
+          <WiredTo id="security.audit" label="Operator audit log" />
+        </div>
         <p className="sub" style={{ marginTop: 0, marginBottom: 12 }}>
           Tamper-evident record of operator and security actions. Structured metadata only —
           never prompts, responses, or secrets.

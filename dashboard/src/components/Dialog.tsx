@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, type JSX, type ReactNode } from "react";
+import { WiredTo } from "./WiredTo";
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -79,10 +80,13 @@ export interface ConfirmOptions {
   body: ReactNode;
   confirmLabel: string;
   tone?: "danger" | "primary";
+  /** Wiring-registry id of the confirmed action; adds a "How this works" hint. */
+  wiring?: string;
 }
 
 // Confirmation for destructive actions. Cancel is focused first so Enter or a
-// stray keypress never confirms by accident; Escape cancels.
+// stray keypress never confirms by accident; Escape cancels. With `wiring`, a
+// hint after the buttons explains the confirmed call and the local Cancel.
 export function ConfirmDialog({
   options,
   onResult,
@@ -94,15 +98,23 @@ export function ConfirmDialog({
     <Dialog title={options.title} onClose={() => onResult(false)}>
       <div className="dialog-body">{options.body}</div>
       <div className="row dialog-actions">
-        <button className="btn" onClick={() => onResult(false)}>
+        <button
+          className="btn"
+          onClick={() => onResult(false)}
+          data-wiring={options.wiring ? "local.dialog-cancel" : undefined}
+        >
           Cancel
         </button>
         <button
           className={`btn ${options.tone === "primary" ? "primary" : "danger"}`}
           onClick={() => onResult(true)}
+          data-wiring={options.wiring}
         >
           {options.confirmLabel}
         </button>
+        {options.wiring && (
+          <WiredTo id={[options.wiring, "local.dialog-cancel"]} label={options.confirmLabel} />
+        )}
       </div>
     </Dialog>
   );

@@ -7,6 +7,7 @@
 // typed client in api.ts, so it cannot silently drift from the backend.
 
 import type { api } from "./api";
+import inventory from "./routes.generated.json";
 
 export type Subsystem =
   | "gateway"
@@ -53,7 +54,8 @@ export const SUBSYSTEMS: Record<Subsystem, { label: string; description: string 
   },
   model_service: {
     label: "Model service",
-    description: "Imports, downloads (checksum-verified), loads, unloads, and deletes models.",
+    description:
+      "Imports, downloads, loads, unloads, and deletes models. Records each file's SHA-256; a download is checked against an expected SHA-256 only when one is given.",
   },
   keystore: {
     label: "Keystore",
@@ -110,10 +112,35 @@ export interface WiringEntry {
   /** The api.ts function that makes the call, or the live hook for WebSockets. */
   client: ApiFn | "useLiveMetrics" | "useLiveFeed";
   audited: boolean;
-  /** Config switch that can disable this action (read-only in the UI). */
-  killSwitch?: string;
+  /**
+   * Config switches that must all be enabled for this action (read-only in the
+   * UI). Turning off any one of them disables it.
+   */
+  requiredSwitches?: string[];
   sideEffects?: string;
-  docs?: string;
+  docs?: DocRef;
+}
+
+/** A repository documentation page (and optional heading fragment). */
+export interface DocRef {
+  /** Repository-relative path, e.g. "docs/security.md#operator-access". */
+  ref: string;
+  /** Link text, e.g. "Security: operator access". */
+  title: string;
+}
+
+// Documentation lives in the repository, not in the dashboard bundle, so links
+// resolve to the canonical GitHub copy. `main` is a moving branch: the page can
+// describe a newer engine than the one running. There is no version-aware docs
+// base yet; see docs/dashboard.md.
+export const DOCS_BASE = "https://github.com/dlroqa/inference-engine/blob/main/";
+
+/** The URL for a registry docs reference. Only static registry text is used. */
+export function docsUrl(doc: DocRef): string {
+  if (!/^[A-Za-z0-9_./-]+\.md(#[a-z0-9-]+)?$/.test(doc.ref) || doc.ref.includes("..")) {
+    throw new Error(`invalid docs reference: ${doc.ref}`);
+  }
+  return DOCS_BASE + doc.ref;
 }
 
 export const WIRING: WiringEntry[] = [
@@ -125,7 +152,7 @@ export const WIRING: WiringEntry[] = [
     endpoint: { method: "GET", path: "/admin/identity" },
     client: "identity",
     audited: false,
-    docs: "docs/security.md#operator-access",
+    docs: { ref: "docs/security.md#operator-access", title: "Security: operator access" },
   },
   {
     id: "overview.readiness",
@@ -144,7 +171,7 @@ export const WIRING: WiringEntry[] = [
     endpoint: { method: "WS", path: "/ws/metrics" },
     client: "useLiveMetrics",
     audited: false,
-    docs: "docs/operability.md",
+    docs: { ref: "docs/operability.md", title: "Operability" },
   },
   {
     id: "overview.metrics-fallback",
@@ -172,7 +199,7 @@ export const WIRING: WiringEntry[] = [
     endpoint: { method: "GET", path: "/admin/alerts" },
     client: "alerts",
     audited: false,
-    docs: "docs/monitoring.md",
+    docs: { ref: "docs/monitoring.md", title: "Monitoring" },
   },
   {
     id: "monitoring.taxonomy",
@@ -200,7 +227,7 @@ export const WIRING: WiringEntry[] = [
     endpoint: { method: "GET", path: "/admin/billing/clients" },
     client: "listClients",
     audited: false,
-    docs: "docs/billing.md",
+    docs: { ref: "docs/billing.md", title: "Billing" },
   },
   {
     id: "clients.endpoints",
@@ -210,7 +237,7 @@ export const WIRING: WiringEntry[] = [
     endpoint: { method: "GET", path: "/admin/billing/webhooks/endpoints" },
     client: "listWebhookEndpoints",
     audited: false,
-    docs: "docs/webhooks.md",
+    docs: { ref: "docs/webhooks.md", title: "Webhooks" },
   },
   {
     id: "clients.deliveries",
@@ -229,17 +256,18 @@ export const WIRING: WiringEntry[] = [
     endpoint: { method: "GET", path: "/admin/models" },
     client: "listModels",
     audited: false,
-    docs: "README.md#model-lifecycle-block-6",
+    docs: { ref: "README.md#model-lifecycle-block-6", title: "README: model lifecycle" },
   },
   {
     id: "models.download",
     label: "Download model",
-    what: "Starts a background, checksum-verified download from Hugging Face or a URL.",
+    what:
+      "Starts a background download from Hugging Face or a URL and calculates its SHA-256. When you provide an expected SHA-256, the download is checked against it; a mismatch fails the download.",
     chain: ["model_service", "model_registry", "audit"],
     endpoint: { method: "POST", path: "/admin/models/download" },
     client: "downloadModel",
     audited: true,
-    killSwitch: "allow_network_downloads",
+    requiredSwitches: ["allow_model_management", "allow_network_downloads"],
     sideEffects: "Writes the file into the model store and a registry row.",
   },
   {
@@ -250,7 +278,7 @@ export const WIRING: WiringEntry[] = [
     endpoint: { method: "POST", path: "/admin/models/import" },
     client: "importModel",
     audited: true,
-    killSwitch: "allow_model_management",
+    requiredSwitches: ["allow_model_management"],
   },
   {
     id: "models.cancel",
@@ -269,7 +297,7 @@ export const WIRING: WiringEntry[] = [
     endpoint: { method: "POST", path: "/admin/models/{model_id}/load" },
     client: "loadModelById",
     audited: true,
-    killSwitch: "allow_model_management",
+    requiredSwitches: ["allow_model_management"],
     sideEffects: "Replaces the currently loaded model.",
   },
   {
@@ -280,18 +308,20 @@ export const WIRING: WiringEntry[] = [
     endpoint: { method: "POST", path: "/admin/models/{model_id}/unload" },
     client: "unloadModelById",
     audited: true,
-    killSwitch: "allow_model_management",
+    requiredSwitches: ["allow_model_management"],
   },
   {
     id: "models.delete",
     label: "Delete model",
-    what: "Removes the model file and its registry row (must be unloaded first).",
+    what:
+      "Removes the model's registry entry and stops any download in progress. Models must be unloaded first. Files managed by the engine are deleted; imported files outside the model store remain on disk.",
     chain: ["model_service", "model_registry", "audit"],
     endpoint: { method: "DELETE", path: "/admin/models/{model_id}" },
     client: "deleteModel",
     audited: true,
-    killSwitch: "allow_model_management",
-    sideEffects: "Irreversible; the file must be downloaded or imported again.",
+    requiredSwitches: ["allow_model_management"],
+    sideEffects:
+      "Deleted managed files cannot be restored by this action. An external imported file is preserved and can be registered again by importing it.",
   },
   {
     id: "logs.list",
@@ -301,7 +331,7 @@ export const WIRING: WiringEntry[] = [
     endpoint: { method: "GET", path: "/logs" },
     client: "logs",
     audited: false,
-    docs: "docs/operability.md",
+    docs: { ref: "docs/operability.md", title: "Operability" },
   },
   {
     id: "security.audit",
@@ -311,7 +341,7 @@ export const WIRING: WiringEntry[] = [
     endpoint: { method: "GET", path: "/admin/audit" },
     client: "audit",
     audited: false,
-    docs: "docs/security.md",
+    docs: { ref: "docs/security.md#tamper-evident-audit-log", title: "Security: tamper-evident audit log" },
   },
   {
     id: "keys.list",
@@ -369,11 +399,11 @@ export const NOT_IN_UI: Record<string, string> = {
   "GET /readyz": "planned: System view (A3a).",
   "GET /version": "planned: System view (A3a); the version is shown via /admin/overview.",
   "GET /diagnostics": "planned: System view (A3a).",
-  "GET /admin/system": "planned: disabled-control explanations (A2) and System view (A3a).",
+  "GET /admin/system": "planned: disabled-control explanations (after the A2 popovers) and System view (A3a).",
   "GET /admin/backends": "planned: Backends & Routing view (A3a).",
   "GET /admin/routes": "planned: Backends & Routing view (A3a).",
   "POST /admin/route/plan": "planned: Backends & Routing view (A3a).",
-  "GET /admin/models/{model_id}": "planned: model detail drawer (A2).",
+  "GET /admin/models/{model_id}": "planned: model detail drawer (after the A2 popovers).",
   "POST /admin/model/load": "Legacy single-model control, superseded by /admin/models/{id}/load.",
   "POST /admin/model/unload": "Legacy single-model control, superseded by /admin/models/{id}/unload.",
   "GET /admin/billing/plans": "planned: plan administration (A3b).",
@@ -387,6 +417,95 @@ export const NOT_IN_UI: Record<string, string> = {
   "POST /admin/billing/webhooks/endpoints/{endpoint_id}/rotate-secret": "planned: webhook administration (A3b).",
   "POST /admin/billing/webhooks/deliveries/{delivery_id}/replay": "planned: delivery replay (A3b).",
 };
+
+// Controls that make no request to the engine: they change what this browser
+// shows (navigation, local filters, form tabs) or touch only browser storage.
+// The dashboard labels them "No backend call" instead of leaving them unexplained.
+export interface LocalControl {
+  id: string;
+  label: string;
+  what: string;
+  /** What the dashboard requests afterwards, when the control leads to a call. */
+  followUp?: string;
+}
+
+export const LOCAL_CONTROLS: LocalControl[] = [
+  {
+    id: "local.navigation",
+    label: "Navigation",
+    what: "Changes the page address (#/view) in this browser.",
+    followUp: "The view that opens then loads its own data from the engine.",
+  },
+  {
+    id: "local.saved-key",
+    label: "Saved operator key",
+    what: "Stores the key in this browser's local storage, or removes it.",
+    followUp:
+      "The dashboard then calls GET /admin/identity, sending the saved key (if any) as a Bearer token, to re-check who it is signed in as.",
+  },
+  {
+    id: "local.add-source",
+    label: "Model source tabs",
+    what: "Switches which fields the form shows. Nothing is sent until you submit.",
+  },
+  {
+    id: "local.logs-filter",
+    label: "Text filter",
+    what: "Filters the log events already loaded in this browser. The server is not queried again.",
+  },
+  {
+    id: "local.copy-token",
+    label: "Copy token",
+    what: "Copies the new token to your clipboard. It is not sent anywhere and cannot be shown again.",
+  },
+  {
+    id: "local.close-detail",
+    label: "Close detail",
+    what: "Closes this panel and updates the page address.",
+  },
+  {
+    id: "local.select-client",
+    label: "Select a client",
+    what: "Opens the client's detail panel and updates the page address (#/clients/<id>). Rows respond to mouse and touch only; they are not yet keyboard-focusable.",
+    followUp: "The panel then loads the client's webhook endpoints and recent deliveries.",
+  },
+  {
+    id: "local.dialog-cancel",
+    label: "Cancel",
+    what: "Closes this confirmation. Nothing is sent and nothing changes.",
+  },
+];
+
+export interface RouteInfo {
+  gate: string;
+  module: string;
+  handler: string;
+}
+
+const ROUTES = new Map<string, RouteInfo>(
+  (inventory.routes as ({ method: string; path: string } & RouteInfo)[]).map((r) => [
+    `${r.method} ${r.path}`,
+    { gate: r.gate, module: r.module, handler: r.handler },
+  ]),
+);
+
+/** The engine handler behind a wired endpoint, from the generated route inventory. */
+export function routeFor(entry: WiringEntry): RouteInfo | undefined {
+  return ROUTES.get(routeKey(entry.endpoint.method, entry.endpoint.path));
+}
+
+export type Explanation =
+  | { kind: "wired"; entry: WiringEntry }
+  | { kind: "local"; control: LocalControl };
+
+/** Resolves a wiring or local-control id; throws on an unknown id. */
+export function explain(id: string): Explanation {
+  const entry = WIRING.find((w) => w.id === id);
+  if (entry) return { kind: "wired", entry };
+  const control = LOCAL_CONTROLS.find((c) => c.id === id);
+  if (control) return { kind: "local", control };
+  throw new Error(`unknown wiring id: ${id}`);
+}
 
 export function routeKey(method: string, path: string): string {
   return `${method} ${path}`;

@@ -95,7 +95,7 @@ def test_model_import_load_and_generate(page: Page, engine: Engine) -> None:
     page.get_by_role("tab", name="Local file").click()
     page.get_by_label("Local file path").fill(engine.model_path)
     page.get_by_label("Name (optional)").fill("tiny")
-    page.get_by_role("button", name="Import model").click()
+    page.get_by_role("button", name="Import model", exact=True).click()
     expect(page.get_by_text("tiny", exact=True)).to_be_visible(timeout=60_000)
 
     page.get_by_role("button", name=re.compile(r"^Load")).click()
@@ -125,7 +125,7 @@ def test_keyboard_confirmation_and_cancellation(page: Page, engine: Engine) -> N
     login(page, engine)
     page.get_by_role("link", name="API keys").click()
     page.get_by_label("Label (optional)").fill("e2e-temp")
-    page.get_by_role("button", name="Create key").click()
+    page.get_by_role("button", name="Create key", exact=True).click()
     expect(page.get_by_test_id("new-token")).to_be_visible()
 
     with engine.api(engine.operator_key) as c:
@@ -148,7 +148,7 @@ def test_keyboard_confirmation_and_cancellation(page: Page, engine: Engine) -> N
     revoke.click()
     expect(dialog).to_be_visible()
     page.keyboard.press("Tab")
-    expect(dialog.get_by_role("button", name="Revoke key")).to_be_focused()
+    expect(dialog.get_by_role("button", name="Revoke key", exact=True)).to_be_focused()
     page.keyboard.press("Enter")
     expect(dialog).to_be_hidden()
     with engine.api(engine.operator_key) as c:

@@ -12,7 +12,7 @@ begins.
 > capability-gated structured output (Blocks 2, 8); a secure gateway — API keys,
 > request/rate/concurrency limits, and a compute-unit quota (Block 3); operability
 > telemetry + an operator dashboard (Blocks 4–5); model lifecycle with
-> checksum-verified downloads (Block 6); controlled concurrency with admission
+> SHA-256-recorded downloads, checked against an expected hash when one is given (Block 6); controlled concurrency with admission
 > control (Block 7); and a Docker deployment path with graceful drain, readiness
 > gating, backup/restore (9a), and a security hardening baseline — trusted-network/IP policy, egress + feature kill switches, and a tamper-evident audit log (9b); and **remote vLLM + SGLang backends** — proxy generation to an external OpenAI-compatible server (one shared adapter core) with explicit model mapping, secure credentials, timeouts, and safe pre-stream-only failover, plus a **backend registry** that routes each request to the least-busy healthy backend across a local+remote pool with a status API (Block 10, sub-slices 1–3). **Not yet:** additional payment providers (Block 11.3, deferred until a business
 > need is confirmed) and advanced safety tooling (Block 12).
@@ -403,16 +403,17 @@ cover the whole lifecycle:
 | Endpoint | Purpose |
 |---|---|
 | `GET /admin/models` | List registry models with progress + host-compat. |
-| `POST /admin/models/import` | Register a local GGUF file (SHA-256 verified, metadata probed). |
-| `POST /admin/models/download` | Start a verified download — Hugging Face (`repo` + `filename`) or a direct `url`, with optional `expected_sha256`. |
+| `POST /admin/models/import` | Register a local GGUF file (SHA-256 recorded, metadata probed). |
+| `POST /admin/models/download` | Start a download — Hugging Face (`repo` + `filename`) or a direct `url`. Its SHA-256 is always recorded and, when the optional `expected_sha256` is given, must match. Needs both `allow_model_management` and `allow_network_downloads`. |
 | `GET /admin/models/{id}` | One model — poll download progress. |
 | `POST /admin/models/{id}/cancel` | Cancel an in-progress download (resumable `.part` kept). |
 | `POST /admin/models/{id}/load` · `/unload` | Load a registry model (becomes the active model) / unload it. |
-| `DELETE /admin/models/{id}` | Remove a model (unload it first). |
+| `DELETE /admin/models/{id}` | Remove a model's registry entry (unload it first). Engine-managed files (downloads, imports inside `models_dir`) are deleted; imported files outside `models_dir` stay on disk. |
 
-- **Verified & recoverable:** downloads stream to a `.part` file, resume via HTTP
-  `Range`, and are checked against `expected_sha256` before being committed;
-  imports hash the file on registration. GGUF **arch / quant / context length** are
+- **Hashed & recoverable:** downloads stream to a `.part` file and resume via HTTP
+  `Range`. Their SHA-256 is always calculated and recorded; when `expected_sha256`
+  is given it must match before the file is committed (a mismatch fails the
+  download). Imports hash the file on registration. GGUF **arch / quant / context length** are
   read from the file header without loading it.
 - **Honest host compatibility:** each model reports `ok`, `too_large`, or
   `needs_backend` — the last when `llama-cpp-python` isn't installed or the CPU

@@ -389,6 +389,10 @@ a.navbtn {
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
+.stat .stat-label {
+  justify-content: space-between;
+  gap: var(--space-2);
+}
 
 .stat .value {
   font-size: 28px;
@@ -709,4 +713,199 @@ a.navbtn {
   letter-spacing: 0.05em;
   color: var(--color-fg-muted);
   margin: 0 0 var(--space-2);
+}
+
+/* --- "How this works" wiring popovers --- */
+.wired {
+  display: inline-flex;
+  vertical-align: middle;
+}
+.wired-btn {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--color-border-strong);
+  background: transparent;
+  color: var(--color-info);
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition: background var(--dur) var(--ease);
+}
+.wired-btn:focus-visible {
+  border-radius: 999px;
+}
+/* 44×44 px hit area without growing the layout. */
+.wired-btn::after {
+  content: "";
+  position: absolute;
+  inset: -8px;
+}
+.wired-btn:hover,
+.wired-btn[aria-expanded="true"] {
+  background: rgba(56, 189, 248, 0.12);
+}
+.wired-btn.local {
+  border-style: dashed;
+  color: var(--color-fg-muted);
+}
+.wired-btn.local:hover,
+.wired-btn.local[aria-expanded="true"] {
+  background: var(--color-muted);
+}
+.wired-pop {
+  position: fixed;
+  z-index: 50;
+  width: min(360px, calc(100vw - 32px));
+  /* Placement sets the real max-height from the space around the button. */
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-2);
+  color: var(--color-fg);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.5;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: normal;
+  white-space: normal;
+  animation: wired-in 150ms var(--ease);
+}
+.wired-pop:focus:not(:focus-visible) {
+  outline: none;
+}
+.wired-pop:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}
+.wired-doc {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-info);
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+@keyframes wired-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+.wired-entry + .wired-entry {
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+.wired-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.wired-kind {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.wired-kind.wired {
+  border: 1px solid rgba(56, 189, 248, 0.5);
+  color: var(--color-info);
+}
+.wired-kind.local {
+  border: 1px dashed var(--color-border-strong);
+  color: var(--color-fg-muted);
+}
+.wired-what {
+  margin: var(--space-1) 0 var(--space-2);
+  color: var(--color-fg-muted);
+}
+.wired-local-note {
+  margin: 0;
+}
+.wired-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px var(--space-3);
+  margin: 0;
+}
+.wired-facts dt {
+  color: var(--color-fg-muted);
+}
+.wired-facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+.wired-switches {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.wired-switch-note {
+  display: block;
+  margin-top: 2px;
+  color: var(--color-fg-muted);
+}
+.wired-chain {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.wired-chain li + li::before {
+  content: "→";
+  content: "→" / "";
+  margin: 0 6px;
+  color: var(--color-fg-subtle);
+}
+@media (max-width: 480px) {
+  .wired-facts {
+    grid-template-columns: 1fr;
+  }
+  .wired-facts dd {
+    margin-bottom: var(--space-1);
+  }
+}
+.panel-title {
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+.panel-title h2,
+.panel-title h3 {
+  margin: 0;
+}
+.spread > .panel-title {
+  margin-bottom: 0;
+}
+.label-row {
+  gap: var(--space-2);
+}
+.brand .wired {
+  margin-left: auto;
+}
+.identity-name .wired {
+  margin-left: auto;
 }

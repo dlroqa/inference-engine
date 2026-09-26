@@ -4,14 +4,20 @@ export function StatCard({
   label,
   value,
   sub,
+  help,
 }: {
   label: string;
   value: ReactNode;
   sub?: ReactNode;
+  /** Optional element beside the label, e.g. a "How this works" hint. */
+  help?: ReactNode;
 }): JSX.Element {
   return (
     <div className="card stat">
-      <div className="label">{label}</div>
+      <div className="label row stat-label">
+        {label}
+        {help}
+      </div>
       <div className="value tabular">{value}</div>
       {sub !== undefined && <div className="sub">{sub}</div>}
     </div>

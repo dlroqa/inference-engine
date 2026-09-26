@@ -24,7 +24,7 @@ describe("Security view", () => {
     spy.mockResolvedValueOnce({ events: [], verify: { ok: true, count: 7, first_bad_id: null } });
     render(<Security />);
     await screen.findByText("No audit records yet.");
-    await userEvent.click(screen.getByRole("button", { name: /Verify integrity/ }));
+    await userEvent.click(screen.getByRole("button", { name: /^Verify integrity/ }));
     expect(await screen.findByText(/Hash chain verified — 7 records intact/)).toBeInTheDocument();
   });
 
@@ -34,7 +34,7 @@ describe("Security view", () => {
     spy.mockResolvedValueOnce({ events: [], verify: { ok: false, count: 3, first_bad_id: 2 } });
     render(<Security />);
     await screen.findByText("No audit records yet.");
-    await userEvent.click(screen.getByRole("button", { name: /Verify integrity/ }));
+    await userEvent.click(screen.getByRole("button", { name: /^Verify integrity/ }));
     expect(await screen.findByText(/Tamper detected — first bad record id 2/)).toBeInTheDocument();
   });
 
@@ -44,7 +44,7 @@ describe("Security view", () => {
     spy.mockRejectedValueOnce(new ApiError("engine restarting", 503));
     render(<Security />);
     await screen.findByText("No audit records yet.");
-    await userEvent.click(screen.getByRole("button", { name: /Verify integrity/ }));
+    await userEvent.click(screen.getByRole("button", { name: /^Verify integrity/ }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Integrity check could not run: engine restarting",
     );

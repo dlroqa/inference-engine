@@ -4,6 +4,7 @@ import { useAsync } from "../hooks/useAsync";
 import { AsyncBoundary } from "../components/Panel";
 import { Badge } from "../components/widgets";
 import { Icon } from "../components/Icon";
+import { WiredTo } from "../components/WiredTo";
 import { useConfirm } from "../hooks/useConfirm";
 
 export function Keys(): JSX.Element {
@@ -43,6 +44,7 @@ export function Keys(): JSX.Element {
         </>
       ),
       confirmLabel: "Revoke key",
+      wiring: "keys.revoke",
     });
     if (!ok) return;
     try {
@@ -63,6 +65,7 @@ export function Keys(): JSX.Element {
         </>
       ),
       confirmLabel: "Delete key",
+      wiring: "keys.delete",
     });
     if (!ok) return;
     try {
@@ -93,8 +96,11 @@ export function Keys(): JSX.Element {
       </div>
 
       <div className="grid">
-        <div className="card col-4" style={{ minWidth: 280 }}>
-          <h2>Create key</h2>
+        <div className="card col-4" style={{ minWidth: 280 }} data-wiring="keys.create">
+          <div className="row panel-title">
+            <h2>Create key</h2>
+            <WiredTo id="keys.create" />
+          </div>
           <form onSubmit={create}>
             <div className="field">
               <label htmlFor="label">Label (optional)</label>
@@ -125,20 +131,29 @@ export function Keys(): JSX.Element {
               <div className="token-box" style={{ marginTop: 8 }} data-testid="new-token">
                 {created.token}
               </div>
-              <button className="btn" onClick={copy} style={{ marginTop: 8 }}>
-                <Icon name={copyOk ? "check" : "copy"} size={16} />
-                {copyOk ? "Copied" : "Copy"}
-              </button>
+              <div className="row" style={{ marginTop: 8 }}>
+                <button className="btn" onClick={copy} data-wiring="local.copy-token">
+                  <Icon name={copyOk ? "check" : "copy"} size={16} />
+                  {copyOk ? "Copied" : "Copy"}
+                </button>
+                <WiredTo id="local.copy-token" />
+              </div>
             </div>
           )}
         </div>
 
-        <div className="card col-8">
+        <div className="card col-8" data-wiring="keys.list">
           <div className="row spread" style={{ marginBottom: 8 }}>
-            <h2 style={{ margin: 0 }}>Keys</h2>
-            <button className="btn" onClick={reload}>
-              <Icon name="refresh" size={16} /> Refresh
-            </button>
+            <div className="row panel-title">
+              <h2 style={{ margin: 0 }}>Keys</h2>
+              <WiredTo id="keys.list" label="API keys" />
+            </div>
+            <div className="row">
+              <button className="btn" onClick={reload} data-wiring="keys.list">
+                <Icon name="refresh" size={16} /> Refresh
+              </button>
+              <WiredTo id="keys.list" label="Refresh" />
+            </div>
           </div>
           <AsyncBoundary
             status={status}
@@ -157,7 +172,9 @@ export function Keys(): JSX.Element {
                     <th>Created</th>
                     <th>Last used</th>
                     <th>Status</th>
-                    <th></th>
+                    <th style={{ textAlign: "right" }}>
+                      <WiredTo id={["keys.revoke", "keys.delete"]} label="Revoke and delete" />
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -188,6 +205,7 @@ export function Keys(): JSX.Element {
                           <button
                             className="btn danger"
                             onClick={() => remove(k)}
+                            data-wiring="keys.delete"
                             aria-label={`Delete key ${k.prefix}`}
                           >
                             <Icon name="trash" size={16} /> Delete
@@ -196,6 +214,7 @@ export function Keys(): JSX.Element {
                           <button
                             className="btn danger"
                             onClick={() => revoke(k)}
+                            data-wiring="keys.revoke"
                             aria-label={`Revoke key ${k.prefix}`}
                           >
                             <Icon name="stop" size={16} /> Revoke

@@ -158,3 +158,64 @@ def test_cancel_non_downloading_is_409(client: TestClient, tmp_path) -> None:
     path = write_gguf(tmp_path / "z.gguf")
     model_id = client.post("/admin/models/import", json={"path": str(path)}).json()["id"]
     assert client.post(f"/admin/models/{model_id}/cancel").status_code == 409
+
+
+def test_download_without_expected_hash_records_calculated_digest(
+    client: TestClient, gguf_server: FileServer
+) -> None:
+    # No expected hash: the download is not compared against anything, but its
+    # SHA-256 is still calculated and recorded.
+    resp = client.post(
+        "/admin/models/download",
+        json={"source_type": "url", "url": f"{gguf_server.base_url}/tiny.gguf", "name": "nohash"},
+    )
+    assert resp.status_code == 200
+    final = _poll_status(client, resp.json()["id"], {"ready", "error"})
+    assert final["status"] == "ready", final
+    assert final["sha256"] == gguf_server.digest
+
+
+# --- Delete: which files are removed ------------------------------------------
+
+
+def test_delete_preserves_imported_file_outside_model_store(
+    client: TestClient, tmp_settings: Settings, tmp_path
+) -> None:
+    path = write_gguf(tmp_path / "external.gguf")
+    assert tmp_settings.models_dir is not None
+    assert not path.resolve().is_relative_to(tmp_settings.models_dir.resolve())
+    model_id = client.post("/admin/models/import", json={"path": str(path)}).json()["id"]
+    assert client.delete(f"/admin/models/{model_id}").status_code == 200
+    assert path.exists()  # external import is left on disk
+    assert client.get(f"/admin/models/{model_id}").status_code == 404  # registry entry gone
+    # It can be registered again by importing it.
+    assert client.post("/admin/models/import", json={"path": str(path)}).status_code == 200
+
+
+def test_delete_removes_imported_file_inside_model_store(
+    client: TestClient, tmp_settings: Settings
+) -> None:
+    assert tmp_settings.models_dir is not None
+    tmp_settings.models_dir.mkdir(parents=True, exist_ok=True)
+    path = write_gguf(tmp_settings.models_dir / "managed.gguf")
+    model_id = client.post("/admin/models/import", json={"path": str(path)}).json()["id"]
+    assert client.delete(f"/admin/models/{model_id}").status_code == 200
+    assert not path.exists()
+    assert client.get(f"/admin/models/{model_id}").status_code == 404
+
+
+def test_delete_removes_downloaded_file(
+    client: TestClient, tmp_settings: Settings, gguf_server: FileServer
+) -> None:
+    assert tmp_settings.models_dir is not None
+    resp = client.post(
+        "/admin/models/download",
+        json={"source_type": "url", "url": f"{gguf_server.base_url}/tiny.gguf", "name": "dl"},
+    )
+    model_id = resp.json()["id"]
+    assert _poll_status(client, model_id, {"ready", "error"})["status"] == "ready"
+    files = list(tmp_settings.models_dir.rglob("*.gguf"))
+    assert len(files) == 1
+    assert client.delete(f"/admin/models/{model_id}").status_code == 200
+    assert not files[0].exists()
+    assert client.get(f"/admin/models/{model_id}").status_code == 404

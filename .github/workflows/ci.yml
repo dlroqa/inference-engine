@@ -432,6 +432,7 @@ jobs:
           IE_E2E_BASE_URL=http://127.0.0.1:8140 \
           IE_E2E_OPERATOR_KEY="$OWNER" \
           IE_E2E_MODEL_PATH="$HOME/models/tiny.gguf" \
+          IE_E2E_SCREENSHOT_DIR=e2e-screenshots \
             python -m pytest e2e -v -p no:cacheprovider --junitxml=e2e-report.xml \
             | tee e2e-output.txt
           python scripts/measure.py pid --label "engine, browser acceptance" "$SRV"
@@ -441,6 +442,14 @@ jobs:
             grep -E "PASSED|FAILED|ERROR|passed|failed" e2e-output.txt || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload wiring popover screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dashboard-wiring-screenshots
+          path: e2e-screenshots/
+          if-no-files-found: error
 
   build:
     name: Build & validate package

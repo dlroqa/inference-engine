@@ -4,6 +4,7 @@ import { useModels } from "../hooks/useModels";
 import { AsyncBoundary } from "../components/Panel";
 import { Badge, type ToneName } from "../components/widgets";
 import { Icon } from "../components/Icon";
+import { WiredTo } from "../components/WiredTo";
 import { bytes } from "../lib/format";
 import { useConfirm } from "../hooks/useConfirm";
 
@@ -75,6 +76,8 @@ function AddModel({ onAdded }: { onAdded: () => void }): JSX.Element {
     }
   };
 
+  const submitId = mode === "import" ? "models.import" : "models.download";
+
   const tabs: { id: AddMode; label: string }[] = [
     { id: "huggingface", label: "Hugging Face" },
     { id: "url", label: "URL" },
@@ -82,21 +85,27 @@ function AddModel({ onAdded }: { onAdded: () => void }): JSX.Element {
   ];
 
   return (
-    <div className="card col-12">
-      <h2>Add a model</h2>
-      <div className="row" role="tablist" aria-label="Add model source" style={{ marginBottom: 16 }}>
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            role="tab"
-            aria-selected={mode === t.id}
-            className={`btn ${mode === t.id ? "primary" : ""}`}
-            onClick={() => setMode(t.id)}
-            type="button"
-          >
-            {t.label}
-          </button>
-        ))}
+    <div className="card col-12" data-wiring={submitId}>
+      <div className="row panel-title">
+        <h2>Add a model</h2>
+        <WiredTo id={["models.download", "models.import"]} label="Add a model" />
+      </div>
+      <div className="row" style={{ marginBottom: 16 }} data-wiring="local.add-source">
+        <div className="row" role="tablist" aria-label="Add model source">
+          {tabs.map((t) => (
+            <button
+              key={t.id}
+              role="tab"
+              aria-selected={mode === t.id}
+              className={`btn ${mode === t.id ? "primary" : ""}`}
+              onClick={() => setMode(t.id)}
+              type="button"
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <WiredTo id="local.add-source" />
       </div>
 
       <form onSubmit={submit}>
@@ -183,10 +192,13 @@ function AddModel({ onAdded }: { onAdded: () => void }): JSX.Element {
             {error}
           </div>
         )}
-        <button className="btn primary" type="submit" disabled={busy}>
-          {busy ? <span className="spinner" /> : <Icon name="play" size={16} />}
-          {mode === "import" ? "Import model" : "Download model"}
-        </button>
+        <div className="row">
+          <button className="btn primary" type="submit" disabled={busy}>
+            {busy ? <span className="spinner" /> : <Icon name="play" size={16} />}
+            {mode === "import" ? "Import model" : "Download model"}
+          </button>
+          <WiredTo id={submitId} />
+        </div>
       </form>
     </div>
   );
@@ -218,6 +230,14 @@ function ModelRow({
 
   const meta = [model.arch, model.quant, bytes(model.size_bytes)].filter(Boolean).join(" · ");
 
+  // The explanation lists exactly the actions this row currently offers.
+  const actions = [
+    model.status === "downloading" && "models.cancel",
+    model.status === "ready" && !model.loaded && "models.load",
+    model.loaded && "models.unload",
+    !model.loaded && model.status !== "downloading" && "models.delete",
+  ].filter((a): a is string => Boolean(a));
+
   return (
     <div className="card" style={{ marginBottom: 12 }}>
       <div className="row spread">
@@ -241,7 +261,12 @@ function ModelRow({
         </div>
         <div className="row">
           {model.status === "downloading" && (
-            <button className="btn" onClick={() => run(() => api.cancelDownload(model.id))} disabled={busy}>
+            <button
+              className="btn"
+              onClick={() => run(() => api.cancelDownload(model.id))}
+              disabled={busy}
+              data-wiring="models.cancel"
+            >
               <Icon name="stop" size={16} /> Cancel
             </button>
           )}
@@ -250,12 +275,18 @@ function ModelRow({
               className="btn primary"
               onClick={() => run(() => api.loadModelById(model.id))}
               disabled={busy}
+              data-wiring="models.load"
             >
               {busy ? <span className="spinner" /> : <Icon name="play" size={16} />} Load
             </button>
           )}
           {model.loaded && (
-            <button className="btn" onClick={() => run(() => api.unloadModelById(model.id))} disabled={busy}>
+            <button
+              className="btn"
+              onClick={() => run(() => api.unloadModelById(model.id))}
+              disabled={busy}
+              data-wiring="models.unload"
+            >
               <Icon name="stop" size={16} /> Unload
             </button>
           )}
@@ -265,17 +296,22 @@ function ModelRow({
               onClick={async () => {
                 const ok = await confirm({
                   title: `Delete ${model.name}?`,
-                  body: "The model file is removed from the model store and the registry. This cannot be undone; you would need to download or import it again.",
+                  // Whether the file is engine-managed is not known here (the API does not
+                  // expose paths), so both outcomes are stated.
+                  body: "The model is removed from the registry. A file the engine manages (downloaded, or imported into the model store) is deleted and cannot be restored by this action. An imported file outside the model store stays on disk and can be imported again.",
                   confirmLabel: "Delete model",
+                  wiring: "models.delete",
                 });
                 if (ok) await run(() => api.deleteModel(model.id));
               }}
               disabled={busy}
               aria-label={`Delete ${model.name}`}
+              data-wiring="models.delete"
             >
               <Icon name="trash" size={16} /> Delete
             </button>
           )}
+          {actions.length > 0 && <WiredTo id={actions} label={`Actions for ${model.name}`} />}
         </div>
       </div>
 
@@ -318,27 +354,35 @@ export function Models(): JSX.Element {
   return (
     <>
       <div className="topbar">
-        <h1>Models</h1>
-        <button className="btn" onClick={reload}>
-          <Icon name="refresh" size={16} /> Refresh
-        </button>
+        <div className="row">
+          <h1>Models</h1>
+          <WiredTo id="models.list" />
+        </div>
+        <div className="row">
+          <button className="btn" onClick={reload} data-wiring="models.list">
+            <Icon name="refresh" size={16} /> Refresh
+          </button>
+          <WiredTo id="models.list" label="Refresh" />
+        </div>
       </div>
 
       <div className="grid" style={{ marginBottom: 20 }}>
         <AddModel onAdded={reload} />
       </div>
 
-      <AsyncBoundary
-        status={status}
-        error={error}
-        isEmpty={models.length === 0}
-        emptyText="No models yet. Download one from Hugging Face or a URL, or import a local GGUF file."
-        onRetry={reload}
-      >
-        {models.map((m) => (
-          <ModelRow key={m.id} model={m} onChange={reload} />
-        ))}
-      </AsyncBoundary>
+      <div data-wiring="models.list">
+        <AsyncBoundary
+          status={status}
+          error={error}
+          isEmpty={models.length === 0}
+          emptyText="No models yet. Download one from Hugging Face or a URL, or import a local GGUF file."
+          onRetry={reload}
+        >
+          {models.map((m) => (
+            <ModelRow key={m.id} model={m} onChange={reload} />
+          ))}
+        </AsyncBoundary>
+      </div>
     </>
   );
 }

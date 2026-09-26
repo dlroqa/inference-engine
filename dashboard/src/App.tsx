@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type JSX, type ReactNode } fr
 import { api, ApiError, getApiKey, setApiKey, type Identity } from "./lib/api";
 import { Icon, type IconName } from "./components/Icon";
 import { Dialog } from "./components/Dialog";
+import { WiredTo } from "./components/WiredTo";
 import { buildHash, useHashRoute } from "./hooks/useHashRoute";
 import { Overview } from "./views/Overview";
 import { Monitoring } from "./views/Monitoring";
@@ -77,8 +78,10 @@ function KeyForm({
   error?: string;
 }): JSX.Element {
   const [value, setValue] = useState("");
+  const hint = ["local.saved-key", "app.identity", ...(onCancel ? ["local.dialog-cancel"] : [])];
   return (
     <form
+      data-wiring="local.saved-key app.identity"
       onSubmit={(e) => {
         e.preventDefault();
         if (value.trim()) onSubmit(value.trim());
@@ -106,10 +109,12 @@ function KeyForm({
           Continue
         </button>
         {onCancel && (
-          <button className="btn" type="button" onClick={onCancel}>
+          <button className="btn" type="button" onClick={onCancel} data-wiring="local.dialog-cancel">
             Cancel
           </button>
         )}
+        {/* After the buttons, so a dialog's initial focus lands on the key field. */}
+        <WiredTo id={hint} label="Operator sign-in" />
       </div>
     </form>
   );
@@ -140,10 +145,11 @@ function IdentityMenu({
 }): JSX.Element {
   const key = identity.key;
   return (
-    <section className="identity" aria-label="Signed-in identity">
+    <section className="identity" aria-label="Signed-in identity" data-wiring="app.identity local.saved-key">
       <div className="identity-name">
         <Icon name="key" size={16} />
         {key ? (key.label ?? "Unnamed key") : "Local development"}
+        <WiredTo id={["app.identity", "local.saved-key"]} />
       </div>
       <div className="sub">
         {key ? (
@@ -170,7 +176,7 @@ function IdentityMenu({
 
 function NotFound({ view, onHome }: { view: string; onHome: () => void }): JSX.Element {
   return (
-    <div className="card col-12">
+    <div className="card col-12" data-wiring="local.navigation">
       <h1>Page not available</h1>
       <p className="muted">
         There is no <span className="mono">{view}</span> view in this dashboard.
@@ -264,9 +270,12 @@ export function App(): JSX.Element {
           inference API but cannot open the operator dashboard. Use an operator key.
         </p>
         <KeyForm onSubmit={submitKey} />
-        <button className="linkbtn" style={{ marginTop: 12 }} onClick={forgetKey}>
-          Forget saved key
-        </button>
+        <div className="row" style={{ marginTop: 12 }} data-wiring="local.saved-key">
+          <button className="linkbtn" onClick={forgetKey}>
+            Forget saved key
+          </button>
+          <WiredTo id="local.saved-key" label="Saved operator key" />
+        </div>
       </GateCard>
     );
   }
@@ -281,9 +290,12 @@ export function App(): JSX.Element {
           This is a connection or server problem, not a key problem. Check that the
           engine is running, then retry.
         </p>
-        <button className="btn primary" onClick={check}>
-          <Icon name="refresh" size={16} /> Retry
-        </button>
+        <div className="row" data-wiring="app.identity">
+          <button className="btn primary" onClick={check}>
+            <Icon name="refresh" size={16} /> Retry
+          </button>
+          <WiredTo id="app.identity" label="Engine connection" />
+        </div>
       </GateCard>
     );
   }
@@ -296,9 +308,10 @@ export function App(): JSX.Element {
       <nav className="sidebar" aria-label="Primary">
         <div className="brand">
           <span className="dot" /> Inference Engine
+          <WiredTo id="local.navigation" label="Navigation" />
         </div>
         {NAV_SECTIONS.map((section) => (
-          <div className="navsection" key={section.label}>
+          <div className="navsection" key={section.label} data-wiring="local.navigation">
             <div className="navsection-label" id={`nav-${section.label}`}>
               {section.label}
             </div>
