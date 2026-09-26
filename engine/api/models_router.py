@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
@@ -79,13 +80,36 @@ def _is_loaded(request: Request, record: ModelRecord) -> bool:
     )
 
 
+_SENSITIVE_QUERY_HINTS = ("token", "key", "secret", "sig", "auth", "password", "credential")
+
+
+def redact_source_ref(source_ref: str | None) -> str | None:
+    """Strip credentials from a model's recorded source before it leaves the API.
+
+    Removes URL userinfo (``user:pass@``) and masks query parameters whose names
+    look credential-bearing (``?token=``, ``X-Amz-Signature`` ...). Hugging Face
+    ``repo/file`` references and plain paths pass through unchanged.
+    """
+    if not source_ref or "://" not in source_ref:
+        return source_ref
+    parts = urlsplit(source_ref)
+    netloc = parts.hostname or ""
+    if parts.port is not None:
+        netloc = f"{netloc}:{parts.port}"
+    query = [
+        (k, "***" if any(h in k.lower() for h in _SENSITIVE_QUERY_HINTS) else v)
+        for k, v in parse_qsl(parts.query, keep_blank_values=True)
+    ]
+    return urlunsplit((parts.scheme, netloc, parts.path, urlencode(query, safe="*"), ""))
+
+
 def _serialize(request: Request, record: ModelRecord) -> dict[str, Any]:
     return {
         "id": record.id,
         "name": record.name,
         "filename": record.filename,
         "source_type": record.source_type,
-        "source_ref": record.source_ref,
+        "source_ref": redact_source_ref(record.source_ref),
         "sha256": record.sha256,
         "size_bytes": record.size_bytes,
         "downloaded_bytes": record.downloaded_bytes,

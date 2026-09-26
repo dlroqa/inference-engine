@@ -4,7 +4,8 @@ import { useLiveFeed } from "../hooks/useLiveFeed";
 import { StatCard, Meter, Badge, stateTone, categoryTone } from "../components/widgets";
 import { ConnBadge } from "../components/Panel";
 import { bytes, duration, num, clockTime } from "../lib/format";
-import type { FeedEvent } from "../lib/api";
+import { api, type FeedEvent } from "../lib/api";
+import { useAsync } from "../hooks/useAsync";
 
 function energyText(energy: { state: string; watts: number | null; j_per_token: number | null }): string {
   if (energy.state !== "measured") return "unavailable";
@@ -70,6 +71,8 @@ function feedLine(e: FeedEvent): JSX.Element {
 export function Overview(): JSX.Element {
   const { snapshot, status } = useLiveMetrics();
   const { events, status: feedStatus } = useLiveFeed();
+  const overview = useAsync(() => api.overview(), []);
+  const ov = overview.data;
 
   const c = snapshot?.counters;
   const r = snapshot?.resources;
@@ -85,6 +88,21 @@ export function Overview(): JSX.Element {
             <Badge tone={stateTone(model.state)}>
               {model.model_id ?? "no model"} · {model.state}
             </Badge>
+          )}
+          {ov && (
+            <span className="sub" data-testid="engine-readiness">
+              v{ov.version} · {ov.ready ? "ready" : "not ready"}
+              {!ov.ready &&
+                ` (${Object.entries(ov.checks)
+                  .filter(([, v]) => v !== "ok" && v !== "applied")
+                  .map(([k, v]) => `${k}: ${v}`)
+                  .join(", ")})`}
+            </span>
+          )}
+          {overview.status === "error" && (
+            <span className="sub" role="alert">
+              readiness unavailable: {overview.error}
+            </span>
           )}
         </div>
         <ConnBadge status={status} />

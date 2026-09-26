@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Models } from "../views/Models";
@@ -58,6 +58,21 @@ describe("Models view", () => {
     expect(screen.getByText("no AVX2")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Load/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Delete tiny/ })).toBeInTheDocument();
+  });
+
+  it("deletes a model only after confirmation", async () => {
+    vi.spyOn(api, "listModels").mockResolvedValue({ models: [model()] });
+    const del = vi.spyOn(api, "deleteModel").mockResolvedValue({ deleted: true, id: "m1" });
+    render(<Models />);
+    await screen.findByText("tiny");
+    await userEvent.click(screen.getByRole("button", { name: /Delete tiny/ }));
+    let dialog = await screen.findByRole("dialog", { name: "Delete tiny?" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(del).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: /Delete tiny/ }));
+    dialog = await screen.findByRole("dialog", { name: "Delete tiny?" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete model" }));
+    await waitFor(() => expect(del).toHaveBeenCalledWith("m1"));
   });
 
   it("shows download progress and a cancel action", async () => {

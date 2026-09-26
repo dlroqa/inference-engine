@@ -151,6 +151,8 @@ export interface LogEvent {
   stacktrace: string | null;
 }
 
+export type KeyRole = "operator" | "client";
+
 export interface KeyRow {
   id: string;
   prefix: string;
@@ -158,6 +160,15 @@ export interface KeyRow {
   created_at: string;
   last_used_at: string | null;
   revoked: boolean;
+  role?: KeyRole;
+  client_id?: string | null;
+}
+
+// Who the dashboard is acting as (GET /admin/identity). Never contains a token.
+export interface Identity {
+  kind: "key" | "local";
+  auth_required: boolean;
+  key: { id: string; prefix: string; label: string | null; role: KeyRole } | null;
 }
 
 export interface CreatedKey {
@@ -306,6 +317,7 @@ export interface AuditPage {
 // --- Endpoints ---
 
 export const api = {
+  identity: () => request<Identity>("/admin/identity"),
   overview: () => request<Overview>("/admin/overview"),
   metrics: () => request<MetricsSnapshot>("/metrics"),
   logs: (params: { limit?: number; level?: string; request_id?: string } = {}) => {
@@ -316,8 +328,6 @@ export const api = {
     const qs = q.toString();
     return request<{ events: LogEvent[] }>(`/logs${qs ? `?${qs}` : ""}`);
   },
-  loadModel: () => request<{ result: string; model: ModelPanel }>("/admin/model/load", { method: "POST" }),
-  unloadModel: () => request<{ result: string; model: ModelPanel }>("/admin/model/unload", { method: "POST" }),
   listKeys: () => request<{ keys: KeyRow[] }>("/admin/keys"),
   createKey: (label: string | null) =>
     request<CreatedKey>("/admin/keys", { method: "POST", body: JSON.stringify({ label }) }),
@@ -327,7 +337,6 @@ export const api = {
 
   // Model lifecycle (Block 6)
   listModels: () => request<{ models: ModelInfo[] }>("/admin/models"),
-  getModel: (id: string) => request<ModelInfo>(`/admin/models/${id}`),
   importModel: (path: string, name: string | null) =>
     request<ModelInfo>("/admin/models/import", { method: "POST", body: JSON.stringify({ path, name }) }),
   downloadModel: (body: DownloadRequest) =>

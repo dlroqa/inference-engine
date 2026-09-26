@@ -5,6 +5,7 @@ import { AsyncBoundary } from "../components/Panel";
 import { Badge, type ToneName } from "../components/widgets";
 import { Icon } from "../components/Icon";
 import { bytes } from "../lib/format";
+import { useConfirm } from "../hooks/useConfirm";
 
 type AddMode = "huggingface" | "url" | "import";
 
@@ -200,6 +201,7 @@ function ModelRow({
 }): JSX.Element {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirm, confirmDialog] = useConfirm();
 
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -260,7 +262,14 @@ function ModelRow({
           {!model.loaded && model.status !== "downloading" && (
             <button
               className="btn danger"
-              onClick={() => run(() => api.deleteModel(model.id))}
+              onClick={async () => {
+                const ok = await confirm({
+                  title: `Delete ${model.name}?`,
+                  body: "The model file is removed from the model store and the registry. This cannot be undone; you would need to download or import it again.",
+                  confirmLabel: "Delete model",
+                });
+                if (ok) await run(() => api.deleteModel(model.id));
+              }}
               disabled={busy}
               aria-label={`Delete ${model.name}`}
             >
@@ -298,6 +307,7 @@ function ModelRow({
           {error}
         </div>
       )}
+      {confirmDialog}
     </div>
   );
 }

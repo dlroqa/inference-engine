@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Keys } from "../views/Keys";
@@ -11,6 +11,8 @@ const key = (over: Partial<KeyRow> = {}): KeyRow => ({
   created_at: "2026-09-20T00:00:00+00:00",
   last_used_at: null,
   revoked: false,
+  role: "operator",
+  client_id: null,
   ...over,
 });
 
@@ -47,7 +49,37 @@ describe("Keys view", () => {
     render(<Keys />);
     await screen.findByText("sk-ie-ab12…");
     await userEvent.click(screen.getByRole("button", { name: /Revoke key sk-ie-ab12/ }));
+    // Destructive: nothing happens until the operator confirms.
+    const dialog = await screen.findByRole("dialog", { name: "Revoke this key?" });
+    expect(revoke).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Revoke key" }));
     await waitFor(() => expect(revoke).toHaveBeenCalledWith("k1"));
+  });
+
+  it("cancelling the revoke confirmation (Escape) does nothing", async () => {
+    vi.spyOn(api, "listKeys").mockResolvedValue({ keys: [key()] });
+    const revoke = vi.spyOn(api, "revokeKey").mockResolvedValue({ revoked: true, id: "k1" });
+    render(<Keys />);
+    await screen.findByText("sk-ie-ab12…");
+    const trigger = screen.getByRole("button", { name: /Revoke key sk-ie-ab12/ });
+    await userEvent.click(trigger);
+    const dialog = await screen.findByRole("dialog", { name: "Revoke this key?" });
+    // Cancel is focused first so a stray Enter never confirms.
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus();
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(revoke).not.toHaveBeenCalled();
+    expect(trigger).toHaveFocus();
+  });
+
+  it("shows each key's role", async () => {
+    vi.spyOn(api, "listKeys").mockResolvedValue({
+      keys: [key(), key({ id: "k2", prefix: "sk-ie-cc33", role: "client", client_id: "acme" })],
+    });
+    render(<Keys />);
+    await screen.findByText("sk-ie-cc33…");
+    expect(screen.getByText("operator")).toBeInTheDocument();
+    expect(screen.getByText("client")).toBeInTheDocument();
   });
 
   it("deletes a revoked key (no revoke action shown)", async () => {
@@ -58,6 +90,8 @@ describe("Keys view", () => {
     expect(screen.getByText("revoked")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Revoke key/ })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /Delete key sk-ie-ab12/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete this revoked key?" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete key" }));
     await waitFor(() => expect(del).toHaveBeenCalledWith("k1"));
   });
 

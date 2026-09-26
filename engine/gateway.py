@@ -14,11 +14,12 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from enum import Enum
 
 from fastapi import Request
 
 from engine.api.errors import OpenAIError
-from engine.auth.keys import KeyStore
+from engine.auth.keys import ROLE_OPERATOR, KeyRecord, KeyStore
 from engine.billing.store import STATUS_REVOKED, STATUS_SUSPENDED, BillingStore
 from engine.config import Settings
 from engine.quota.compute import ComputeModel, estimate_prompt_tokens
@@ -26,6 +27,20 @@ from engine.quota.store import UsageStore, WindowUsage
 
 LOCAL_KEY_ID = "local"  # unauthenticated loopback attribution
 _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+
+class OperatorAccess(Enum):
+    ALLOWED = "allowed"
+    UNAUTHENTICATED = "unauthenticated"  # 401: missing, invalid, or revoked key
+    FORBIDDEN_ROLE = "forbidden_role"  # 403: a valid key without the operator role
+
+
+@dataclass(frozen=True, slots=True)
+class OperatorDecision:
+    """Outcome of the operator gate; ``key`` is the presented key's record, if valid."""
+
+    access: OperatorAccess
+    key: KeyRecord | None = None
 
 
 def extract_token(request: Request) -> str | None:
@@ -197,18 +212,36 @@ class Gateway:
             )
         return LOCAL_KEY_ID
 
-    def operator_allowed(self, *, client_host: str | None, token: str | None) -> bool:
-        """Whether an operator surface (metrics/feed/diagnostics) may be accessed.
+    def operator_access(
+        self, *, client_host: str | None, token: str | None
+    ) -> OperatorDecision:
+        """Decide access to an operator surface (admin, metrics, logs, feed, ...).
 
-        Allowed for loopback clients (local development) or for any request that
-        presents a currently-valid API key (authenticated operator use). This is
-        the Block 4 gate; operator RBAC/SSO is a later block.
+        Credentials are evaluated **before** the loopback exception, so a client
+        key or a bad key is refused even from localhost:
+
+        - a valid operator key (not owned by a billing client) is allowed;
+        - a valid billing-client key is refused with ``FORBIDDEN_ROLE`` (403);
+        - an invalid or revoked key is refused with ``UNAUTHENTICATED`` (401);
+        - no key is refused (401) whenever effective authentication is on, even
+          from loopback; with it off, keyless *loopback* development use is
+          allowed and remote callers are still refused.
         """
-        if is_loopback_client(client_host):
-            return True
         if token:
-            return self.keys.verify(token) is not None
-        return False
+            record = self.keys.verify(token)
+            if record is None:
+                return OperatorDecision(OperatorAccess.UNAUTHENTICATED)
+            if record.role != ROLE_OPERATOR:
+                return OperatorDecision(OperatorAccess.FORBIDDEN_ROLE, record)
+            return OperatorDecision(OperatorAccess.ALLOWED, record)
+        if not self.settings.effective_require_auth() and is_loopback_client(client_host):
+            return OperatorDecision(OperatorAccess.ALLOWED)
+        return OperatorDecision(OperatorAccess.UNAUTHENTICATED)
+
+    def operator_allowed(self, *, client_host: str | None, token: str | None) -> bool:
+        """Boolean form of :meth:`operator_access`."""
+        decision = self.operator_access(client_host=client_host, token=token)
+        return decision.access is OperatorAccess.ALLOWED
 
     def _quota_headers(self, u5h: WindowUsage, uweek: WindowUsage) -> dict[str, str]:
         headers: dict[str, str] = {}

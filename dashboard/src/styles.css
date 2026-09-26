@@ -166,6 +166,98 @@ button {
   flex: none;
 }
 
+a.navbtn {
+  text-decoration: none;
+  min-height: 44px;
+}
+
+/* Grouped navigation (Operate / Serve / Business / Access) */
+.navsection ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.navsection + .navsection {
+  margin-top: var(--space-3);
+}
+.navsection-label {
+  padding: 0 var(--space-3) var(--space-1);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-fg-muted);
+}
+
+/* Signed-in identity (sidebar footer) */
+.identity {
+  margin-top: auto;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  font-size: 13px;
+}
+.identity-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.identity-actions {
+  margin-top: var(--space-2);
+  gap: var(--space-2);
+}
+
+/* The main region takes programmatic focus after navigation; no ring for that. */
+.main:focus {
+  outline: none;
+}
+
+.gate-title {
+  font-size: 18px;
+  margin: 0 0 var(--space-3);
+}
+
+/* Modal dialogs */
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: var(--space-4);
+  background: rgba(2, 6, 23, 0.6);
+}
+.dialog {
+  width: min(460px, 100%);
+  max-height: calc(100dvh - 2 * var(--space-4));
+  overflow-y: auto;
+  padding: var(--space-5);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2);
+}
+.dialog h2 {
+  margin: 0 0 var(--space-3);
+  font-size: 17px;
+}
+.dialog-body {
+  color: var(--color-fg-muted);
+  font-size: 14px;
+  line-height: 1.55;
+}
+.dialog-actions {
+  justify-content: flex-end;
+  margin-top: var(--space-5);
+  gap: var(--space-2);
+}
+
 .main {
   padding: var(--space-5) var(--space-6);
   overflow-y: auto;
@@ -264,6 +356,20 @@ button {
   .brand {
     width: 100%;
     padding-bottom: var(--space-2);
+  }
+  .navsection {
+    width: 100%;
+  }
+  .navsection ul {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .navsection + .navsection {
+    margin-top: var(--space-1);
+  }
+  .identity {
+    width: 100%;
+    margin-top: var(--space-2);
   }
   .main {
     padding: var(--space-4);

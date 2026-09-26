@@ -55,10 +55,15 @@ jobs:
         run: ruff check --output-format=github .
 
       - name: Ruff (format check)
-        run: ruff format --check .
+        run: ruff format --check --diff .
 
       - name: Mypy (type check)
         run: mypy
+
+      - name: Route inventory is current (dashboard wiring drift guard)
+        # The dashboard's "wired to" explanations are checked against this file by
+        # vitest; a backend route change must regenerate it (prints the diff).
+        run: python scripts/export_routes.py --check
 
       - name: Pytest with coverage (enforces fail_under)
         run: |
@@ -320,6 +325,103 @@ jobs:
             --base-url http://127.0.0.1:8130/v1 --model tiny \
             | tee -a "$GITHUB_STEP_SUMMARY"
 
+  browser-acceptance:
+    name: Dashboard in a real browser (real engine + GGUF)
+    runs-on: ubuntu-latest
+    needs: test
+    defaults:
+      run:
+        shell: bash
+    env:
+      MODEL_URL: "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q4_K_M.gguf"
+      MODEL_SHA256: "2e8040ceae7815abe0dcb3540b9995eaa1fa0d2ca9e797d0a635ae4433c68c2d"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Runner inventory (no secrets)
+        run: |
+          {
+            echo "### Runner inventory (browser-acceptance)"
+            echo "- OS: $(. /etc/os-release && echo "$PRETTY_NAME") / kernel $(uname -r)"
+            echo "- Arch: $(uname -m)"
+            echo "- CPU: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs) ($(nproc) cores)"
+            echo "- SIMD: $(grep -m1 -oE '(avx512f|avx2|avx|fma|f16c|sse4_2)' /proc/cpuinfo | sort -u | tr '\n' ' ')"
+            echo "- RAM: $(free -h | awk '/Mem:/ {print $2}')"
+            echo "- Disk free: $(df -h . | awk 'NR==2 {print $4}')"
+          } >> "$GITHUB_STEP_SUMMARY"
+          grep -q avx2 /proc/cpuinfo || { echo "::error::runner lacks AVX2 (prebuilt llama.cpp wheel)"; exit 1; }
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Build the dashboard into engine/static
+        working-directory: dashboard
+        run: |
+          npm ci
+          npm run build
+          test -f ../engine/static/index.html
+
+      - name: Install engine + llama.cpp backend + browser harness
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[llama]" \
+            --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+          pip install -r requirements/e2e.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Cache tiny GGUF model
+        id: gguf-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/models/tiny.gguf
+          key: gguf-smollm2-135m-q4km-${{ env.MODEL_SHA256 }}
+
+      - name: Download tiny GGUF model
+        if: steps.gguf-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/models
+          curl -sL -o ~/models/tiny.gguf "$MODEL_URL"
+
+      - name: Verify model checksum
+        run: echo "${MODEL_SHA256}  $HOME/models/tiny.gguf" | sha256sum -c -
+
+      - name: Run the browser acceptance suite (auth on, no model preloaded)
+        run: |
+          DATA=/tmp/ie-e2e
+          # The owner key is created with the CLI (shown once) and kept only in
+          # this step's environment; it is masked and never printed.
+          OWNER=$(IE_REQUIRE_AUTH=true inference-engine keys create --label owner --data-dir "$DATA" 2>/dev/null \
+            | python -c 'import sys,json; print(json.load(sys.stdin)["token"])')
+          echo "::add-mask::$OWNER"
+          IE_REQUIRE_AUTH=true inference-engine serve --port 8140 --data-dir "$DATA" &
+          SRV=$!
+          trap 'kill $SRV 2>/dev/null || true' EXIT
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8140/healthz >/dev/null 2>&1 && break
+            sleep 0.5
+          done
+          IE_E2E_BASE_URL=http://127.0.0.1:8140 \
+          IE_E2E_OPERATOR_KEY="$OWNER" \
+          IE_E2E_MODEL_PATH="$HOME/models/tiny.gguf" \
+            python -m pytest e2e -v -p no:cacheprovider --junitxml=e2e-report.xml \
+            | tee e2e-output.txt
+          {
+            echo "### Browser acceptance (Chromium, real engine, real GGUF)"
+            echo '```'
+            grep -E "PASSED|FAILED|ERROR|passed|failed" e2e-output.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   build:
     name: Build & validate package
     runs-on: ubuntu-latest
@@ -475,12 +577,13 @@ jobs:
     name: CI passed (build + render + test)
     runs-on: ubuntu-latest
     if: always()
-    needs: [test, dashboard, integration-llama, build, container]
+    needs: [test, dashboard, browser-acceptance, integration-llama, build, container]
     steps:
       - name: Verify all jobs succeeded
         run: |
           echo "test:              ${{ needs.test.result }}"
           echo "dashboard:         ${{ needs.dashboard.result }}"
+          echo "browser:           ${{ needs.browser-acceptance.result }}"
           echo "integration-llama: ${{ needs.integration-llama.result }}"
           echo "build:             ${{ needs.build.result }}"
           echo "container:         ${{ needs.container.result }}"
@@ -491,6 +594,7 @@ jobs:
           fi
           if [ "${{ needs.test.result }}" != "success" ] \
              || [ "${{ needs.dashboard.result }}" != "success" ] \
+             || [ "${{ needs.browser-acceptance.result }}" != "success" ] \
              || [ "${{ needs.integration-llama.result }}" != "success" ] \
              || [ "${{ needs.build.result }}" != "success" ] \
              || [ "$CONTAINER" != "success" ]; then

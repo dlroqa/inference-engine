@@ -18,11 +18,11 @@ from engine.billing.webhooks.store import WebhookStore
 from engine.config import Settings
 from engine.main import create_app
 from tests.support.fake_backend import FakeBackend
+from tests.support.operator import operator_client
 
 MODEL_ID = "fake-model"
 SECRET = "whsec_test"
 ALLOWED_HOST = "hooks.example.com"
-LOOPBACK = ("127.0.0.1", 40000)  # operator endpoints allow loopback dev clients
 
 
 def _app(tmp_path: Path, **overrides: object) -> tuple[object, Settings]:
@@ -58,7 +58,7 @@ def _post_stripe(client: TestClient, event: dict) -> object:
 
 def test_create_endpoint_requires_allowlisted_host(tmp_path: Path) -> None:
     app, settings = _app(tmp_path)
-    with TestClient(app, client=LOOPBACK) as client:
+    with operator_client(app, settings) as client:  # type: ignore[arg-type]
         BillingStore(settings.db_path).create_client(id="c1")  # type: ignore[arg-type]
         # Host not in egress_allowlist -> rejected.
         bad = client.post(
@@ -77,8 +77,8 @@ def test_create_endpoint_requires_allowlisted_host(tmp_path: Path) -> None:
 
 
 def test_create_endpoint_unknown_client(tmp_path: Path) -> None:
-    app, _ = _app(tmp_path)
-    with TestClient(app, client=LOOPBACK) as client:
+    app, settings = _app(tmp_path)
+    with operator_client(app, settings) as client:
         resp = client.post(
             "/admin/billing/webhooks/endpoints",
             json={"client_id": "nope", "url": f"https://{ALLOWED_HOST}/h"},
@@ -89,7 +89,7 @@ def test_create_endpoint_unknown_client(tmp_path: Path) -> None:
 
 def test_rotate_and_replay_and_list(tmp_path: Path) -> None:
     app, settings = _app(tmp_path)
-    with TestClient(app, client=LOOPBACK) as client:
+    with operator_client(app, settings) as client:  # type: ignore[arg-type]
         wh = WebhookStore(settings.db_path)  # type: ignore[arg-type]
         BillingStore(settings.db_path).create_client(id="c1")  # type: ignore[arg-type]
         ep, first = wh.create_endpoint(client_id="c1", url=f"https://{ALLOWED_HOST}/h")
@@ -111,7 +111,7 @@ def test_rotate_and_replay_and_list(tmp_path: Path) -> None:
 
 def test_stripe_cancellation_emits_outbound_canceled(tmp_path: Path) -> None:
     app, settings = _app(tmp_path)
-    with TestClient(app, client=LOOPBACK) as client:
+    with operator_client(app, settings) as client:  # type: ignore[arg-type]
         wh = WebhookStore(settings.db_path)  # type: ignore[arg-type]
         billing = BillingStore(settings.db_path)  # type: ignore[arg-type]
         billing.create_client(id="c1", external_ref="cus_1")
@@ -137,7 +137,7 @@ def test_stripe_cancellation_emits_outbound_canceled(tmp_path: Path) -> None:
 
 def test_usage_threshold_emits_once(tmp_path: Path) -> None:
     app, settings = _app(tmp_path, webhook_usage_threshold_pct=0.001)
-    with TestClient(app, client=LOOPBACK) as client:
+    with operator_client(app, settings) as client:  # type: ignore[arg-type]
         wh = WebhookStore(settings.db_path)  # type: ignore[arg-type]
         billing = BillingStore(settings.db_path)  # type: ignore[arg-type]
         keys = KeyStore(settings.db_path)  # type: ignore[arg-type]
@@ -183,7 +183,7 @@ def test_webhooks_disabled_no_worker_no_emit(tmp_path: Path) -> None:
     fake = FakeBackend(tokens=["a"], model_id=MODEL_ID)
     asyncio.run(fake.load())
     app = create_app(settings, backend=fake)
-    with TestClient(app, client=LOOPBACK) as client:
+    with operator_client(app, settings) as client:  # type: ignore[arg-type]
         billing = BillingStore(settings.db_path)  # type: ignore[arg-type]
         billing.create_client(id="c1", external_ref="cus_1")
         WebhookStore(settings.db_path).create_endpoint(  # type: ignore[arg-type]

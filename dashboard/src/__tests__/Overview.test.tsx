@@ -1,5 +1,5 @@
 import { render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../hooks/useLiveMetrics", () => ({ useLiveMetrics: vi.fn() }));
 vi.mock("../hooks/useLiveFeed", () => ({ useLiveFeed: vi.fn() }));
@@ -7,7 +7,7 @@ vi.mock("../hooks/useLiveFeed", () => ({ useLiveFeed: vi.fn() }));
 import { Overview } from "../views/Overview";
 import { useLiveMetrics } from "../hooks/useLiveMetrics";
 import { useLiveFeed } from "../hooks/useLiveFeed";
-import type { MetricsSnapshot } from "../lib/api";
+import { api, type MetricsSnapshot, type Overview as OverviewData } from "../lib/api";
 
 const snapshot: MetricsSnapshot = {
   ts: 1_700_000_000,
@@ -52,6 +52,19 @@ const snapshot: MetricsSnapshot = {
   },
 };
 
+const overviewData = (over: Partial<OverviewData> = {}): OverviewData => ({
+  version: "0.1.1",
+  ready: true,
+  checks: { database: "ok", migrations: "applied" },
+  model: { configured_id: "tiny", configured: true, state: "ready", loaded: true, model_id: "tiny" },
+  metrics: snapshot,
+  ...over,
+});
+
+beforeEach(() => {
+  vi.spyOn(api, "overview").mockResolvedValue(overviewData());
+});
+
 afterEach(() => vi.clearAllMocks());
 
 describe("Overview view", () => {
@@ -85,5 +98,24 @@ describe("Overview view", () => {
     vi.mocked(useLiveFeed).mockReturnValue({ events: [], status: "connecting" });
     render(<Overview />);
     expect(screen.getByText("No inference activity yet.")).toBeInTheDocument();
+  });
+
+  it("shows the engine version and readiness from /admin/overview", async () => {
+    vi.mocked(useLiveMetrics).mockReturnValue({ snapshot, status: "live" });
+    vi.mocked(useLiveFeed).mockReturnValue({ events: [], status: "live" });
+    render(<Overview />);
+    expect(await screen.findByTestId("engine-readiness")).toHaveTextContent("v0.1.1 · ready");
+  });
+
+  it("names the failing readiness checks", async () => {
+    vi.mocked(api.overview).mockResolvedValue(
+      overviewData({ ready: false, checks: { database: "ok", migrations: "pending" } }),
+    );
+    vi.mocked(useLiveMetrics).mockReturnValue({ snapshot, status: "live" });
+    vi.mocked(useLiveFeed).mockReturnValue({ events: [], status: "live" });
+    render(<Overview />);
+    expect(await screen.findByTestId("engine-readiness")).toHaveTextContent(
+      "not ready (migrations: pending)",
+    );
   });
 });

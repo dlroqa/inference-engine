@@ -25,8 +25,9 @@ export function Clients({
   const attribution = useAsync(() => api.usageAttribution("week"), []);
   const [selected, setSelected] = useState<string | null>(focusClientId ?? null);
 
+  // The URL (#/clients/<id>) is the source of truth for the open client.
   useEffect(() => {
-    if (focusClientId) setSelected(focusClientId);
+    setSelected(focusClientId ?? null);
   }, [focusClientId]);
 
   const usageByClient = useMemo(() => {
@@ -88,7 +89,11 @@ export function Clients({
                       <tr
                         key={c.id}
                         className={`clickrow ${selected === c.id ? "selected" : ""}`}
-                        onClick={() => setSelected(c.id === selected ? null : c.id)}
+                        onClick={() => {
+                          const next = c.id === selected ? null : c.id;
+                          setSelected(next);
+                          onNavigate("clients", next ? { clientId: next } : {});
+                        }}
                         aria-selected={selected === c.id}
                       >
                         <td className="mono">{c.id.slice(0, 12)}</td>
@@ -114,7 +119,10 @@ export function Clients({
             key={selectedClient.id}
             clientId={selectedClient.id}
             attributionKeys={attribution.data?.keys ?? []}
-            onClose={() => setSelected(null)}
+            onClose={() => {
+              setSelected(null);
+              onNavigate("clients");
+            }}
           />
         )}
       </div>
@@ -132,13 +140,21 @@ function ClientDetail({
   onClose: () => void;
 }): JSX.Element {
   const endpoints = useAsync(() => api.listWebhookEndpoints(clientId), [clientId]);
-  const deliveries = useAsync(() => api.listDeliveries({ limit: 100 }), [clientId]);
+  const endpointIds = (endpoints.data?.endpoints ?? []).map((e) => e.id);
+  const endpointKey = endpointIds.join(",");
+  // Deliveries are requested per endpoint (filtered on the server), so a busy
+  // engine's other clients can never push this client's deliveries off the page.
+  const deliveries = useAsync(async () => {
+    const pages = await Promise.all(
+      endpointIds.map((id) => api.listDeliveries({ endpoint_id: id, limit: 100 })),
+    );
+    return pages
+      .flatMap((p) => p.deliveries)
+      .sort((a, b) => b.created_at - a.created_at);
+  }, [endpointKey]);
 
   const clientKeys = attributionKeys.filter((k) => k.client_id === clientId);
-  const endpointIds = new Set((endpoints.data?.endpoints ?? []).map((e) => e.id));
-  const clientDeliveries = (deliveries.data?.deliveries ?? []).filter((d) =>
-    endpointIds.has(d.endpoint_id),
-  );
+  const clientDeliveries = deliveries.data ?? [];
 
   return (
     <div className="card col-12">
@@ -212,8 +228,8 @@ function ClientDetail({
 
       <h3 className="detail-h" style={{ marginTop: 20 }}>Recent deliveries</h3>
       <AsyncBoundary
-        status={deliveries.status}
-        error={deliveries.error}
+        status={endpoints.status === "ready" ? deliveries.status : endpoints.status}
+        error={endpoints.status === "error" ? endpoints.error : deliveries.error}
         isEmpty={clientDeliveries.length === 0}
         emptyText="No deliveries."
         onRetry={deliveries.reload}

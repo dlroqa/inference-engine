@@ -1,0 +1,5 @@
+# Browser acceptance harness (CI only; see e2e/ and the ci.yml browser job).
+# Exact pins; the engine itself is installed from the repository.
+playwright==1.52.0
+httpx==0.28.1
+pytest==8.3.5

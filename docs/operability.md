@@ -17,12 +17,23 @@ backend execution**, and can read health/load without any secret ever leaking.
 
 ### Access control
 
-All five surfaces are gated to **loopback development use or an authenticated
-operator**. An operator authenticates with a valid API key via `Authorization:
-Bearer …`, `x-api-key: …`, or — for WebSockets — a `?api_key=…` query parameter.
-Unauthorized REST calls return `401`; unauthorized WebSocket handshakes are closed
-with code `1008` before the socket is accepted. Operator RBAC/SSO is a later block;
-this is the minimum honest gate.
+All five surfaces (and every `/admin/*` endpoint) use one operator gate. An
+operator authenticates with an **operator** API key via `Authorization: Bearer …`,
+`x-api-key: …`, or — for WebSockets — a `?api_key=…` query parameter. Credentials
+are checked **before** the loopback exception:
+
+| Credentials presented | Operator surface |
+|---|---|
+| Valid operator key | Allowed |
+| Valid **client-owned** key (billing client), from any host incl. localhost | `403 operator_role_required` |
+| Invalid or revoked key, from any host incl. localhost | `401 operator_access_required` |
+| No key while effective auth is **on** (`require_auth`, or any non-loopback bind) | `401`, even from localhost |
+| No key while effective auth is **off** | Allowed for loopback development use only |
+
+Keys owned by a billing client (`/admin/billing/clients/{id}/keys`) keep working
+for inference and `/client/*`, but never open operator surfaces. Rejected
+WebSocket handshakes are closed with code `1008` before the socket is accepted.
+Operator RBAC/SSO beyond the operator/client split is later work.
 
 ## Metrics snapshot
 
