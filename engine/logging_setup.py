@@ -26,6 +26,7 @@ def redact_secrets(text: str) -> str:
     """Mask credential-bearing query values in a log message."""
     return _SECRET_QUERY.sub(r"\1***", text)
 
+
 _RESERVED = {
     "name",
     "msg",
