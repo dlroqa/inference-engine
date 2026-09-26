@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import functools
+import os
 import re
 import time
 import uuid
@@ -87,6 +88,12 @@ def _path_key(path: Path) -> str:
 # credential, so no part of it is stored, logged, or used to name the model.
 URL_SOURCE_DESCRIPTOR = "address not stored"
 
+# Recorded for a download that was still running when the engine last stopped.
+INTERRUPTED = (
+    "download interrupted: the engine stopped before it finished. Delete this model "
+    "(which removes any file it kept) and download it again."
+)
+
 # An operator-supplied filename for a URL download.
 _OPERATOR_FILENAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
@@ -100,6 +107,15 @@ def _url_download_filename(filename: str | None) -> str:
             "filename may contain only letters, digits, '.', '_' and '-' (at most 128)"
         )
     return filename
+
+
+def _observed_files(path: Path) -> str:
+    """Which of a download's files exist (fixed labels; links are not followed)."""
+    promoted = os.path.lexists(path)
+    partial = os.path.lexists(path.with_suffix(path.suffix + ".part"))
+    if promoted and partial:
+        return "both"
+    return "promoted" if promoted else "partial" if partial else "neither"
 
 
 def _safe_filename(name: str) -> str:
@@ -405,6 +421,33 @@ class ModelService:
         if cancel is None:
             return False
         return cancel.request()
+
+    # -- restart recovery --------------------------------------------------
+
+    def reconcile_interrupted(self) -> int:
+        """Marks downloads left running by a previous engine process as failed.
+
+        Called at startup, while this process holds the store lock (so no other
+        engine can own them) and before any model operation is admitted. It is
+        conservative: whatever files remain, the row becomes ``error`` with a
+        fixed message; files are kept and never inspected beyond existence
+        (symlinks are not followed), and nothing is marked ready or loaded.
+        Updates are conditional, so a repeated startup changes nothing. A
+        database error propagates: startup fails rather than claim recovery.
+        """
+        running = (str(ModelStatus.DOWNLOADING), str(ModelStatus.VERIFYING))
+        changed = 0
+        for record in self.registry.list():
+            if record.status not in running or record.id in self._tasks:
+                continue
+            files = _observed_files(Path(record.path))
+            if self.registry.mark_interrupted(record.id, from_statuses=running, error=INTERRUPTED):
+                changed += 1
+                _log.warning(
+                    "model_download_interrupted",
+                    extra={"model_id": record.id, "files": files},
+                )
+        return changed
 
     # -- ownership and delete ---------------------------------------------
 

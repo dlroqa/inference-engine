@@ -125,7 +125,7 @@ answers `{"cancelling": true, "id": ...}`. That means the request was accepted,
 not that the worker has already stopped; the model shows `cancelled` once it
 has. A refused request answers `409 model_cancel_not_accepted`. This happens
 once the file is committed and the download is finishing, or when no worker is
-running for the model (for example after a forced kill). It never answers as if
+running for the model. It never answers as if
 a refused request had been accepted.
 
 `DELETE /admin/models/{id}` refuses with `409 model_busy` while the engine owns
@@ -149,8 +149,10 @@ that could still change model files. How long this takes depends on the worker.
 It is usually one chunk. The 30-second network timeout applies to each blocking
 read, not to the whole shutdown, and checksumming stops between chunks. These
 guarantees hold only while the process is allowed to finish. A supervisor that
-kills the process first can leave a `.part` file, a promoted file whose metadata
-was not recorded, or a registry record stuck at `downloading`. See
+kills the process first can leave a `.part` file, or a promoted file whose
+metadata was not recorded. The next engine start marks such a download `error`
+("download interrupted"), keeps its files as found, and never marks it ready.
+It does this only while it holds the data store's single-engine lock. See
 [deployment: graceful shutdown](deployment.md#graceful-shutdown--drain).
 
 If the database is unavailable when a failure is recorded, the state change is

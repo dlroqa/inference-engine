@@ -59,6 +59,7 @@ from engine.quota.store import UsageStore
 from engine.quota.windows import week_start
 from engine.store.db import connect
 from engine.store.migrations import apply_migrations, migrations_at_head
+from engine.store.ownership import StoreLock, lock_path_for
 from engine.telemetry.counters import Counters
 from engine.telemetry.events import EventBus
 from engine.telemetry.logbuffer import LogCollector
@@ -165,6 +166,20 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # One serving engine per data store: startup recovery below relies on no
+        # other process owning downloads in this database. Raises
+        # StoreLockedError (startup fails) if another engine holds it. The OS
+        # drops the lock when the process exits, however it exits.
+        store_lock = StoreLock(lock_path_for(settings.db_path))  # type: ignore[arg-type]
+        store_lock.acquire()
+        try:
+            async with _serve(app):
+                yield
+        finally:
+            store_lock.release()
+
+    @asynccontextmanager
+    async def _serve(app: FastAPI) -> AsyncIterator[None]:
         log.info(
             "startup",
             extra={
@@ -182,6 +197,13 @@ def create_app(
         finally:
             conn.close()
         log.info("migrations_applied", extra={"newly_applied": applied})
+
+        # Downloads a previous process left running end as `error` before any
+        # model operation is admitted (conservative: files are kept, nothing is
+        # marked ready). A database error here fails startup.
+        interrupted = model_service.reconcile_interrupted()
+        if interrupted:
+            log.warning("model_downloads_interrupted", extra={"count": interrupted})
 
         # Seed the default plan (Block 11) once the billing tables exist, mirroring
         # the engine-wide quota limits so an owned key on the default plan behaves

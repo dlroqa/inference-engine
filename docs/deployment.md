@@ -197,15 +197,34 @@ download had got:
   metadata probe or its registry update was unfinished. There is then no
   `.part` file.
 
-Either way, the registry can still say `downloading` for a model with no worker,
-and nothing reconciles this automatically. `POST /admin/models/{id}/cancel`
-answers `409 model_cancel_not_accepted` for such a record. Starting the same
-download again is refused while the record exists, because the file name is
-taken. To recover, delete the record with `DELETE /admin/models/{id}`, which
-needs model management enabled. A record with no running worker is not
-"busy", so the delete is allowed. The dashboard does not offer Delete for a row
-that says downloading. Deleting removes the engine-managed model file and its
-`.part` file, if present. Then download again.
+Either way, the killed process's registry row still says `downloading`. On the
+next start, before admitting any model operation, the engine marks every such
+row `error` with a fixed message: "download interrupted: the engine stopped
+before it finished. Delete this model (which removes any file it kept) and
+download it again." It logs `model_download_interrupted` with a fixed label for
+the files it found (`partial`, `promoted`, `both` or `neither`). Recovery is
+deliberately conservative:
+
+- Kept files are not changed or deleted, and links are not followed.
+- A file is never trusted: nothing is marked ready or loaded, and there is no
+  automatic resume.
+- The update is conditional, so later starts change nothing, and rows that had
+  already finished are never touched.
+- If the database update fails, startup fails rather than claiming recovery.
+
+To recover, delete the model (dashboard Delete or `DELETE /admin/models/{id}`,
+which needs model management enabled). This removes the engine-managed file
+and `.part` file it kept. Then download it again.
+
+**One engine per data store.** Recovery is only correct if no other process
+owns downloads in the same database. So a serving engine holds an exclusive
+lock on `<database>.lock` (`inference_engine.db.lock` by default) for its
+lifetime, and a second engine started on the same data directory refuses to
+start (`StoreLockedError`). The operating system releases the lock when the
+process exits, including on a forced kill, so no stale lock survives a crash.
+Run one engine per data directory; scale out with separate data directories
+(or remote workers), not by sharing one. Maintenance commands that open the
+database directly, such as backups, do not take this lock.
 
 ## Readiness & liveness
 
