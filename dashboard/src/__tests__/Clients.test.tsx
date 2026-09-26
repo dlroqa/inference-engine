@@ -57,4 +57,32 @@ describe("Clients view", () => {
     render(<Clients onNavigate={vi.fn()} />);
     expect(await screen.findByRole("alert")).toHaveTextContent("down");
   });
+
+  it("requests deliveries per endpoint on the server, not a global page", async () => {
+    baseMocks();
+    vi.mocked(api.listWebhookEndpoints).mockResolvedValue({
+      endpoints: [
+        { id: "e1", client_id: "client-1", url: "https://h/1", description: null, disabled: false, event_types: null },
+        { id: "e2", client_id: "client-1", url: "https://h/2", description: null, disabled: true, event_types: null },
+      ],
+    });
+    const delivery = (id: string, endpoint_id: string, event_type: string, created_at: number) => ({
+      id, endpoint_id, event_id: `ev-${id}`, event_type, status: "delivered", attempts: 1,
+      next_attempt_at: 0, last_status_code: 200, last_error: null, created_at, updated_at: created_at,
+    });
+    vi.mocked(api.listDeliveries).mockImplementation(async (params = {}) => ({
+      deliveries:
+        params.endpoint_id === "e1"
+          ? [delivery("d1", "e1", "usage.threshold.reached", 100)]
+          : [delivery("d2", "e2", "subscription.canceled", 200)],
+    }));
+    render(<Clients focusClientId="client-1" onNavigate={vi.fn()} />);
+    expect(await screen.findByText("usage.threshold.reached")).toBeInTheDocument();
+    expect(screen.getByText("subscription.canceled")).toBeInTheDocument();
+    expect(api.listDeliveries).toHaveBeenCalledWith({ endpoint_id: "e1", limit: 100 });
+    expect(api.listDeliveries).toHaveBeenCalledWith({ endpoint_id: "e2", limit: 100 });
+    for (const [params] of vi.mocked(api.listDeliveries).mock.calls) {
+      expect(params?.endpoint_id).toBeDefined();
+    }
+  });
 });

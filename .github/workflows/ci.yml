@@ -46,6 +46,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
+      - name: Runner inventory
+        run: python scripts/runner_inventory.py --job "Lint, type-check, test & coverage (${{ matrix.python-version }})"
+
       - name: Install
         run: |
           python -m pip install --upgrade pip
@@ -106,6 +109,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
+      - name: Runner inventory
+        run: python scripts/runner_inventory.py --job "Cross-platform build & test (${{ matrix.os }})"
+
       - name: Install
         run: |
           python -m pip install --upgrade pip
@@ -134,6 +140,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Runner inventory
+        run: python3 scripts/runner_inventory.py --job "Operator dashboard (build + tests)"
 
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -188,6 +197,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+
+      - name: Runner inventory
+        run: python scripts/runner_inventory.py --job "llama.cpp integration (real GGUF, AVX)"
 
       - name: Install engine + llama.cpp CPU backend
         run: |
@@ -262,7 +274,7 @@ jobs:
           IE_SMOKE_BASE=http://127.0.0.1:8127 IE_MODEL_ID=tiny python scripts/anthropic_sdk_smoke.py
           IE_SMOKE_BASE=http://127.0.0.1:8127 IE_MODEL_ID=tiny python scripts/structured_output_smoke.py
 
-      - name: Dashboard control-plane smoke (real model load/gen/logs/keys)
+      - name: Dashboard control-plane smoke (real model load/gen/logs/keys/system)
         run: |
           IE_MODEL_PATH="$HOME/models/tiny.gguf" IE_MODEL_ID=tiny \
             inference-engine serve --port 8124 --data-dir /tmp/ie-serve-dash &
@@ -272,7 +284,10 @@ jobs:
             curl -sf http://127.0.0.1:8124/healthz >/dev/null 2>&1 && break
             sleep 0.5
           done
-          python scripts/dashboard_smoke.py --base-url http://127.0.0.1:8124
+          # Real-model mode (no --skip-generation): the model must load, generate,
+          # and /admin/system must report inference available — no silent skip.
+          python scripts/dashboard_smoke.py --base-url http://127.0.0.1:8124 \
+            | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Model lifecycle smoke (import → load → generate → unload → delete)
         run: |
@@ -338,18 +353,11 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Runner inventory (no secrets)
-        run: |
-          {
-            echo "### Runner inventory (browser-acceptance)"
-            echo "- OS: $(. /etc/os-release && echo "$PRETTY_NAME") / kernel $(uname -r)"
-            echo "- Arch: $(uname -m)"
-            echo "- CPU: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs) ($(nproc) cores)"
-            echo "- SIMD: $(grep -m1 -oE '(avx512f|avx2|avx|fma|f16c|sse4_2)' /proc/cpuinfo | sort -u | tr '\n' ' ')"
-            echo "- RAM: $(free -h | awk '/Mem:/ {print $2}')"
-            echo "- Disk free: $(df -h . | awk 'NR==2 {print $4}')"
-          } >> "$GITHUB_STEP_SUMMARY"
-          grep -q avx2 /proc/cpuinfo || { echo "::error::runner lacks AVX2 (prebuilt llama.cpp wheel)"; exit 1; }
+      - name: Runner inventory
+        run: python3 scripts/runner_inventory.py --job "Dashboard in a real browser (real engine + GGUF)"
+
+      - name: Require AVX2 (prebuilt llama.cpp wheel)
+        run: grep -q avx2 /proc/cpuinfo || { echo "::error::runner lacks AVX2"; exit 1; }
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -435,6 +443,9 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      - name: Runner inventory
+        run: python scripts/runner_inventory.py --job "Build & validate package"
+
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -487,7 +498,8 @@ jobs:
           echo "metrics energy: $(echo "$METRICS" | python -c 'import sys,json; print(json.load(sys.stdin)["energy"]["state"])')"
           # The bundled dashboard SPA is served from the installed wheel.
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8137/dashboard/)" = "200"
-          # Control-plane smoke (no model configured -> generation skipped).
+          # Control-plane smoke in explicit no-model mode (generation skipped;
+          # the /admin/system contract is still checked).
           python scripts/dashboard_smoke.py --base-url http://127.0.0.1:8137 --skip-generation
           kill "$SRV" 2>/dev/null || true
 
@@ -508,6 +520,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+      - name: Runner inventory
+        run: python scripts/runner_inventory.py --job "Dependency CVE audit (pip-audit)"
+
       - name: Install
         run: |
           python -m pip install --upgrade pip
@@ -534,6 +549,9 @@ jobs:
     if: ${{ !inputs.skip-container }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Runner inventory
+        run: python3 scripts/runner_inventory.py --job "Docker image (build + start smoke)"
 
       - name: Build image (CPU, llama.cpp backend included)
         run: |
@@ -577,11 +595,12 @@ jobs:
     name: CI passed (build + render + test)
     runs-on: ubuntu-latest
     if: always()
-    needs: [test, dashboard, browser-acceptance, integration-llama, build, container]
+    needs: [test, cross-platform, dashboard, browser-acceptance, integration-llama, build, container]
     steps:
       - name: Verify all jobs succeeded
         run: |
           echo "test:              ${{ needs.test.result }}"
+          echo "cross-platform:    ${{ needs.cross-platform.result }}"
           echo "dashboard:         ${{ needs.dashboard.result }}"
           echo "browser:           ${{ needs.browser-acceptance.result }}"
           echo "integration-llama: ${{ needs.integration-llama.result }}"
@@ -593,6 +612,7 @@ jobs:
             CONTAINER=success
           fi
           if [ "${{ needs.test.result }}" != "success" ] \
+             || [ "${{ needs.cross-platform.result }}" != "success" ] \
              || [ "${{ needs.dashboard.result }}" != "success" ] \
              || [ "${{ needs.browser-acceptance.result }}" != "success" ] \
              || [ "${{ needs.integration-llama.result }}" != "success" ] \

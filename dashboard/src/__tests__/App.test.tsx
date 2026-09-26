@@ -136,6 +136,15 @@ describe("App routing", () => {
     expect(await screen.findByRole("heading", { name: "Overview view" })).toBeInTheDocument();
   });
 
+  it("moves focus to the page content after navigation", async () => {
+    render(<App />);
+    await screen.findByRole("heading", { name: "Overview view" });
+    expect(screen.getByRole("main")).not.toHaveFocus(); // not on first render
+    goTo("#/keys");
+    await screen.findByRole("heading", { name: "Keys view" });
+    await waitFor(() => expect(screen.getByRole("main")).toHaveFocus());
+  });
+
   it("explains an unknown page instead of rendering nothing", async () => {
     window.location.hash = "#/architecture";
     render(<App />);

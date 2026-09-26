@@ -139,16 +139,20 @@ def test_client_key_still_serves_inference(env: tuple[object, Keys, bool]) -> No
     assert resp.status_code == 200
 
 
+@pytest.mark.parametrize("peer", [LOOPBACK, REMOTE], ids=["loopback", "remote"])
 @pytest.mark.parametrize("path", ["/ws/metrics", "/ws/feed"])
-def test_websockets_follow_the_same_policy(env: tuple[object, Keys, bool], path: str) -> None:
+def test_websockets_follow_the_same_policy(
+    env: tuple[object, Keys, bool], path: str, peer: tuple
+) -> None:
     app, keys, auth_on = env
-    with TestClient(app, client=LOOPBACK) as c:  # type: ignore[arg-type]
+    with TestClient(app, client=peer) as c:  # type: ignore[arg-type]
         for token in (keys.client, keys.revoked, "sk-ie-nope"):
             with pytest.raises(WebSocketDisconnect) as exc:
                 with c.websocket_connect(f"{path}?api_key={token}") as ws:
                     ws.receive_json()
             assert exc.value.code == 1008
-        if auth_on:
+        # Keyless: refused remotely always, and on loopback whenever auth is on.
+        if auth_on or peer == REMOTE:
             with pytest.raises(WebSocketDisconnect) as exc:
                 with c.websocket_connect(path) as ws:
                     ws.receive_json()

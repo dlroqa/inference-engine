@@ -117,6 +117,9 @@ jobs:
           ref: ${{ needs.validate.outputs.commit }}
           persist-credentials: false
 
+      - name: Runner inventory
+        run: python3 scripts/runner_inventory.py --job "Build once + image-level tests"
+
       - name: Require an AVX2 runner
         run: grep -q avx2 /proc/cpuinfo || { echo "::error::runner lacks AVX2"; exit 1; }
 

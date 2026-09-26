@@ -593,7 +593,9 @@ push/PR (and on demand via **workflow_dispatch**):
   integration test, and **renders a real completion** (uploaded as the
   `real-generation` artifact and shown in the run summary). This is the canonical
   place the llama.cpp path is exercised, since local dev CPUs may lack AVX. It
-  also runs the dashboard control-plane smoke and the **model-lifecycle smoke**
+  also runs the dashboard control-plane smoke in real-model mode (the model must
+  load and generate, and `/admin/system` must report inference available — no
+  silent skip) and the **model-lifecycle smoke**
   (import → load → generate → unload → delete on the real model), and runs on
   demand via **workflow_dispatch**.
 - **`dashboard`**: installs the SPA deps, type-checks, runs the **vitest**
@@ -603,10 +605,23 @@ push/PR (and on demand via **workflow_dispatch**):
   `python -m build` (so the wheel bundles the SPA), installs the wheel into a clean
   virtualenv, and smoke-tests the packaged CLI (`version` / `migrate`), the running
   server's health + `/metrics` + served `/dashboard`, and the dashboard
-  control-plane smoke. The distributable is verified, not just the source tree.
-- **`ci-success`**: a single aggregator gate that passes only when **all** of the
-  above jobs succeed (`test`, `dashboard`, `integration-llama`, `build`; failing if
-  any failed or was skipped). Use it as the one required status check.
+  control-plane smoke in explicit no-model mode (the `/admin/system` contract is
+  still checked). The distributable is verified, not just the source tree.
+- **`cross-platform`** (Windows + macOS): builds the wheel and runs the portable
+  test suite against it.
+- **`browser-acceptance`**: drives the built dashboard in Chromium against a
+  running engine (auth on) with the checksum-pinned real GGUF — login, client-key
+  denial, deep links/history, keyboard confirmations, and model import → load →
+  generation, each checked on the backend too.
+- **`container`**: builds the Docker image and smokes health, `/version`, the
+  dashboard, non-root user, and graceful drain.
+- **`ci-success`**: a single aggregator gate that passes only when **all** required
+  jobs succeed (`test`, `cross-platform`, `dashboard`, `browser-acceptance`,
+  `integration-llama`, `build`, `container`); any failed, cancelled, or skipped job
+  fails it (the release workflow alone may skip `container`, since it builds its
+  own candidate image). `security-audit` is advisory. Use `ci-success` as the one
+  required status check. Every job records its runner inventory (OS, arch, CPU,
+  RAM, disk, toolchain) in the run summary.
 
 Future build/render/test needs are added here as jobs (e.g. real-SDK contract
 tests against a live model, the React/Vite dashboard build + screenshots, Docker
