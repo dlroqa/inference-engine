@@ -33,6 +33,7 @@ from engine.store.migrations import apply_migrations
 from engine.store.ownership import StoreLockedError
 
 REPO = Path(__file__).resolve().parents[2]
+LOOPBACK = ("127.0.0.1", 40000)  # keyless operator access (auth off, loopback)
 WAIT = 30  # seconds, for the child to start and reach its barrier
 A = b"A" * 8
 B = b"B" * 8
@@ -91,11 +92,11 @@ def test_a_killed_download_is_marked_interrupted_and_its_files_are_kept(
     settings = Settings(data_dir=tmp_path / "data")
     with _child(settings.data_dir, barrier):
         # The child owns the store: a second engine refuses to start.
-        with pytest.raises(StoreLockedError), TestClient(create_app(settings)):
+        with pytest.raises(StoreLockedError), TestClient(create_app(settings), client=LOOPBACK):
             pass
     # The child is dead; its lock went with it.
     found = {p.name: p.read_bytes() for p in _models_dir(settings).glob("m.gguf*")}
-    with TestClient(create_app(settings)) as client:
+    with TestClient(create_app(settings), client=LOOPBACK) as client:
         model = _only_model(client)
         assert model["status"] == ModelStatus.ERROR.value
         assert model["error"] == INTERRUPTED
@@ -117,7 +118,7 @@ def test_a_killed_download_is_marked_interrupted_and_its_files_are_kept(
         row = _row(settings, model["id"])
 
     # Idempotent: a second restart changes nothing, including updated_at.
-    with TestClient(create_app(settings)) as client:
+    with TestClient(create_app(settings), client=LOOPBACK) as client:
         assert _only_model(client)["error"] == INTERRUPTED
         assert _row(settings, model["id"]) == row
         # The documented recovery: delete removes the kept files.
@@ -146,9 +147,7 @@ def _seed(settings: Settings, status: ModelStatus, path: Path, error: str | None
 
 
 @pytest.mark.parametrize("present", ["neither", "both", "verifying"])
-def test_interrupted_rows_become_errors_whatever_files_remain(
-    tmp_path: Path, present: str
-) -> None:
+def test_interrupted_rows_become_errors_whatever_files_remain(tmp_path: Path, present: str) -> None:
     settings = Settings(data_dir=tmp_path / "data")
     models = _models_dir(settings)
     models.mkdir(parents=True)
@@ -158,7 +157,7 @@ def test_interrupted_rows_become_errors_whatever_files_remain(
         path.with_suffix(".gguf.part").write_bytes(B)
     status = ModelStatus.VERIFYING if present == "verifying" else ModelStatus.DOWNLOADING
     model_id = _seed(settings, status, path)
-    with TestClient(create_app(settings)) as client:
+    with TestClient(create_app(settings), client=LOOPBACK) as client:
         body = client.get(f"/admin/models/{model_id}").json()
     assert body["status"] == "error" and body["error"] == INTERRUPTED
     if present == "both":  # evidence preserved, nothing deleted
@@ -175,7 +174,7 @@ def test_completed_rows_are_never_changed(tmp_path: Path) -> None:
     }
     rows = {s: _row(settings, i) for s, i in ids.items()}
     for _ in range(2):
-        with TestClient(create_app(settings)):
+        with TestClient(create_app(settings), client=LOOPBACK):
             pass
     assert {s: _row(settings, i) for s, i in ids.items()} == rows
 
@@ -192,7 +191,7 @@ def test_links_are_not_followed_or_touched(tmp_path: Path) -> None:
     except (OSError, NotImplementedError) as exc:  # e.g. Windows without symlink rights
         pytest.skip(f"symlinks are not available here: {type(exc).__name__}")
     model_id = _seed(settings, ModelStatus.DOWNLOADING, link)
-    with TestClient(create_app(settings)) as client:
+    with TestClient(create_app(settings), client=LOOPBACK) as client:
         assert client.get(f"/admin/models/{model_id}").json()["status"] == "error"
     assert link.is_symlink() and outside.read_bytes() == A
 
@@ -209,19 +208,19 @@ def test_a_database_failure_fails_startup_and_releases_the_lock(
         raise sqlite3.OperationalError("disk I/O error")
 
     monkeypatch.setattr(ModelRegistry, "mark_interrupted", fails)
-    with pytest.raises(sqlite3.OperationalError), TestClient(create_app(settings)):
+    with pytest.raises(sqlite3.OperationalError), TestClient(create_app(settings), client=LOOPBACK):
         pass
     monkeypatch.undo()
     # Not claimed as recovered; a later startup (lock released) recovers it.
-    with TestClient(create_app(settings)) as client:
+    with TestClient(create_app(settings), client=LOOPBACK) as client:
         body = client.get(f"/admin/models/{model_id}").json()
     assert body["status"] == "error" and body["error"] == INTERRUPTED
 
 
 def test_a_second_engine_on_the_same_store_refuses_to_start(tmp_path: Path) -> None:
     settings = Settings(data_dir=tmp_path / "data")
-    with TestClient(create_app(settings)):
-        with pytest.raises(StoreLockedError), TestClient(create_app(settings)):
+    with TestClient(create_app(settings), client=LOOPBACK):
+        with pytest.raises(StoreLockedError), TestClient(create_app(settings), client=LOOPBACK):
             pass
-    with TestClient(create_app(settings)):  # released on shutdown
+    with TestClient(create_app(settings), client=LOOPBACK):  # released on shutdown
         pass
