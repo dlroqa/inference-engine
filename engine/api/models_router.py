@@ -130,6 +130,14 @@ def redact_source_ref(source_ref: str | None) -> str | None:
         return _conservative_redact(source_ref)
 
 
+def _split_trailing(token: str) -> tuple[str, str]:
+    """Separates sentence punctuation that follows a URL or value in prose."""
+    end = len(token)
+    while end > 0 and token[end - 1] in ".,;:!":
+        end -= 1
+    return token[:end], token[end:]
+
+
 def redact_urls_in_text(text: str | None) -> str | None:
     """Redact credentials from every URL and query parameter in free-form text.
 
@@ -143,16 +151,13 @@ def redact_urls_in_text(text: str | None) -> str | None:
         return text
 
     def url(match: re.Match[str]) -> str:
-        found = match.group(0)
-        trail = ""
-        while found and found[-1] in ".,;:!":
-            trail = found[-1] + trail
-            found = found[:-1]
+        found, trail = _split_trailing(match.group(0))
         return (redact_source_ref(found) or "") + trail
 
     def param(match: re.Match[str]) -> str:
-        sep, name, value = match.groups()
-        return f"{sep}{name}={_MASK if _is_sensitive(name) and value else value}"
+        sep, name, raw = match.groups()
+        value, trail = _split_trailing(raw)
+        return f"{sep}{name}={_MASK if _is_sensitive(name) and value else value}{trail}"
 
     try:
         return _QUERY_PARAM.sub(param, _URL_IN_TEXT.sub(url, text))
