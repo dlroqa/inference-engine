@@ -148,7 +148,7 @@ def test_keyboard_confirmation_and_cancellation(page: Page, engine: Engine) -> N
     revoke.click()
     expect(dialog).to_be_visible()
     page.keyboard.press("Tab")
-    expect(dialog.get_by_role("button", name="Revoke key")).to_be_focused()
+    expect(dialog.get_by_role("button", name="Revoke key", exact=True)).to_be_focused()
     page.keyboard.press("Enter")
     expect(dialog).to_be_hidden()
     with engine.api(engine.operator_key) as c:

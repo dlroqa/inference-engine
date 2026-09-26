@@ -298,6 +298,7 @@ function ModelRow({
                   title: `Delete ${model.name}?`,
                   body: "The model file is removed from the model store and the registry. This cannot be undone; you would need to download or import it again.",
                   confirmLabel: "Delete model",
+                  wiring: "models.delete",
                 });
                 if (ok) await run(() => api.deleteModel(model.id));
               }}

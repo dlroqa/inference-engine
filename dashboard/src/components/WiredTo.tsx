@@ -9,21 +9,39 @@ import {
   type JSX,
 } from "react";
 import { Icon } from "./Icon";
-import { SUBSYSTEMS, explain, routeFor, type Explanation, type WiringEntry } from "../lib/wiring";
+import {
+  SUBSYSTEMS,
+  docsUrl,
+  explain,
+  routeFor,
+  type Explanation,
+  type LocalControl,
+  type WiringEntry,
+} from "../lib/wiring";
 
 // "How this works" popover for a control or panel. Everything it shows comes from
 // the wiring registry (wiring.ts) and the generated route inventory, so it can
 // never describe an endpoint or handler the engine does not have.
 //
-// Opens on mouse hover, on keyboard focus, and on click/tap; a click or tap pins
-// it open. Escape, a click or tap outside, or moving focus away closes it. It
-// stays open while the pointer is over the popover itself (WCAG 1.4.13).
+// A non-modal disclosure:
+// - Opens on mouse hover (and stays open while the pointer is over the panel,
+//   WCAG 1.4.13), on keyboard focus, and on click/tap, which pins it open.
+// - The panel follows the button in the Tab order and is itself focusable, so
+//   keyboard users can scroll it and reach its docs links. It stays open while
+//   focus is anywhere in the button/panel region; leaving the region closes it.
+// - Escape closes it. From inside the panel, focus returns to the button. Inside
+//   a dialog, Escape closes the popover before the dialog.
+// - A click or tap outside closes it without moving focus.
+// - The panel is fixed-positioned and sized to the space the viewport has, with
+//   its own scroll region, so it never extends past any viewport edge.
 
 const HOVER_OPEN_MS = 120;
 const HOVER_CLOSE_MS = 200;
 const GAP = 8;
 const EDGE = 16;
 const MAX_WIDTH = 360;
+const MAX_HEIGHT = 520;
+const MIN_USABLE = 160;
 
 const GATE_TEXT: Record<string, string> = {
   operator: "Operator key",
@@ -101,12 +119,27 @@ function WiredFacts({ entry }: { entry: WiringEntry }): JSX.Element {
       {entry.docs && (
         <>
           <dt>Docs</dt>
-          <dd className="mono">
-            <Breakable text={entry.docs} />
+          <dd>
+            <a className="wired-doc" href={docsUrl(entry.docs)} target="_blank" rel="noopener noreferrer">
+              {entry.docs.title}
+              <Icon name="external" size={13} />
+              <span className="sr-only"> (opens in a new tab)</span>
+            </a>
           </dd>
         </>
       )}
     </dl>
+  );
+}
+
+function LocalNote({ control }: { control: LocalControl }): JSX.Element {
+  if (!control.followUp) {
+    return <p className="wired-local-note">Runs in this browser only. No request is sent to the engine.</p>;
+  }
+  return (
+    <p className="wired-local-note">
+      This control itself sends no request. Afterwards: {control.followUp}
+    </p>
   );
 }
 
@@ -120,26 +153,34 @@ function ExplanationBlock({ ex }: { ex: Explanation }): JSX.Element {
         {ex.kind === "wired" ? (
           <span className="wired-kind wired">Backend call</span>
         ) : (
-          <span className="wired-kind local">No backend call</span>
+          <span className="wired-kind local">
+            {ex.control.followUp ? "No direct engine call" : "No backend call"}
+          </span>
         )}
       </div>
       <p className="wired-what">{what}</p>
-      {ex.kind === "wired" ? (
-        <WiredFacts entry={ex.entry} />
-      ) : (
-        <p className="wired-local-note">Runs in this browser only. No request is sent to the engine.</p>
-      )}
+      {ex.kind === "wired" ? <WiredFacts entry={ex.entry} /> : <LocalNote control={ex.control} />}
     </section>
   );
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(v, hi));
 }
 
 export function WiredTo({ id, label }: { id: string | string[]; label?: string }): JSX.Element {
   const ids = Array.isArray(id) ? id : [id];
   const explanations = ids.map(explain);
-  const allLocal = explanations.every((e) => e.kind === "local");
+  const locals = explanations.flatMap((e) => (e.kind === "local" ? [e.control] : []));
+  const allLocal = locals.length === explanations.length;
   const first = explanations[0];
   const name = label ?? (first.kind === "wired" ? first.entry.label : first.control.label);
-  const ariaLabel = `How this works: ${name}${allLocal ? " (no backend call)" : ""}`;
+  const suffix = !allLocal
+    ? ""
+    : locals.some((c) => c.followUp)
+      ? " (no direct engine call)"
+      : " (no backend call)";
+  const ariaLabel = `How this works: ${name}${suffix}`;
 
   const popId = useId();
   const wrap = useRef<HTMLSpanElement>(null);
@@ -147,6 +188,7 @@ export function WiredTo({ id, label }: { id: string | string[]; label?: string }
   const pop = useRef<HTMLDivElement>(null);
   const timer = useRef<number | undefined>(undefined);
   const fromPointer = useRef(false);
+  const skipFocusOpen = useRef(false);
   const [open, setOpen] = useState(false);
   const [pinned, setPinned] = useState(false);
   const [style, setStyle] = useState<CSSProperties>({ visibility: "hidden" });
@@ -157,23 +199,54 @@ export function WiredTo({ id, label }: { id: string | string[]; label?: string }
     setOpen(false);
     setPinned(false);
   }, []);
+  const focusInside = useCallback(
+    () => Boolean(wrap.current?.contains(document.activeElement)),
+    [],
+  );
 
   useEffect(() => () => window.clearTimeout(timer.current), []);
 
-  // Place the popover in the viewport (fixed, so scroll containers never clip
-  // it): below the button, or above when there is no room, clamped to the edges.
+  // Size and place the panel inside the viewport. The preferred side is below the
+  // button; above is used when only it fits. When neither side fits the content,
+  // the roomier side is used with a shorter, scrollable panel, and when neither
+  // side is usable at all the panel is clamped over the page. The 16 px margin is
+  // kept where the viewport allows it.
   const place = useCallback(() => {
     const t = trigger.current?.getBoundingClientRect();
     const p = pop.current;
     if (!t || !p) return;
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const width = Math.min(MAX_WIDTH, vw - EDGE * 2);
-    const height = p.offsetHeight;
-    const left = Math.max(EDGE, Math.min(t.left, vw - width - EDGE));
-    let top = t.bottom + GAP;
-    if (top + height > vh - EDGE && t.top - GAP - height >= EDGE) top = t.top - GAP - height;
-    setStyle({ top, left, width });
+    const vw = document.documentElement.clientWidth || window.innerWidth;
+    const vh = document.documentElement.clientHeight || window.innerHeight;
+    const mx = vw >= 200 ? EDGE : 4;
+    const my = vh >= 240 ? EDGE : 4;
+    const width = Math.max(0, Math.min(MAX_WIDTH, vw - 2 * mx));
+    const left = clamp(t.left, mx, Math.max(mx, vw - width - mx));
+    const border = p.offsetHeight - p.clientHeight;
+    const natural = Math.min(p.scrollHeight + border, MAX_HEIGHT);
+    const below = vh - my - (t.bottom + GAP);
+    const above = t.top - GAP - my;
+    let top: number;
+    let maxHeight: number;
+    if (natural <= below) {
+      top = t.bottom + GAP;
+      maxHeight = below;
+    } else if (natural <= above) {
+      top = t.top - GAP - natural;
+      maxHeight = above;
+    } else if (Math.max(below, above) >= MIN_USABLE) {
+      maxHeight = Math.max(below, above);
+      top = below >= above ? t.bottom + GAP : t.top - GAP - maxHeight;
+    } else {
+      maxHeight = vh - 2 * my;
+      top = t.bottom + GAP;
+    }
+    maxHeight = Math.max(0, Math.min(maxHeight, MAX_HEIGHT, vh - 2 * my));
+    top = clamp(top, my, Math.max(my, vh - my - Math.min(natural, maxHeight)));
+    setStyle((prev) =>
+      prev.top === top && prev.left === left && prev.width === width && prev.maxHeight === maxHeight
+        ? prev
+        : { top, left, width, maxHeight },
+    );
   }, []);
 
   useLayoutEffect(() => {
@@ -186,23 +259,29 @@ export function WiredTo({ id, label }: { id: string | string[]; label?: string }
 
   useEffect(() => {
     if (!open) return;
+    // Escape while focus is elsewhere (a hover preview): close without moving focus.
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close();
+      if (e.key === "Escape" && !focusInside()) close();
     };
     const onDown = (e: PointerEvent) => {
-      if (!wrap.current?.contains(e.target as Node)) close();
+      if (!(e.target instanceof Node) || !wrap.current?.contains(e.target)) close();
+    };
+    // The panel's own scrolling must not re-place it (or reset its position).
+    const onScroll = (e: Event) => {
+      if (e.target instanceof Node && pop.current?.contains(e.target)) return;
+      place();
     };
     document.addEventListener("keydown", onKey);
     document.addEventListener("pointerdown", onDown);
     window.addEventListener("resize", place);
-    window.addEventListener("scroll", place, true);
+    window.addEventListener("scroll", onScroll, true);
     return () => {
       document.removeEventListener("keydown", onKey);
       document.removeEventListener("pointerdown", onDown);
       window.removeEventListener("resize", place);
-      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("scroll", onScroll, true);
     };
-  }, [open, close, place]);
+  }, [open, close, place, focusInside]);
 
   return (
     <span
@@ -217,10 +296,25 @@ export function WiredTo({ id, label }: { id: string | string[]; label?: string }
       onPointerLeave={(e) => {
         if (!isMouse(e) || pinned) return;
         clearTimer();
-        timer.current = window.setTimeout(() => setOpen(false), HOVER_CLOSE_MS);
+        // Keyboard focus inside the region keeps it open when the mouse leaves.
+        timer.current = window.setTimeout(() => {
+          if (!focusInside()) setOpen(false);
+        }, HOVER_CLOSE_MS);
       }}
       onBlur={(e) => {
         if (!wrap.current?.contains(e.relatedTarget as Node | null)) close();
+      }}
+      onKeyDown={(e) => {
+        if (e.key !== "Escape" || !open) return;
+        // Handled here so an enclosing dialog does not also close.
+        e.stopPropagation();
+        e.preventDefault();
+        const fromPanel = Boolean(pop.current?.contains(document.activeElement));
+        close();
+        if (fromPanel) {
+          skipFocusOpen.current = true;
+          trigger.current?.focus();
+        }
       }}
     >
       <button
@@ -230,17 +324,20 @@ export function WiredTo({ id, label }: { id: string | string[]; label?: string }
         aria-label={ariaLabel}
         aria-expanded={open}
         aria-controls={open ? popId : undefined}
-        aria-describedby={open ? popId : undefined}
         onPointerDown={() => {
           fromPointer.current = true;
         }}
         onFocus={() => {
-          // Keyboard focus opens it; a mouse or touch press is handled by click.
-          if (!fromPointer.current) setOpen(true);
+          const skip = skipFocusOpen.current || fromPointer.current;
+          skipFocusOpen.current = false;
           fromPointer.current = false;
+          // Keyboard focus opens it; a mouse or touch press is handled by click,
+          // and focus returned by Escape leaves it closed.
+          if (!skip) setOpen(true);
         }}
         onClick={() => {
           clearTimer();
+          fromPointer.current = false;
           if (open && pinned) {
             close();
           } else {
@@ -258,7 +355,7 @@ export function WiredTo({ id, label }: { id: string | string[]; label?: string }
           className="wired-pop"
           role="group"
           aria-label={ariaLabel}
-          tabIndex={-1}
+          tabIndex={0}
           style={style}
         >
           {explanations.map((ex) => (

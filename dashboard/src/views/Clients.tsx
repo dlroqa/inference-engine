@@ -83,7 +83,12 @@ export function Clients({
               <table className="table">
                 <thead>
                   <tr>
-                    <th>Client</th>
+                    <th>
+                      <span className="row" style={{ gap: 8 }}>
+                        Client
+                        <WiredTo id="local.select-client" label="Select a client" />
+                      </span>
+                    </th>
                     <th>Email</th>
                     <th>Billing ref</th>
                     <th>Status</th>
@@ -105,6 +110,7 @@ export function Clients({
                           onNavigate("clients", next ? { clientId: next } : {});
                         }}
                         aria-selected={selected === c.id}
+                        data-wiring="local.select-client"
                       >
                         <td className="mono">{c.id.slice(0, 12)}</td>
                         <td>{c.email ?? <span className="muted">—</span>}</td>

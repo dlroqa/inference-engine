@@ -8,6 +8,10 @@ import { api, type FeedEvent } from "../lib/api";
 import { useAsync } from "../hooks/useAsync";
 import { WiredTo } from "../components/WiredTo";
 
+// The stat cards read the live metrics stream, or the polling fallback when the
+// stream is unavailable.
+const METRICS_HINT = ["overview.metrics", "overview.metrics-fallback"];
+
 function energyText(energy: { state: string; watts: number | null; j_per_token: number | null }): string {
   if (energy.state !== "measured") return "unavailable";
   const w = energy.watts !== null ? `${energy.watts.toFixed(1)} W` : "—";
@@ -117,6 +121,7 @@ export function Overview(): JSX.Element {
         <div className="col-3">
           <StatCard
             label="Requests"
+            help={<WiredTo id={METRICS_HINT} label="Requests card" />}
             value={num(c?.requests_total ?? 0)}
             sub={
               `${num(c?.requests_active ?? 0)} active · ${num(s?.queue_depth ?? 0)} queued · ` +
@@ -128,16 +133,23 @@ export function Overview(): JSX.Element {
         <div className="col-3">
           <StatCard
             label="Tokens"
+            help={<WiredTo id={METRICS_HINT} label="Tokens card" />}
             value={num((c?.prompt_tokens_total ?? 0) + (c?.completion_tokens_total ?? 0))}
             sub={`${num(c?.prompt_tokens_total ?? 0)} in · ${num(c?.completion_tokens_total ?? 0)} out`}
           />
         </div>
         <div className="col-3">
-          <StatCard label="Uptime" value={duration(snapshot?.uptime_s)} sub={`${num(c?.requests_per_min ?? 0)} req/min`} />
+          <StatCard
+            label="Uptime"
+            help={<WiredTo id={METRICS_HINT} label="Uptime card" />}
+            value={duration(snapshot?.uptime_s)}
+            sub={`${num(c?.requests_per_min ?? 0)} req/min`}
+          />
         </div>
         <div className="col-3">
           <StatCard
             label="Energy"
+            help={<WiredTo id={METRICS_HINT} label="Energy card" />}
             value={snapshot ? energyText(snapshot.energy) : "—"}
             sub={snapshot?.energy.state === "measured" ? snapshot.energy.source ?? "" : "no validated probe"}
           />

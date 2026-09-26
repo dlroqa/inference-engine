@@ -114,7 +114,29 @@ export interface WiringEntry {
   /** Config switch that can disable this action (read-only in the UI). */
   killSwitch?: string;
   sideEffects?: string;
-  docs?: string;
+  docs?: DocRef;
+}
+
+/** A repository documentation page (and optional heading fragment). */
+export interface DocRef {
+  /** Repository-relative path, e.g. "docs/security.md#operator-access". */
+  ref: string;
+  /** Link text, e.g. "Security: operator access". */
+  title: string;
+}
+
+// Documentation lives in the repository, not in the dashboard bundle, so links
+// resolve to the canonical GitHub copy. `main` is a moving branch: the page can
+// describe a newer engine than the one running. There is no version-aware docs
+// base yet; see docs/dashboard.md.
+export const DOCS_BASE = "https://github.com/dlroqa/inference-engine/blob/main/";
+
+/** The URL for a registry docs reference. Only static registry text is used. */
+export function docsUrl(doc: DocRef): string {
+  if (!/^[A-Za-z0-9_./-]+\.md(#[a-z0-9-]+)?$/.test(doc.ref) || doc.ref.includes("..")) {
+    throw new Error(`invalid docs reference: ${doc.ref}`);
+  }
+  return DOCS_BASE + doc.ref;
 }
 
 export const WIRING: WiringEntry[] = [
@@ -126,7 +148,7 @@ export const WIRING: WiringEntry[] = [
     endpoint: { method: "GET", path: "/admin/identity" },
     client: "identity",
     audited: false,
-    docs: "docs/security.md#operator-access",
+    docs: { ref: "docs/security.md#operator-access", title: "Security: operator access" },
   },
   {
     id: "overview.readiness",
@@ -145,7 +167,7 @@ export const WIRING: WiringEntry[] = [
     endpoint: { method: "WS", path: "/ws/metrics" },
     client: "useLiveMetrics",
     audited: false,
-    docs: "docs/operability.md",
+    docs: { ref: "docs/operability.md", title: "Operability" },
   },
   {
     id: "overview.metrics-fallback",
@@ -173,7 +195,7 @@ export const WIRING: WiringEntry[] = [
     endpoint: { method: "GET", path: "/admin/alerts" },
     client: "alerts",
     audited: false,
-    docs: "docs/monitoring.md",
+    docs: { ref: "docs/monitoring.md", title: "Monitoring" },
   },
   {
     id: "monitoring.taxonomy",
@@ -201,7 +223,7 @@ export const WIRING: WiringEntry[] = [
     endpoint: { method: "GET", path: "/admin/billing/clients" },
     client: "listClients",
     audited: false,
-    docs: "docs/billing.md",
+    docs: { ref: "docs/billing.md", title: "Billing" },
   },
   {
     id: "clients.endpoints",
@@ -211,7 +233,7 @@ export const WIRING: WiringEntry[] = [
     endpoint: { method: "GET", path: "/admin/billing/webhooks/endpoints" },
     client: "listWebhookEndpoints",
     audited: false,
-    docs: "docs/webhooks.md",
+    docs: { ref: "docs/webhooks.md", title: "Webhooks" },
   },
   {
     id: "clients.deliveries",
@@ -230,7 +252,7 @@ export const WIRING: WiringEntry[] = [
     endpoint: { method: "GET", path: "/admin/models" },
     client: "listModels",
     audited: false,
-    docs: "README.md#model-lifecycle-block-6",
+    docs: { ref: "README.md#model-lifecycle-block-6", title: "README: model lifecycle" },
   },
   {
     id: "models.download",
@@ -302,7 +324,7 @@ export const WIRING: WiringEntry[] = [
     endpoint: { method: "GET", path: "/logs" },
     client: "logs",
     audited: false,
-    docs: "docs/operability.md",
+    docs: { ref: "docs/operability.md", title: "Operability" },
   },
   {
     id: "security.audit",
@@ -312,7 +334,7 @@ export const WIRING: WiringEntry[] = [
     endpoint: { method: "GET", path: "/admin/audit" },
     client: "audit",
     audited: false,
-    docs: "docs/security.md",
+    docs: { ref: "docs/security.md#tamper-evident-audit-log", title: "Security: tamper-evident audit log" },
   },
   {
     id: "keys.list",
@@ -396,18 +418,23 @@ export interface LocalControl {
   id: string;
   label: string;
   what: string;
+  /** What the dashboard requests afterwards, when the control leads to a call. */
+  followUp?: string;
 }
 
 export const LOCAL_CONTROLS: LocalControl[] = [
   {
     id: "local.navigation",
     label: "Navigation",
-    what: "Changes the page address (#/view) in this browser. The view that opens loads its own data.",
+    what: "Changes the page address (#/view) in this browser.",
+    followUp: "The view that opens then loads its own data from the engine.",
   },
   {
     id: "local.saved-key",
     label: "Saved operator key",
-    what: "Stores or removes the key in this browser only. The dashboard then re-checks who it is signed in as.",
+    what: "Stores the key in this browser's local storage, or removes it.",
+    followUp:
+      "The dashboard then calls GET /admin/identity, sending the saved key (if any) as a Bearer token, to re-check who it is signed in as.",
   },
   {
     id: "local.add-source",
@@ -428,6 +455,17 @@ export const LOCAL_CONTROLS: LocalControl[] = [
     id: "local.close-detail",
     label: "Close detail",
     what: "Closes this panel and updates the page address.",
+  },
+  {
+    id: "local.select-client",
+    label: "Select a client",
+    what: "Opens the client's detail panel and updates the page address (#/clients/<id>). Rows respond to mouse and touch only; they are not yet keyboard-focusable.",
+    followUp: "The panel then loads the client's webhook endpoints and recent deliveries.",
+  },
+  {
+    id: "local.dialog-cancel",
+    label: "Cancel",
+    what: "Closes this confirmation. Nothing is sent and nothing changes.",
   },
 ];
 

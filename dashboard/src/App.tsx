@@ -78,6 +78,7 @@ function KeyForm({
   error?: string;
 }): JSX.Element {
   const [value, setValue] = useState("");
+  const hint = ["local.saved-key", "app.identity", ...(onCancel ? ["local.dialog-cancel"] : [])];
   return (
     <form
       data-wiring="local.saved-key app.identity"
@@ -87,10 +88,7 @@ function KeyForm({
       }}
     >
       <div className="field">
-        <div className="row label-row">
-          <label htmlFor="operator-key">Operator API key</label>
-          <WiredTo id={["local.saved-key", "app.identity"]} label="Operator sign-in" />
-        </div>
+        <label htmlFor="operator-key">Operator API key</label>
         <input
           id="operator-key"
           className="input"
@@ -111,10 +109,12 @@ function KeyForm({
           Continue
         </button>
         {onCancel && (
-          <button className="btn" type="button" onClick={onCancel}>
+          <button className="btn" type="button" onClick={onCancel} data-wiring="local.dialog-cancel">
             Cancel
           </button>
         )}
+        {/* After the buttons, so a dialog's initial focus lands on the key field. */}
+        <WiredTo id={hint} label="Operator sign-in" />
       </div>
     </form>
   );
@@ -270,9 +270,12 @@ export function App(): JSX.Element {
           inference API but cannot open the operator dashboard. Use an operator key.
         </p>
         <KeyForm onSubmit={submitKey} />
-        <button className="linkbtn" style={{ marginTop: 12 }} onClick={forgetKey}>
-          Forget saved key
-        </button>
+        <div className="row" style={{ marginTop: 12 }} data-wiring="local.saved-key">
+          <button className="linkbtn" onClick={forgetKey}>
+            Forget saved key
+          </button>
+          <WiredTo id="local.saved-key" label="Saved operator key" />
+        </div>
       </GateCard>
     );
   }
@@ -287,9 +290,12 @@ export function App(): JSX.Element {
           This is a connection or server problem, not a key problem. Check that the
           engine is running, then retry.
         </p>
-        <button className="btn primary" onClick={check}>
-          <Icon name="refresh" size={16} /> Retry
-        </button>
+        <div className="row" data-wiring="app.identity">
+          <button className="btn primary" onClick={check}>
+            <Icon name="refresh" size={16} /> Retry
+          </button>
+          <WiredTo id="app.identity" label="Engine connection" />
+        </div>
       </GateCard>
     );
   }

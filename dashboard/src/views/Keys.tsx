@@ -44,6 +44,7 @@ export function Keys(): JSX.Element {
         </>
       ),
       confirmLabel: "Revoke key",
+      wiring: "keys.revoke",
     });
     if (!ok) return;
     try {
@@ -64,6 +65,7 @@ export function Keys(): JSX.Element {
         </>
       ),
       confirmLabel: "Delete key",
+      wiring: "keys.delete",
     });
     if (!ok) return;
     try {

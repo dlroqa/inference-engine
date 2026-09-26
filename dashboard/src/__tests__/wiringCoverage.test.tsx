@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { JSX } from "react";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -24,14 +24,23 @@ import { Keys } from "../views/Keys";
 import { api, ApiError, setApiKey } from "../lib/api";
 import { LOCAL_CONTROLS, WIRING, explain } from "../lib/wiring";
 
-// Coverage of the dashboard's controls by the wiring registry. Every view is
-// rendered with data that makes all of its conditional controls appear, then:
-//  1. every interactive control sits inside a [data-wiring] scope;
-//  2. every id in a scope resolves in the registry (a backend call or a local one);
-//  3. every scope's ids are explained by a visible "How this works" button there;
-//  4. across the dashboard, every registry entry is shown somewhere.
+// Coverage of the dashboard's controls by the wiring registry.
+//
+// Each case renders a surface in a specific state (populated, error, empty, a
+// confirmation dialog, a sign-in gate) and then requires, for every control:
+//  1. it sits inside a [data-wiring] scope whose ids resolve in the registry;
+//  2. each scope id is explained by a visible "How this works" button on the
+//     same active surface. Inside a dialog only a button in that dialog counts;
+//     a matching button behind the modal does not.
+// Finally, every registry entry must be explained somewhere.
+//
+// Controls: button, a[href], input, select, textarea, [role=tab], and the
+// clickable client rows (tr.clickrow). Exclusions, by design: the "How this
+// works" buttons themselves and anything inside an open popover (its docs
+// links), so help is never required for help. Client rows are pointer-only (not
+// keyboard-focusable); the audit counts and reports them as a known limitation.
 
-const CONTROLS = 'button, a[href], input, select, textarea, [role="tab"]';
+const CONTROLS = 'button, a[href], input, select, textarea, [role="tab"], tr.clickrow';
 
 const model = (over: Record<string, unknown>) => ({
   id: "m",
@@ -67,8 +76,10 @@ const key = (over: Record<string, unknown>) => ({
   ...over,
 });
 
+const ok = <T,>(v: T) => Promise.resolve(v as never);
+const boom = () => Promise.reject(new ApiError("engine error", 500));
+
 function mockApi() {
-  const ok = <T,>(v: T) => Promise.resolve(v as never);
   vi.spyOn(api, "identity").mockImplementation(() =>
     ok({ kind: "key", auth_required: true, key: { id: "k1", prefix: "sk-ie-ab12", label: "owner", role: "operator" } }),
   );
@@ -133,42 +144,70 @@ function mockApi() {
 interface Report {
   surface: string;
   controls: number;
-  scoped: string[];
+  pointerOnly: number;
   explained: string[];
 }
 
 const reports: Report[] = [];
 
-function audit(surface: string, root: HTMLElement): Report {
-  const controls = Array.from(root.querySelectorAll<HTMLElement>(CONTROLS)).filter(
-    (el) => !el.classList.contains("wired-btn"),
+function idsOf(el: Element, attr: string): string[] {
+  return (el.getAttribute(attr) ?? "").split(" ").filter(Boolean);
+}
+
+// Audits one active surface: the open modal dialog if there is one, else `root`.
+function audit(surface: string, root: HTMLElement = document.body): Report {
+  const dialog = root.querySelector<HTMLElement>('[role="dialog"][aria-modal="true"]');
+  const active = dialog ?? root;
+  const controls = Array.from(active.querySelectorAll<HTMLElement>(CONTROLS)).filter(
+    (el) => !el.classList.contains("wired-btn") && !el.closest(".wired-pop"),
   );
-  const unscoped = controls
-    .filter((el) => !el.closest("[data-wiring]"))
-    .map((el) => el.getAttribute("aria-label") ?? el.textContent?.trim() ?? el.outerHTML.slice(0, 60));
-  expect(unscoped, `${surface}: controls with no wiring scope`).toEqual([]);
 
-  const scoped = new Set<string>();
-  root.querySelectorAll("[data-wiring]").forEach((el) => {
-    for (const id of el.getAttribute("data-wiring")!.split(" ")) scoped.add(id);
+  // Visible hint buttons on this surface, by the ids they explain.
+  const hints = new Map<string, HTMLElement[]>();
+  active.querySelectorAll<HTMLElement>("[data-wiring-ids]").forEach((w) => {
+    const btn = w.querySelector<HTMLElement>(".wired-btn");
+    if (!btn) return;
+    for (const id of idsOf(w, "data-wiring-ids")) hints.set(id, [...(hints.get(id) ?? []), btn]);
   });
-  const explained = new Set<string>();
-  root.querySelectorAll("[data-wiring-ids]").forEach((el) => {
-    for (const id of el.getAttribute("data-wiring-ids")!.split(" ")) explained.add(id);
-  });
-  for (const id of scoped) expect(() => explain(id), `${surface}: ${id}`).not.toThrow();
-  const unexplained = [...scoped].filter((id) => !explained.has(id));
-  expect(unexplained, `${surface}: scopes without a "How this works" button`).toEqual([]);
 
-  const report = { surface, controls: controls.length, scoped: [...scoped].sort(), explained: [...explained].sort() };
+  const problems: string[] = [];
+  for (const el of controls) {
+    const name = el.getAttribute("aria-label") ?? el.textContent?.trim() ?? el.tagName;
+    const scope = el.closest("[data-wiring]");
+    if (!scope || !active.contains(scope)) {
+      problems.push(`${name}: no wiring scope on this surface`);
+      continue;
+    }
+    for (const id of idsOf(scope, "data-wiring")) {
+      expect(() => explain(id), `${surface}: ${id}`).not.toThrow();
+      const buttons = hints.get(id) ?? [];
+      const visible = buttons.find((b) => {
+        try {
+          expect(b).toBeVisible();
+          expect(b.getAttribute("aria-label") ?? "").toMatch(/^How this works: /);
+          return true;
+        } catch {
+          return false;
+        }
+      });
+      if (!visible) problems.push(`${name}: "${id}" has no visible hint on this surface`);
+    }
+  }
+  expect(problems, surface).toEqual([]);
+
+  const report = {
+    surface,
+    controls: controls.length,
+    pointerOnly: controls.filter((el) => el.matches("tr.clickrow")).length,
+    explained: [...hints.keys()].sort(),
+  };
   reports.push(report);
   return report;
 }
 
-async function renderView(surface: string, ui: JSX.Element, ready: () => Promise<unknown>) {
-  const { container } = render(ui);
+async function show(ui: JSX.Element, ready: () => Promise<unknown>) {
+  render(ui);
   await ready();
-  return audit(surface, container);
 }
 
 beforeEach(() => {
@@ -185,73 +224,164 @@ afterEach(() => {
 afterAll(() => {
   // Printed to the CI log as the per-surface coverage evidence.
   const lines = reports.map(
-    (r) => `${r.surface.padEnd(22)} controls=${String(r.controls).padStart(2)}  ids=${r.explained.join(", ")}`,
+    (r) =>
+      `${r.surface.padEnd(34)} controls=${String(r.controls).padStart(2)}` +
+      `${r.pointerOnly ? ` (pointer-only rows=${r.pointerOnly})` : ""}  ids=${r.explained.join(", ")}`,
   );
-  console.info(["Wiring coverage by surface:", ...lines].join("\n"));
+  console.info(["Wiring coverage by surface and state:", ...lines].join("\n"));
 });
 
 describe("wiring coverage of dashboard controls", () => {
-  it("Overview", async () => {
-    await renderView("Overview", <Overview />, () => screen.findByTestId("engine-readiness"));
-  });
-
-  it("Monitoring", async () => {
-    await renderView("Monitoring", <Monitoring onNavigate={vi.fn()} />, async () => {
-      await screen.findByText("Client suspended");
-      await screen.findByText("sk-ie-ab12");
-    });
-  });
-
-  it("Clients (with a client open)", async () => {
-    await renderView("Clients", <Clients focusClientId="c1" onNavigate={vi.fn()} />, async () => {
-      await screen.findByText("https://hooks.example/x");
-      await screen.findByText("invoice.paid");
-    });
-  });
-
-  it("Models (downloading, ready, and loaded rows)", async () => {
-    await renderView("Models", <Models />, () => screen.findByText("loaded", { selector: ".mono" }));
-  });
-
-  it("Models add form in each source mode", async () => {
-    render(<Models />);
-    await screen.findByText("ready", { selector: ".mono" });
-    for (const tab of ["Hugging Face", "URL", "Local file"]) {
-      await userEvent.click(screen.getByRole("tab", { name: tab }));
-      audit(`Models (${tab})`, document.body);
+  it("Overview (stat cards, readiness, resources, feed)", async () => {
+    await show(<Overview />, () => screen.findByTestId("engine-readiness"));
+    for (const card of ["Requests", "Tokens", "Uptime", "Energy"]) {
+      expect(screen.getByRole("button", { name: `How this works: ${card} card` })).toBeVisible();
     }
-  });
-
-  it("Logs (filtered to a request)", async () => {
-    await renderView("Logs", <Logs requestId="req-1" onNavigate={vi.fn()} />, () =>
-      screen.findByText("Clear request filter"),
+    const r = audit("Overview");
+    expect(r.explained).toEqual(
+      expect.arrayContaining(["overview.metrics", "overview.metrics-fallback", "overview.readiness", "overview.feed"]),
     );
   });
 
-  it("Security", async () => {
-    await renderView("Security", <Security />, () => screen.findByText("key.create"));
+  it("Monitoring: populated", async () => {
+    await show(<Monitoring onNavigate={vi.fn()} />, async () => {
+      await screen.findByText("Client suspended");
+      await screen.findByText("sk-ie-ab12");
+    });
+    audit("Monitoring: populated");
   });
 
-  it("Keys (active, revoked, and a new token)", async () => {
-    render(<Keys />);
-    await screen.findByText("sk-ie-cd34…");
+  it("Monitoring: errors with retry", async () => {
+    vi.mocked(api.alerts).mockImplementation(boom);
+    vi.mocked(api.usageAttribution).mockImplementation(boom);
+    vi.mocked(api.errorTaxonomy).mockImplementation(boom);
+    await show(<Monitoring onNavigate={vi.fn()} />, async () => {
+      expect((await screen.findAllByRole("button", { name: "Retry" })).length).toBe(3);
+    });
+    audit("Monitoring: errors");
+  });
+
+  it("Clients: populated, client open", async () => {
+    await show(<Clients focusClientId="c1" onNavigate={vi.fn()} />, async () => {
+      await screen.findByText("https://hooks.example/x");
+      await screen.findByText("invoice.paid");
+    });
+    const r = audit("Clients: populated");
+    expect(r.pointerOnly).toBe(1);
+  });
+
+  it("Clients: error with retry", async () => {
+    vi.mocked(api.listClients).mockImplementation(boom);
+    await show(<Clients onNavigate={vi.fn()} />, () => screen.findByRole("button", { name: "Retry" }));
+    audit("Clients: error");
+  });
+
+  it("Models: downloading, ready, and loaded rows", async () => {
+    await show(<Models />, () => screen.findByText("loaded", { selector: ".mono" }));
+    audit("Models: populated");
+  });
+
+  it("Models: add form in each source mode", async () => {
+    await show(<Models />, () => screen.findByText("ready", { selector: ".mono" }));
+    for (const tab of ["Hugging Face", "URL", "Local file"]) {
+      await userEvent.click(screen.getByRole("tab", { name: tab }));
+      audit(`Models: add form (${tab})`);
+    }
+  });
+
+  it("Models: delete confirmation dialog", async () => {
+    await show(<Models />, () => screen.findByText("ready", { selector: ".mono" }));
+    await userEvent.click(screen.getByRole("button", { name: "Delete ready" }));
+    const dialog = screen.getByRole("dialog", { name: "Delete ready?" });
+    const r = audit("Models: delete dialog");
+    expect(r.explained).toEqual(["local.dialog-cancel", "models.delete"]);
+    // The hint opens inside the dialog and explains the real call.
+    await userEvent.click(within(dialog).getByRole("button", { name: "How this works: Delete model" }));
+    expect(within(dialog).getByRole("group")).toHaveTextContent("DELETE /admin/models/{model_id}");
+  });
+
+  it("Models: empty and error", async () => {
+    vi.mocked(api.listModels).mockImplementation(() => ok({ models: [] }));
+    await show(<Models />, () => screen.findByText(/No models yet/));
+    audit("Models: empty");
+    cleanup();
+    vi.mocked(api.listModels).mockImplementation(boom);
+    await show(<Models />, () => screen.findByRole("button", { name: "Retry" }));
+    audit("Models: error");
+  });
+
+  it("Logs: filtered to a request", async () => {
+    await show(<Logs requestId="req-1" onNavigate={vi.fn()} />, () => screen.findByText("Clear request filter"));
+    audit("Logs: request filter");
+  });
+
+  it("Logs: error with retry", async () => {
+    vi.mocked(api.logs).mockImplementation(boom);
+    await show(<Logs />, () => screen.findByRole("button", { name: "Retry" }));
+    audit("Logs: error");
+  });
+
+  it("Security: populated and error", async () => {
+    await show(<Security />, () => screen.findByText("key.create"));
+    audit("Security: populated");
+    cleanup();
+    vi.mocked(api.audit).mockImplementation(boom);
+    await show(<Security />, () => screen.findByRole("button", { name: "Retry" }));
+    audit("Security: error");
+  });
+
+  it("Keys: active, revoked, and a new token", async () => {
+    await show(<Keys />, () => screen.findByText("sk-ie-cd34…"));
     await userEvent.click(screen.getByRole("button", { name: /^Create key/ }));
     await screen.findByTestId("new-token");
-    audit("Keys", document.body);
+    audit("Keys: populated + new token");
   });
 
-  it("App shell (navigation and identity)", async () => {
+  it("Keys: revoke and delete confirmation dialogs", async () => {
+    await show(<Keys />, () => screen.findByText("sk-ie-cd34…"));
+    await userEvent.click(screen.getByRole("button", { name: "Revoke key sk-ie-ab12" }));
+    expect(audit("Keys: revoke dialog").explained).toEqual(["keys.revoke", "local.dialog-cancel"]);
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await userEvent.click(screen.getByRole("button", { name: "Delete key sk-ie-cd34" }));
+    expect(audit("Keys: delete dialog").explained).toEqual(["keys.delete", "local.dialog-cancel"]);
+  });
+
+  it("Keys: error with retry", async () => {
+    vi.mocked(api.listKeys).mockImplementation(boom);
+    await show(<Keys />, () => screen.findByRole("button", { name: "Retry" }));
+    audit("Keys: error");
+  });
+
+  it("App shell: navigation, identity, change-key dialog", async () => {
     window.location.hash = "#/does-not-exist";
-    await renderView("App shell", <App />, () => screen.findByRole("heading", { name: "Page not available" }));
+    await show(<App />, () => screen.findByRole("heading", { name: "Page not available" }));
+    audit("App shell (not-found view)");
+    await userEvent.click(screen.getByRole("button", { name: "Change key" }));
+    const r = audit("App shell: change-key dialog");
+    expect(r.explained).toEqual(["app.identity", "local.dialog-cancel", "local.saved-key"]);
+    // Initial focus stays on the key field, not on the hint.
+    expect(screen.getByLabelText("Operator API key")).toHaveFocus();
   });
 
-  it("Sign-in gate", async () => {
+  it("Gate: sign-in (401)", async () => {
     vi.mocked(api.identity).mockRejectedValue(new ApiError("operator access required", 401));
-    await renderView("Sign-in gate", <App />, () => screen.findByLabelText("Operator API key"));
+    await show(<App />, () => screen.findByLabelText("Operator API key"));
+    audit("Gate: sign-in");
   });
 
-  it("explains every registry entry somewhere in the dashboard", async () => {
-    await waitFor(() => expect(reports.length).toBeGreaterThanOrEqual(10));
+  it("Gate: operator role required (403)", async () => {
+    vi.mocked(api.identity).mockRejectedValue(new ApiError("client key", 403, "operator_role_required"));
+    await show(<App />, () => screen.findByRole("button", { name: "Forget saved key" }));
+    audit("Gate: operator role required");
+  });
+
+  it("Gate: engine unavailable, with retry", async () => {
+    vi.mocked(api.identity).mockRejectedValue(new ApiError("network error: down", 0));
+    await show(<App />, () => screen.findByRole("heading", { name: "Engine unavailable" }));
+    audit("Gate: engine unavailable");
+  });
+
+  it("explains every registry entry somewhere in the dashboard", () => {
     const shown = new Set(reports.flatMap((r) => r.explained));
     const all = [...WIRING.map((w) => w.id), ...LOCAL_CONTROLS.map((c) => c.id)];
     expect(all.filter((id) => !shown.has(id))).toEqual([]);
