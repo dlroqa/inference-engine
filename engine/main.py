@@ -167,7 +167,7 @@ def create_app(
     telemetry.scheduler = scheduler
 
     # Model lifecycle (Block 6): registry + orchestration service.
-    model_registry = ModelRegistry(settings.db_path)  # type: ignore[arg-type]
+    model_registry = ModelRegistry(settings.db_path)
     model_service = ModelService(settings, model_registry)
 
     @asynccontextmanager
@@ -502,21 +502,21 @@ def create_app(
     )
     app.state.route_metrics = RouteMetrics()
     billing_store = BillingStore(
-        settings.db_path,  # type: ignore[arg-type]
+        settings.db_path,
         default_plan_id=settings.default_plan,
     )
     app.state.billing = billing_store
     gateway = Gateway(
         settings,
-        KeyStore(settings.db_path),  # type: ignore[arg-type]
-        UsageStore(settings.db_path),  # type: ignore[arg-type]
+        KeyStore(settings.db_path),
+        UsageStore(settings.db_path),
         billing_store,
     )
     app.state.gateway = gateway
 
     # Outbound webhooks (Block 11.2). The store always exists (operator endpoints
     # work regardless); delivery + emission are gated on webhooks_enabled.
-    webhook_store = WebhookStore(settings.db_path)  # type: ignore[arg-type]
+    webhook_store = WebhookStore(settings.db_path)
     app.state.webhook_store = webhook_store
     webhook_dispatcher = WebhookDispatcher(webhook_store, enabled=settings.webhooks_enabled)
     app.state.webhook_dispatcher = webhook_dispatcher
@@ -530,7 +530,7 @@ def create_app(
     client_event_notifier: ClientEventNotifier | None = None
     if settings.client_events_enabled:
         client_event_log = ClientEventLog(
-            settings.db_path,  # type: ignore[arg-type]
+            settings.db_path,
             retention_max_age_s=settings.client_events_retention_max_age_s,
             retention_max_per_client=settings.client_events_retention_max_per_client,
         )
@@ -585,7 +585,7 @@ def create_app(
     app.state.counters = counters
     app.state.telemetry = telemetry
     app.state.scheduler = scheduler
-    app.state.audit = AuditLog(settings.db_path)  # type: ignore[arg-type]
+    app.state.audit = AuditLog(settings.db_path)
 
     # Trusted-network policy (Block 9b): parse the IP allowlist once.
     allow_networks = [ipaddress.ip_network(c, strict=False) for c in settings.ip_allowlist]
