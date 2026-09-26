@@ -25,10 +25,10 @@ from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
 from engine.api.deps import operator_identity, require_operator
-from engine.api.health import readiness_state
-from engine.buildinfo import build_info
 from engine.api.errors import OpenAIError
+from engine.api.health import readiness_state
 from engine.auth.keys import KeyStore
+from engine.buildinfo import build_info
 from engine.inference.base import InferenceBackend
 from engine.inference.factory import build_backend
 from engine.inference.types import BackendError, BackendState

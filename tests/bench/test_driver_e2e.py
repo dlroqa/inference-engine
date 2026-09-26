@@ -12,6 +12,7 @@ import pytest
 
 pytest.importorskip("httpx")
 
+from engine.auth.keys import KeyStore  # noqa: E402
 from engine.bench.driver import run_workload  # noqa: E402
 from engine.bench.metrics import aggregate  # noqa: E402
 from engine.bench.report import IdentityStamp, RunReport  # noqa: E402
@@ -31,12 +32,20 @@ def _app(tmp_path):
     return create_app(Settings(data_dir=tmp_path / "data", model_id=MODEL), backend=fake)
 
 
+def _operator_key(tmp_path) -> str:
+    # /admin/routes needs a real operator key: an invalid token is refused even
+    # on loopback (credentials are checked before the loopback dev exception).
+    _record, token = KeyStore(Settings(data_dir=tmp_path / "data").db_path).create(label="op")
+    return token
+
+
 def test_driver_runs_and_reports_safely(tmp_path) -> None:
     app = _app(tmp_path)
     with running_app(app) as base_url:
+        op = _operator_key(tmp_path)
         samples, wall_s, route_delta = asyncio.run(
             run_workload(
-                base_url, smoke_workload(model=MODEL), admin_api_key="op", exclusive_target=True
+                base_url, smoke_workload(model=MODEL), admin_api_key=op, exclusive_target=True
             )
         )
 
@@ -80,6 +89,7 @@ def test_cli_run_writes_a_valid_report(tmp_path) -> None:
     app = _app(tmp_path)
     out = tmp_path / "candidate.json"
     with running_app(app) as base_url:
+        op = _operator_key(tmp_path)
         rc = main(
             [
                 "run",
@@ -92,7 +102,7 @@ def test_cli_run_writes_a_valid_report(tmp_path) -> None:
                 "--out",
                 str(out),
                 "--admin-api-key",
-                "op",
+                op,
                 "--exclusive-target",
             ]
         )
