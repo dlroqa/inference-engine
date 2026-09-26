@@ -3,9 +3,9 @@
 The downloader is mocked to fail deterministically (or, for invalid URLs, runs
 for real with network access refused); the real service failure path runs.
 Boundary tests start downloads fire-and-forget and watch the event loop's
-exception handler, so an exception escaping the task would be seen. Each emitted ``LogRecord`` is inspected before any
-formatting (other handlers see the raw record), then formatted with the real
-``JsonFormatter``. All secrets are synthetic; assertions report only which
+exception handler, so an exception escaping the task would be seen. Each
+emitted ``LogRecord`` is inspected before any formatting (other handlers see
+the raw record), then formatted with the real ``JsonFormatter``. All secrets are synthetic; assertions report only which
 case failed, never the payload.
 """
 
