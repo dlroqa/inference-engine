@@ -21,9 +21,33 @@ from engine.config import Settings
 from engine.inference.llamacpp import LlamaCppBackend
 from engine.logging_setup import get_logger
 from engine.models import compat, downloader, gguf
+from engine.models.redaction import WITHHELD, redact_urls_in_text
 from engine.models.registry import ModelRecord, ModelRegistry, ModelStatus
 
 _log = get_logger("engine.models")
+
+
+def _exception_text(exc: BaseException) -> str | None:
+    """``str(exc)``, or None if the exception cannot be converted."""
+    try:
+        return str(exc)
+    except Exception:
+        return None
+
+
+def _log_safe_detail(text: str | None) -> str:
+    """A download failure's text with credentials removed, for a log line.
+
+    Computed before the logger is called, so no handler, filter or formatter
+    ever sees the raw text. If redaction fails, a fixed message is used
+    instead; the raw text is never the fallback.
+    """
+    if text is None:
+        return WITHHELD
+    try:
+        return redact_urls_in_text(text) or "download failed"
+    except Exception:
+        return WITHHELD
 
 
 class ModelServiceError(Exception):
@@ -202,8 +226,17 @@ class ModelService:
             self.registry.update(model_id, status=str(ModelStatus.CANCELLED))
             _log.info("model_download_cancelled", extra={"model_id": model_id})
         except downloader.DownloadError as exc:
-            self.registry.update(model_id, status=str(ModelStatus.ERROR), error=str(exc))
-            _log.warning("model_download_failed", extra={"model_id": model_id, "detail": str(exc)})
+            # The registry keeps the raw text (API responses redact it on the way
+            # out); the log line only ever gets the redacted form. No exc_info:
+            # the exception chain can quote the original URL.
+            raw = _exception_text(exc)
+            self.registry.update(
+                model_id, status=str(ModelStatus.ERROR), error=WITHHELD if raw is None else raw
+            )
+            _log.warning(
+                "model_download_failed",
+                extra={"model_id": model_id, "detail": _log_safe_detail(raw)},
+            )
         else:
             info = await asyncio.to_thread(gguf.probe, dest)
             size = dest.stat().st_size

@@ -74,6 +74,36 @@ and API-key secrets are never logged**, and the `/diagnostics` bundle passes con
 through a redactor. Audit `detail` fields are non-secret metadata only. Turn the
 diagnostics bundle off entirely with `diagnostics_enabled=false`.
 
+**Model download failures.** A failed download's error text can quote the
+download URL, a redirect target, or a request target. Before the
+`model_download_failed` warning is logged, its `detail` is passed through the same
+redaction the model API applies to responses: URL userinfo is removed, and query
+values whose names look credential-bearing (`token`, `key`, `secret`, `sig`,
+`auth`, `password`, `credential`, after one URL decode) are masked, including
+inside a redirect URL passed as a query value. The redaction happens before the
+logger is called, so every handler sees only the redacted text; the JSON
+formatter's own query masking stays in place as a second layer. If the text cannot
+be redacted, a fixed "error details withheld" message is logged instead. The log
+line never carries the exception or its traceback.
+
+Limits:
+
+- The model registry (and therefore the database and its backups) still stores
+  the raw error text and the download URL as the source. API responses redact
+  both, but anyone with direct access to the database can read them.
+- Log lines, log exports and support bundles written before this change are not
+  rewritten.
+- Only credentials in URL userinfo or in credential-named query parameters are
+  recognized. A credential in a URL path, in a parameter with an unrelated name,
+  or encoded more than once inside a nested URL is not detected.
+
+Until a release with this change is deployed, prefer model sources that do not
+put credentials in the URL (for example a local import of a file fetched by an
+approved process). If credential-bearing URLs were used with an earlier release,
+treat its logs and exports as sensitive and revoke or rotate the affected
+credentials, or let signed URLs expire, following your provider's procedures.
+Fixing the code does not revoke a credential or remove copies already logged.
+
 ## Patch / CVE visibility
 
 - CI runs **`pip-audit`** against the locked dependencies on every build and prints

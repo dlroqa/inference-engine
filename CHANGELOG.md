@@ -21,8 +21,17 @@ release notes and refuses to publish without it (see `docs/releasing.md`).
 - Model list and detail responses now redact credentials from the stored
   `error` text too: URL userinfo and credential-like query values, in every URL
   or query parameter the error mentions. Malformed source URLs are redacted
-  conservatively instead of failing the request. Server log lines of download
-  failures are not changed by this.
+  conservatively instead of failing the request.
+- Model download failures are sanitized before they are logged: the
+  `model_download_failed` warning's `detail` gets the same credential redaction
+  as API responses (URL userinfo, credential-like query values, encoded names,
+  nested redirect targets) before the logger is called, so no handler or
+  formatter sees the raw text. If redaction fails, a fixed message is logged
+  instead. The registry still stores the raw error text, and log lines written
+  before this change are not rewritten; see `docs/security.md`.
+- The model-source redaction now also removes userinfo containing quotes or
+  parentheses, masks credential values containing them, and masks credentials
+  inside a nested redirect URL passed as a query value.
 
 ### Added
 

@@ -204,7 +204,9 @@ otherwise the card gives the engine's reason. A source name alone, such as
 
 - This is not a promise that no text can ever contain a filesystem path. A model
   name, or an error the engine reported, may still name one.
-- The engine's own logs are not covered by this redaction.
+- The engine's download-failure log line uses the same redaction (see
+  [Security: log redaction](security.md#log-redaction)); the registry itself
+  still stores the raw error text.
 
 **Refresh.** The drawer refreshes from the model list's polling, not from a
 separate loop:
