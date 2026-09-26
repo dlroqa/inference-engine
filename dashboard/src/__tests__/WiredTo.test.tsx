@@ -98,6 +98,47 @@ describe("WiredTo popover: content", () => {
   });
 });
 
+describe("WiredTo popover: switches and model facts", () => {
+  it("download names both required switches and the conditional checksum", async () => {
+    await userEvent.click(setup("models.download"));
+    const pop = screen.getByRole("group");
+    expect(pop).toHaveTextContent("Kill switches");
+    expect(pop).toHaveTextContent("allow_model_management");
+    expect(pop).toHaveTextContent("allow_network_downloads");
+    expect(pop).toHaveTextContent("Both must be on; turning off either one disables this action.");
+    expect(within(pop).getAllByRole("listitem").map((li) => li.textContent)).toEqual(
+      expect.arrayContaining(["allow_model_management", "allow_network_downloads"]),
+    );
+    expect(pop).toHaveTextContent("calculates its SHA-256");
+    expect(pop).toHaveTextContent("When you provide an expected SHA-256, the download is checked against it");
+    expect(pop).not.toHaveTextContent(/checksum-verified/i);
+  });
+
+  it("a single-switch action shows one switch and no conjunction", async () => {
+    await userEvent.click(setup("models.load"));
+    const pop = screen.getByRole("group");
+    expect(pop).toHaveTextContent("Kill switch");
+    expect(pop).not.toHaveTextContent("Kill switches");
+    expect(pop).toHaveTextContent("allow_model_management");
+    expect(pop).not.toHaveTextContent("allow_network_downloads");
+    expect(pop).not.toHaveTextContent("Both must be on");
+  });
+
+  it("an action without switches has no switch section", async () => {
+    await userEvent.click(setup("models.list"));
+    expect(screen.getByRole("group")).not.toHaveTextContent(/Kill switch/);
+  });
+
+  it("delete distinguishes engine-managed files from external imports", async () => {
+    await userEvent.click(setup("models.delete"));
+    const pop = screen.getByRole("group");
+    expect(pop).toHaveTextContent("Files managed by the engine are deleted");
+    expect(pop).toHaveTextContent("imported files outside the model store remain on disk");
+    expect(pop).toHaveTextContent("An external imported file is preserved and can be registered again by importing it.");
+    expect(pop).not.toHaveTextContent("must be downloaded or imported again");
+  });
+});
+
 describe("WiredTo popover: documentation links", () => {
   it("renders an accessible new-tab link to the repository docs", async () => {
     await userEvent.click(setup("app.identity"));
@@ -194,6 +235,57 @@ describe("WiredTo popover: keyboard", () => {
     expect(screen.queryByRole("group")).not.toBeInTheDocument();
     expect(onResult).not.toHaveBeenCalled();
     expect(screen.getByRole("dialog")).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    expect(onResult).toHaveBeenLastCalledWith(false);
+  });
+});
+
+describe("WiredTo popover: Escape precedence with dialogs", () => {
+  const deleteOptions = { title: "Delete it?", body: "Gone.", confirmLabel: "Delete", wiring: "models.delete" };
+
+  it("a hover preview inside a dialog takes the first Escape; focus stays on Cancel", async () => {
+    const onResult = vi.fn();
+    render(<ConfirmDialog options={deleteOptions} onResult={onResult} />);
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    expect(cancel).toHaveFocus();
+    const hint = screen.getByRole("button", { name: "How this works: Delete" });
+    await userEvent.hover(hint);
+    await pause(200);
+    expect(screen.getByRole("group")).toBeInTheDocument();
+    expect(cancel).toHaveFocus();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("group")).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(onResult).not.toHaveBeenCalled();
+    expect(cancel).toHaveFocus();
+    // The pointer has not moved: the preview stays dismissed past the hover delay.
+    await pause(400);
+    expect(screen.queryByRole("group")).not.toBeInTheDocument();
+    // The second Escape cancels the dialog as usual.
+    await userEvent.keyboard("{Escape}");
+    expect(onResult).toHaveBeenCalledTimes(1);
+    expect(onResult).toHaveBeenLastCalledWith(false);
+  });
+
+  it("a closed popover does not suppress the dialog's Escape", async () => {
+    const onResult = vi.fn();
+    render(<ConfirmDialog options={deleteOptions} onResult={onResult} />);
+    await userEvent.keyboard("{Escape}");
+    expect(onResult).toHaveBeenLastCalledWith(false);
+  });
+
+  it("a popover behind the modal does not take Escape meant for the dialog", async () => {
+    const onResult = vi.fn();
+    render(
+      <>
+        <WiredTo id="models.list" />
+        <ConfirmDialog options={deleteOptions} onResult={onResult} />
+      </>,
+    );
+    await userEvent.hover(screen.getByRole("button", { name: "How this works: Models" }));
+    await pause(200);
+    expect(screen.getByRole("group")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus();
     await userEvent.keyboard("{Escape}");
     expect(onResult).toHaveBeenLastCalledWith(false);
   });

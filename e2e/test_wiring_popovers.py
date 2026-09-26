@@ -175,7 +175,15 @@ def test_download_explanation_only(page: Page, engine: Engine) -> None:
     pop = _popover(page)
     expect(pop).to_contain_text("POST /admin/models/download")
     expect(pop).to_contain_text(_handler("POST", "/admin/models/download"))
+    # Both switches gate a download; either one off disables it.
+    expect(pop).to_contain_text("Kill switches")
+    expect(pop).to_contain_text("allow_model_management")
     expect(pop).to_contain_text("allow_network_downloads")
+    expect(pop).to_contain_text("Both must be on; turning off either one disables this action.")
+    # The checksum is conditional on an expected SHA-256, not a blanket guarantee.
+    expect(pop).to_contain_text("calculates its SHA-256")
+    expect(pop).to_contain_text("When you provide an expected SHA-256, the download is checked")
+    expect(pop).not_to_contain_text("checksum-verified")
     _assert_contained(page, pop)
     _shot(page, "02-hover-download-model", trigger, pop, engine)
 
@@ -268,6 +276,50 @@ def test_escape_in_dialog_closes_popover_before_dialog(page: Page, engine: Engin
     with engine.api(engine.operator_key) as c:
         row = next(k for k in c.get("/admin/keys").json()["keys"] if k["id"] == key_id)
         assert row["revoked"] is False
+        assert c.delete(f"/admin/keys/{key_id}").status_code in (200, 204)
+
+
+def test_escape_on_hover_preview_in_dialog_keeps_dialog_and_focus(
+    page: Page, engine: Engine
+) -> None:
+    """Focus stays on Cancel; only the pointer opens the hint."""
+    with engine.api(engine.operator_key) as c:
+        created = c.post("/admin/keys", json={"label": "e2e-popover-hover-dialog"})
+        assert created.status_code in (200, 201)
+        key_id = created.json()["id"]
+        prefix = created.json()["prefix"]
+    login(page, engine)
+    page.get_by_role("link", name="API keys").click()
+    opener = page.get_by_role("button", name=f"Revoke key {prefix}")
+    opener.click()
+    dialog = page.get_by_role("dialog", name="Revoke this key?")
+    cancel = dialog.get_by_role("button", name="Cancel")
+    expect(cancel).to_be_focused()
+
+    trigger = dialog.get_by_role("button", name="How this works: Revoke key")
+    trigger.hover()
+    pop = dialog.get_by_role("group")
+    expect(pop).to_be_visible()
+    expect(cancel).to_be_focused()  # hovering did not move focus
+    _shot(page, "10-dialog-hover-preview", trigger, pop, engine)
+
+    # First Escape: only the preview closes; the dialog stays and Cancel keeps focus.
+    page.keyboard.press("Escape")
+    expect(pop).to_be_hidden()
+    expect(dialog).to_be_visible()
+    expect(cancel).to_be_focused()
+    # The pointer is still over the hint: it stays dismissed past the hover delay.
+    page.wait_for_timeout(600)
+    expect(pop).to_be_hidden()
+    expect(dialog).to_be_visible()
+
+    # Second Escape: the dialog cancels and focus returns to its opener.
+    page.keyboard.press("Escape")
+    expect(dialog).to_be_hidden()
+    expect(opener).to_be_focused()
+    with engine.api(engine.operator_key) as c:
+        row = next(k for k in c.get("/admin/keys").json()["keys"] if k["id"] == key_id)
+        assert row["revoked"] is False  # nothing was confirmed
         assert c.delete(f"/admin/keys/{key_id}").status_code in (200, 204)
 
 

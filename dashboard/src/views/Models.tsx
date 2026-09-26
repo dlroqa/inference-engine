@@ -296,7 +296,9 @@ function ModelRow({
               onClick={async () => {
                 const ok = await confirm({
                   title: `Delete ${model.name}?`,
-                  body: "The model file is removed from the model store and the registry. This cannot be undone; you would need to download or import it again.",
+                  // Whether the file is engine-managed is not known here (the API does not
+                  // expose paths), so both outcomes are stated.
+                  body: "The model is removed from the registry. A file the engine manages (downloaded, or imported into the model store) is deleted and cannot be restored by this action. An imported file outside the model store stays on disk and can be imported again.",
                   confirmLabel: "Delete model",
                   wiring: "models.delete",
                 });

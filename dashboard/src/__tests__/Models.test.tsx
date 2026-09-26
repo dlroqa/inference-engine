@@ -75,6 +75,25 @@ describe("Models view", () => {
     await waitFor(() => expect(del).toHaveBeenCalledWith("m1"));
   });
 
+  it("explains the delete file policy in the row hint and inside the confirmation", async () => {
+    vi.spyOn(api, "listModels").mockResolvedValue({ models: [model()] });
+    render(<Models />);
+    await screen.findByText("tiny");
+    await userEvent.click(screen.getByRole("button", { name: "How this works: Actions for tiny" }));
+    const rowHint = screen.getByRole("group");
+    expect(rowHint).toHaveTextContent("imported files outside the model store remain on disk");
+    await userEvent.keyboard("{Escape}");
+    await userEvent.click(screen.getByRole("button", { name: /Delete tiny/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete tiny?" });
+    expect(dialog).toHaveTextContent("An imported file outside the model store stays on disk");
+    expect(dialog).not.toHaveTextContent("you would need to download or import it again");
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus();
+    await userEvent.click(within(dialog).getByRole("button", { name: "How this works: Delete model" }));
+    const dialogHint = within(dialog).getByRole("group");
+    expect(dialogHint).toHaveTextContent("Files managed by the engine are deleted");
+    expect(dialogHint).toHaveTextContent("imported files outside the model store remain on disk");
+  });
+
   it("shows download progress and a cancel action", async () => {
     vi.spyOn(api, "listModels").mockResolvedValue({
       models: [model({ status: "downloading", downloaded_bytes: 500, progress: 0.5 })],

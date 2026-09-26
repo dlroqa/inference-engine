@@ -70,6 +70,23 @@ describe("wiring registry", () => {
     for (const w of WIRING) expect(explain(w.id).kind).toBe("wired");
   });
 
+  it("lists required switches as distinct names, never an empty or packed list", () => {
+    for (const w of WIRING) {
+      if (w.requiredSwitches === undefined) continue;
+      expect(w.requiredSwitches.length, w.id).toBeGreaterThan(0);
+      expect(new Set(w.requiredSwitches).size, w.id).toBe(w.requiredSwitches.length);
+      for (const s of w.requiredSwitches) expect(s, w.id).toMatch(/^[a-z_]+$/);
+    }
+    expect(WIRING.find((w) => w.id === "models.download")?.requiredSwitches).toEqual([
+      "allow_model_management",
+      "allow_network_downloads",
+    ]);
+  });
+
+  it("makes no unconditional checksum-verification claim", () => {
+    expect(JSON.stringify([WIRING, SUBSYSTEMS])).not.toMatch(/checksum-verified/i);
+  });
+
   it("never embeds secrets or prompt text in explanations", () => {
     const text = JSON.stringify([WIRING, LOCAL_CONTROLS]);
     expect(text).not.toMatch(/sk-ie-[A-Za-z0-9_-]{8,}/);

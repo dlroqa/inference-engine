@@ -858,6 +858,16 @@ a.navbtn {
   min-width: 0;
   overflow-wrap: break-word;
 }
+.wired-switches {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.wired-switch-note {
+  display: block;
+  margin-top: 2px;
+  color: var(--color-fg-muted);
+}
 .wired-chain {
   display: flex;
   flex-wrap: wrap;

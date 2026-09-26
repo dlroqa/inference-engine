@@ -29,8 +29,9 @@ import {
 // - The panel follows the button in the Tab order and is itself focusable, so
 //   keyboard users can scroll it and reach its docs links. It stays open while
 //   focus is anywhere in the button/panel region; leaving the region closes it.
-// - Escape closes it. From inside the panel, focus returns to the button. Inside
-//   a dialog, Escape closes the popover before the dialog.
+// - Escape closes it. From inside the panel, focus returns to the button;
+//   otherwise focus stays where it is. Inside a dialog, Escape closes the popover
+//   before the dialog, whether it was opened by focus or by hover.
 // - A click or tap outside closes it without moving focus.
 // - The panel is fixed-positioned and sized to the space the viewport has, with
 //   its own scroll region, so it never extends past any viewport edge.
@@ -104,11 +105,8 @@ function WiredFacts({ entry }: { entry: WiringEntry }): JSX.Element {
       </dd>
       <dt>Audit log</dt>
       <dd>{entry.audited ? "Recorded" : "Not recorded"}</dd>
-      {entry.killSwitch && (
-        <>
-          <dt>Kill switch</dt>
-          <dd className="mono">{entry.killSwitch}</dd>
-        </>
+      {entry.requiredSwitches && entry.requiredSwitches.length > 0 && (
+        <SwitchFacts switches={entry.requiredSwitches} />
       )}
       {entry.sideEffects && (
         <>
@@ -129,6 +127,35 @@ function WiredFacts({ entry }: { entry: WiringEntry }): JSX.Element {
         </>
       )}
     </dl>
+  );
+}
+
+function SwitchFacts({ switches }: { switches: string[] }): JSX.Element {
+  if (switches.length === 1) {
+    return (
+      <>
+        <dt>Kill switch</dt>
+        <dd className="mono">{switches[0]}</dd>
+      </>
+    );
+  }
+  return (
+    <>
+      <dt>Kill switches</dt>
+      <dd>
+        <ul className="wired-switches">
+          {switches.map((s) => (
+            <li key={s} className="mono">
+              {s}
+            </li>
+          ))}
+        </ul>
+        <span className="wired-switch-note">
+          {switches.length === 2 ? "Both must be on; turning off either" : "All must be on; turning off any"} one
+          disables this action.
+        </span>
+      </dd>
+    </>
   );
 }
 
@@ -259,9 +286,25 @@ export function WiredTo({ id, label }: { id: string | string[]; label?: string }
 
   useEffect(() => {
     if (!open) return;
-    // Escape while focus is elsewhere (a hover preview): close without moving focus.
+    // Escape is taken in the capture phase on `document`, which runs before
+    // React's handlers on the app root, including a dialog's Escape-to-close.
+    // So an open popover always gets the first Escape, even when focus is
+    // elsewhere in the dialog (a hover preview). It only consumes Escape when it
+    // is open and not behind the modal holding focus; a closed popover
+    // registers nothing, so the dialog's own Escape keeps working.
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !focusInside()) close();
+      if (e.key !== "Escape") return;
+      const target = e.target instanceof Element ? e.target : null;
+      const modal = target?.closest('[role="dialog"][aria-modal="true"]');
+      if (modal && wrap.current && !modal.contains(wrap.current)) return;
+      e.stopPropagation();
+      e.preventDefault();
+      const fromPanel = Boolean(pop.current?.contains(document.activeElement));
+      close();
+      if (fromPanel) {
+        skipFocusOpen.current = true;
+        trigger.current?.focus();
+      }
     };
     const onDown = (e: PointerEvent) => {
       if (!(e.target instanceof Node) || !wrap.current?.contains(e.target)) close();
@@ -271,17 +314,17 @@ export function WiredTo({ id, label }: { id: string | string[]; label?: string }
       if (e.target instanceof Node && pop.current?.contains(e.target)) return;
       place();
     };
-    document.addEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, true);
     document.addEventListener("pointerdown", onDown);
     window.addEventListener("resize", place);
     window.addEventListener("scroll", onScroll, true);
     return () => {
-      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("keydown", onKey, true);
       document.removeEventListener("pointerdown", onDown);
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", onScroll, true);
     };
-  }, [open, close, place, focusInside]);
+  }, [open, close, place]);
 
   return (
     <span
@@ -303,18 +346,6 @@ export function WiredTo({ id, label }: { id: string | string[]; label?: string }
       }}
       onBlur={(e) => {
         if (!wrap.current?.contains(e.relatedTarget as Node | null)) close();
-      }}
-      onKeyDown={(e) => {
-        if (e.key !== "Escape" || !open) return;
-        // Handled here so an enclosing dialog does not also close.
-        e.stopPropagation();
-        e.preventDefault();
-        const fromPanel = Boolean(pop.current?.contains(document.activeElement));
-        close();
-        if (fromPanel) {
-          skipFocusOpen.current = true;
-          trigger.current?.focus();
-        }
       }}
     >
       <button

@@ -54,7 +54,8 @@ export const SUBSYSTEMS: Record<Subsystem, { label: string; description: string 
   },
   model_service: {
     label: "Model service",
-    description: "Imports, downloads (checksum-verified), loads, unloads, and deletes models.",
+    description:
+      "Imports, downloads, loads, unloads, and deletes models. Records each file's SHA-256; a download is checked against an expected SHA-256 only when one is given.",
   },
   keystore: {
     label: "Keystore",
@@ -111,8 +112,11 @@ export interface WiringEntry {
   /** The api.ts function that makes the call, or the live hook for WebSockets. */
   client: ApiFn | "useLiveMetrics" | "useLiveFeed";
   audited: boolean;
-  /** Config switch that can disable this action (read-only in the UI). */
-  killSwitch?: string;
+  /**
+   * Config switches that must all be enabled for this action (read-only in the
+   * UI). Turning off any one of them disables it.
+   */
+  requiredSwitches?: string[];
   sideEffects?: string;
   docs?: DocRef;
 }
@@ -257,12 +261,13 @@ export const WIRING: WiringEntry[] = [
   {
     id: "models.download",
     label: "Download model",
-    what: "Starts a background, checksum-verified download from Hugging Face or a URL.",
+    what:
+      "Starts a background download from Hugging Face or a URL and calculates its SHA-256. When you provide an expected SHA-256, the download is checked against it; a mismatch fails the download.",
     chain: ["model_service", "model_registry", "audit"],
     endpoint: { method: "POST", path: "/admin/models/download" },
     client: "downloadModel",
     audited: true,
-    killSwitch: "allow_network_downloads",
+    requiredSwitches: ["allow_model_management", "allow_network_downloads"],
     sideEffects: "Writes the file into the model store and a registry row.",
   },
   {
@@ -273,7 +278,7 @@ export const WIRING: WiringEntry[] = [
     endpoint: { method: "POST", path: "/admin/models/import" },
     client: "importModel",
     audited: true,
-    killSwitch: "allow_model_management",
+    requiredSwitches: ["allow_model_management"],
   },
   {
     id: "models.cancel",
@@ -292,7 +297,7 @@ export const WIRING: WiringEntry[] = [
     endpoint: { method: "POST", path: "/admin/models/{model_id}/load" },
     client: "loadModelById",
     audited: true,
-    killSwitch: "allow_model_management",
+    requiredSwitches: ["allow_model_management"],
     sideEffects: "Replaces the currently loaded model.",
   },
   {
@@ -303,18 +308,20 @@ export const WIRING: WiringEntry[] = [
     endpoint: { method: "POST", path: "/admin/models/{model_id}/unload" },
     client: "unloadModelById",
     audited: true,
-    killSwitch: "allow_model_management",
+    requiredSwitches: ["allow_model_management"],
   },
   {
     id: "models.delete",
     label: "Delete model",
-    what: "Removes the model file and its registry row (must be unloaded first).",
+    what:
+      "Removes the model's registry entry and stops any download in progress. Models must be unloaded first. Files managed by the engine are deleted; imported files outside the model store remain on disk.",
     chain: ["model_service", "model_registry", "audit"],
     endpoint: { method: "DELETE", path: "/admin/models/{model_id}" },
     client: "deleteModel",
     audited: true,
-    killSwitch: "allow_model_management",
-    sideEffects: "Irreversible; the file must be downloaded or imported again.",
+    requiredSwitches: ["allow_model_management"],
+    sideEffects:
+      "Deleted managed files cannot be restored by this action. An external imported file is preserved and can be registered again by importing it.",
   },
   {
     id: "logs.list",
