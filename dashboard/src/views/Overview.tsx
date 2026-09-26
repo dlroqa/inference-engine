@@ -6,6 +6,7 @@ import { ConnBadge } from "../components/Panel";
 import { bytes, duration, num, clockTime } from "../lib/format";
 import { api, type FeedEvent } from "../lib/api";
 import { useAsync } from "../hooks/useAsync";
+import { WiredTo } from "../components/WiredTo";
 
 function energyText(energy: { state: string; watts: number | null; j_per_token: number | null }): string {
   if (energy.state !== "measured") return "unavailable";
@@ -104,8 +105,12 @@ export function Overview(): JSX.Element {
               readiness unavailable: {overview.error}
             </span>
           )}
+          <WiredTo id="overview.readiness" />
         </div>
-        <ConnBadge status={status} />
+        <div className="row">
+          <ConnBadge status={status} />
+          <WiredTo id={["overview.metrics", "overview.metrics-fallback"]} />
+        </div>
       </div>
 
       <div className="grid">
@@ -139,7 +144,10 @@ export function Overview(): JSX.Element {
         </div>
 
         <div className="card col-4">
-          <h2>Resources</h2>
+          <div className="row panel-title">
+            <h2>Resources</h2>
+            <WiredTo id="overview.metrics" label="Resources" />
+          </div>
           <Meter label="CPU" percent={r?.cpu_percent ?? null} />
           <Meter label="Memory" percent={r?.memory.percent ?? null} detail={r ? `${bytes(r.memory.used)} / ${bytes(r.memory.total)}` : undefined} />
           <Meter label="Disk" percent={r?.disk.percent ?? null} detail={r ? `${bytes(r.disk.free)} free` : undefined} />
@@ -151,7 +159,10 @@ export function Overview(): JSX.Element {
 
         <div className="card col-8">
           <div className="row spread" style={{ marginBottom: 8 }}>
-            <h2 style={{ margin: 0 }}>Inference live feed</h2>
+            <div className="row panel-title">
+              <h2 style={{ margin: 0 }}>Inference live feed</h2>
+              <WiredTo id="overview.feed" />
+            </div>
             <ConnBadge status={feedStatus} />
           </div>
           {feedStatus === "down" && (

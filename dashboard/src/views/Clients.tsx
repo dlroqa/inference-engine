@@ -4,6 +4,7 @@ import { useAsync } from "../hooks/useAsync";
 import { AsyncBoundary } from "../components/Panel";
 import { Badge, statusTone } from "../components/widgets";
 import { Icon } from "../components/Icon";
+import { WiredTo } from "../components/WiredTo";
 import { num, clockTime } from "../lib/format";
 
 type NavFn = (view: string, opts?: { logQuery?: string; clientId?: string }) => void;
@@ -49,19 +50,28 @@ export function Clients({
   return (
     <>
       <div className="topbar">
-        <h1>Clients</h1>
         <div className="row">
-          <button className="btn" onClick={() => { clients.reload(); attribution.reload(); }}>
+          <h1>Clients</h1>
+          <WiredTo id={["clients.list", "monitoring.attribution"]} label="Clients" />
+        </div>
+        <div className="row">
+          <button
+            className="btn"
+            onClick={() => { clients.reload(); attribution.reload(); }}
+            data-wiring="clients.list monitoring.attribution"
+          >
             <Icon name="refresh" size={16} /> Refresh
           </button>
-          <button className="btn" onClick={() => onNavigate("monitoring")}>
+          <WiredTo id={["clients.list", "monitoring.attribution"]} label="Refresh" />
+          <button className="btn" onClick={() => onNavigate("monitoring")} data-wiring="local.navigation">
             <Icon name="activity" size={16} /> Monitoring
           </button>
+          <WiredTo id="local.navigation" label="Monitoring link" />
         </div>
       </div>
 
       <div className="grid">
-        <div className="card col-12">
+        <div className="card col-12" data-wiring="clients.list">
           <AsyncBoundary
             status={clients.status}
             error={clients.error}
@@ -157,17 +167,28 @@ function ClientDetail({
   const clientDeliveries = deliveries.data ?? [];
 
   return (
-    <div className="card col-12">
+    <div className="card col-12" data-wiring="clients.endpoints clients.deliveries">
       <div className="row spread" style={{ marginBottom: 12 }}>
         <h2 style={{ margin: 0 }}>
           Client <span className="mono">{clientId.slice(0, 12)}</span>
         </h2>
-        <button className="btn" onClick={onClose} aria-label="Close client detail">
-          Close
-        </button>
+        <div className="row">
+          <button
+            className="btn"
+            onClick={onClose}
+            aria-label="Close client detail"
+            data-wiring="local.close-detail"
+          >
+            Close
+          </button>
+          <WiredTo id="local.close-detail" />
+        </div>
       </div>
 
-      <h3 className="detail-h">Keys (usage this week)</h3>
+      <div className="row panel-title">
+        <h3 className="detail-h">Keys (usage this week)</h3>
+        <WiredTo id="monitoring.attribution" label="Keys (usage this week)" />
+      </div>
       {clientKeys.length === 0 ? (
         <div className="empty">No key usage in this window.</div>
       ) : (
@@ -196,7 +217,10 @@ function ClientDetail({
         </table>
       )}
 
-      <h3 className="detail-h" style={{ marginTop: 20 }}>Webhook endpoints</h3>
+      <div className="row panel-title" style={{ marginTop: 20 }}>
+        <h3 className="detail-h">Webhook endpoints</h3>
+        <WiredTo id="clients.endpoints" />
+      </div>
       <AsyncBoundary
         status={endpoints.status}
         error={endpoints.error}
@@ -226,7 +250,10 @@ function ClientDetail({
         </table>
       </AsyncBoundary>
 
-      <h3 className="detail-h" style={{ marginTop: 20 }}>Recent deliveries</h3>
+      <div className="row panel-title" style={{ marginTop: 20 }}>
+        <h3 className="detail-h">Recent deliveries</h3>
+        <WiredTo id="clients.deliveries" />
+      </div>
       <AsyncBoundary
         status={endpoints.status === "ready" ? deliveries.status : endpoints.status}
         error={endpoints.status === "error" ? endpoints.error : deliveries.error}

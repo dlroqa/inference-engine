@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { api } from "../lib/api";
 import inventory from "../lib/routes.generated.json";
-import { NOT_IN_UI, SUBSYSTEMS, WIRING, routeKey } from "../lib/wiring";
+import { LOCAL_CONTROLS, NOT_IN_UI, SUBSYSTEMS, WIRING, explain, routeFor, routeKey } from "../lib/wiring";
 
 // Drift guards between the UI's wiring explanations, the typed API client, and
 // the engine's real route inventory (regenerated and diffed in CI).
@@ -53,8 +53,25 @@ describe("wiring registry", () => {
     }
   });
 
+  it("resolves the backend handler for every wired endpoint", () => {
+    const unresolved = WIRING.filter((w) => {
+      const r = routeFor(w);
+      return !r || !r.module.startsWith("engine.") || !r.handler;
+    });
+    expect(unresolved.map((w) => w.id)).toEqual([]);
+  });
+
+  it("keeps local (no backend call) controls distinct from wired ones", () => {
+    const ids = LOCAL_CONTROLS.map((c) => c.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids.every((id) => id.startsWith("local."))).toBe(true);
+    expect(ids.filter((id) => WIRING.some((w) => w.id === id))).toEqual([]);
+    for (const id of ids) expect(explain(id).kind).toBe("local");
+    for (const w of WIRING) expect(explain(w.id).kind).toBe("wired");
+  });
+
   it("never embeds secrets or prompt text in explanations", () => {
-    const text = JSON.stringify(WIRING);
+    const text = JSON.stringify([WIRING, LOCAL_CONTROLS]);
     expect(text).not.toMatch(/sk-ie-[A-Za-z0-9_-]{8,}/);
     expect(text).not.toMatch(/whsec_/);
   });

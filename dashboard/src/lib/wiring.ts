@@ -7,6 +7,7 @@
 // typed client in api.ts, so it cannot silently drift from the backend.
 
 import type { api } from "./api";
+import inventory from "./routes.generated.json";
 
 export type Subsystem =
   | "gateway"
@@ -369,11 +370,11 @@ export const NOT_IN_UI: Record<string, string> = {
   "GET /readyz": "planned: System view (A3a).",
   "GET /version": "planned: System view (A3a); the version is shown via /admin/overview.",
   "GET /diagnostics": "planned: System view (A3a).",
-  "GET /admin/system": "planned: disabled-control explanations (A2) and System view (A3a).",
+  "GET /admin/system": "planned: disabled-control explanations (after the A2 popovers) and System view (A3a).",
   "GET /admin/backends": "planned: Backends & Routing view (A3a).",
   "GET /admin/routes": "planned: Backends & Routing view (A3a).",
   "POST /admin/route/plan": "planned: Backends & Routing view (A3a).",
-  "GET /admin/models/{model_id}": "planned: model detail drawer (A2).",
+  "GET /admin/models/{model_id}": "planned: model detail drawer (after the A2 popovers).",
   "POST /admin/model/load": "Legacy single-model control, superseded by /admin/models/{id}/load.",
   "POST /admin/model/unload": "Legacy single-model control, superseded by /admin/models/{id}/unload.",
   "GET /admin/billing/plans": "planned: plan administration (A3b).",
@@ -387,6 +388,79 @@ export const NOT_IN_UI: Record<string, string> = {
   "POST /admin/billing/webhooks/endpoints/{endpoint_id}/rotate-secret": "planned: webhook administration (A3b).",
   "POST /admin/billing/webhooks/deliveries/{delivery_id}/replay": "planned: delivery replay (A3b).",
 };
+
+// Controls that make no request to the engine: they change what this browser
+// shows (navigation, local filters, form tabs) or touch only browser storage.
+// The dashboard labels them "No backend call" instead of leaving them unexplained.
+export interface LocalControl {
+  id: string;
+  label: string;
+  what: string;
+}
+
+export const LOCAL_CONTROLS: LocalControl[] = [
+  {
+    id: "local.navigation",
+    label: "Navigation",
+    what: "Changes the page address (#/view) in this browser. The view that opens loads its own data.",
+  },
+  {
+    id: "local.saved-key",
+    label: "Saved operator key",
+    what: "Stores or removes the key in this browser only. The dashboard then re-checks who it is signed in as.",
+  },
+  {
+    id: "local.add-source",
+    label: "Model source tabs",
+    what: "Switches which fields the form shows. Nothing is sent until you submit.",
+  },
+  {
+    id: "local.logs-filter",
+    label: "Text filter",
+    what: "Filters the log events already loaded in this browser. The server is not queried again.",
+  },
+  {
+    id: "local.copy-token",
+    label: "Copy token",
+    what: "Copies the new token to your clipboard. It is not sent anywhere and cannot be shown again.",
+  },
+  {
+    id: "local.close-detail",
+    label: "Close detail",
+    what: "Closes this panel and updates the page address.",
+  },
+];
+
+export interface RouteInfo {
+  gate: string;
+  module: string;
+  handler: string;
+}
+
+const ROUTES = new Map<string, RouteInfo>(
+  (inventory.routes as ({ method: string; path: string } & RouteInfo)[]).map((r) => [
+    `${r.method} ${r.path}`,
+    { gate: r.gate, module: r.module, handler: r.handler },
+  ]),
+);
+
+/** The engine handler behind a wired endpoint, from the generated route inventory. */
+export function routeFor(entry: WiringEntry): RouteInfo | undefined {
+  return ROUTES.get(routeKey(entry.endpoint.method, entry.endpoint.path));
+}
+
+export type Explanation =
+  | { kind: "wired"; entry: WiringEntry }
+  | { kind: "local"; control: LocalControl };
+
+/** Resolves a wiring or local-control id; throws on an unknown id. */
+export function explain(id: string): Explanation {
+  const entry = WIRING.find((w) => w.id === id);
+  if (entry) return { kind: "wired", entry };
+  const control = LOCAL_CONTROLS.find((c) => c.id === id);
+  if (control) return { kind: "local", control };
+  throw new Error(`unknown wiring id: ${id}`);
+}
 
 export function routeKey(method: string, path: string): string {
   return `${method} ${path}`;

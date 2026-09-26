@@ -38,7 +38,7 @@ describe("Keys view", () => {
     render(<Keys />);
     await screen.findByText("No API keys yet.");
     await userEvent.type(screen.getByLabelText("Label (optional)"), "new");
-    await userEvent.click(screen.getByRole("button", { name: /Create key/ }));
+    await userEvent.click(screen.getByRole("button", { name: /^Create key/ }));
     expect(await screen.findByTestId("new-token")).toHaveTextContent("sk-ie-THE-SECRET-TOKEN");
     expect(screen.getByText(/shown only once/i)).toBeInTheDocument();
   });

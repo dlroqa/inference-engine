@@ -7,6 +7,7 @@ import { AsyncBoundary, ConnBadge } from "../components/Panel";
 import { Badge, alertTone, categoryTone, type ToneName } from "../components/widgets";
 import { Icon } from "../components/Icon";
 import { num, clockTime } from "../lib/format";
+import { WiredTo } from "../components/WiredTo";
 
 type NavFn = (view: string, opts?: { logQuery?: string; clientId?: string }) => void;
 type Win = "5h" | "week";
@@ -38,9 +39,15 @@ export function Monitoring({ onNavigate }: { onNavigate: NavFn }): JSX.Element {
         <div className="row">
           <h1>Live monitoring</h1>
           <ConnBadge status={metricsStatus} />
+          <WiredTo id="overview.metrics" />
         </div>
         <div className="row">
-          <div className="segmented" role="group" aria-label="Time window">
+          <div
+            className="segmented"
+            role="group"
+            aria-label="Time window"
+            data-wiring="monitoring.attribution monitoring.taxonomy"
+          >
             {(["5h", "week"] as Win[]).map((w) => (
               <button
                 key={w}
@@ -52,20 +59,33 @@ export function Monitoring({ onNavigate }: { onNavigate: NavFn }): JSX.Element {
               </button>
             ))}
           </div>
-          <button className="btn" onClick={reloadAll}>
+          <WiredTo id={["monitoring.attribution", "monitoring.taxonomy"]} label="Time window" />
+          <button
+            className="btn"
+            onClick={reloadAll}
+            data-wiring="monitoring.alerts monitoring.attribution monitoring.taxonomy"
+          >
             <Icon name="refresh" size={16} /> Refresh
           </button>
-          <button className="btn" onClick={() => onNavigate("security")}>
+          <WiredTo
+            id={["monitoring.alerts", "monitoring.attribution", "monitoring.taxonomy"]}
+            label="Refresh"
+          />
+          <button className="btn" onClick={() => onNavigate("security")} data-wiring="local.navigation">
             <Icon name="shield" size={16} /> Security
           </button>
+          <WiredTo id="local.navigation" label="Security link" />
         </div>
       </div>
 
       <div className="grid">
         {/* Alerts */}
-        <div className="card col-12">
+        <div className="card col-12" data-wiring="monitoring.alerts local.navigation">
           <div className="row spread" style={{ marginBottom: 8 }}>
-            <h2 style={{ margin: 0 }}>Alerts</h2>
+            <div className="row panel-title">
+              <h2 style={{ margin: 0 }}>Alerts</h2>
+              <WiredTo id={["monitoring.alerts", "local.navigation"]} label="Alerts" />
+            </div>
             {alertList.length > 0 && <Badge tone="warn">{alertList.length}</Badge>}
           </div>
           <AsyncBoundary
@@ -103,8 +123,11 @@ export function Monitoring({ onNavigate }: { onNavigate: NavFn }): JSX.Element {
         </div>
 
         {/* Error taxonomy */}
-        <div className="card col-4">
-          <h2>Error taxonomy</h2>
+        <div className="card col-4" data-wiring="monitoring.taxonomy">
+          <div className="row panel-title">
+            <h2>Error taxonomy</h2>
+            <WiredTo id="monitoring.taxonomy" />
+          </div>
           <AsyncBoundary
             status={taxonomy.status}
             error={taxonomy.error}
@@ -137,9 +160,12 @@ export function Monitoring({ onNavigate }: { onNavigate: NavFn }): JSX.Element {
         </div>
 
         {/* Live feed with cross-link to logs */}
-        <div className="card col-8">
+        <div className="card col-8" data-wiring="overview.feed local.navigation">
           <div className="row spread" style={{ marginBottom: 8 }}>
-            <h2 style={{ margin: 0 }}>Live feed</h2>
+            <div className="row panel-title">
+              <h2 style={{ margin: 0 }}>Live feed</h2>
+              <WiredTo id={["overview.feed", "local.navigation"]} label="Live feed" />
+            </div>
             <ConnBadge status={feedStatus} />
           </div>
           {feedStatus === "down" && (
@@ -170,8 +196,11 @@ export function Monitoring({ onNavigate }: { onNavigate: NavFn }): JSX.Element {
         </div>
 
         {/* Per-key attribution */}
-        <div className="card col-12">
-          <h2>Key attribution ({win === "5h" ? "5 hours" : "this week"})</h2>
+        <div className="card col-12" data-wiring="monitoring.attribution local.navigation">
+          <div className="row panel-title">
+            <h2>Key attribution ({win === "5h" ? "5 hours" : "this week"})</h2>
+            <WiredTo id={["monitoring.attribution", "local.navigation"]} label="Key attribution" />
+          </div>
           <AsyncBoundary
             status={attribution.status}
             error={attribution.error}

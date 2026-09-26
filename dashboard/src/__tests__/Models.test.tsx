@@ -93,7 +93,7 @@ describe("Models view", () => {
     await screen.findByText(/No models yet/);
     await userEvent.click(screen.getByRole("tab", { name: "URL" }));
     await userEvent.type(screen.getByLabelText("GGUF URL"), "http://x/m-Q4_K_M.gguf");
-    await userEvent.click(screen.getByRole("button", { name: /Download model/ }));
+    await userEvent.click(screen.getByRole("button", { name: /^Download model/ }));
     await waitFor(() =>
       expect(dl).toHaveBeenCalledWith(
         expect.objectContaining({ source_type: "url", url: "http://x/m-Q4_K_M.gguf" }),
@@ -108,7 +108,7 @@ describe("Models view", () => {
     await screen.findByText(/No models yet/);
     await userEvent.click(screen.getByRole("tab", { name: "Local file" }));
     await userEvent.type(screen.getByLabelText("Local file path"), "/models/x.gguf");
-    await userEvent.click(screen.getByRole("button", { name: /Import model/ }));
+    await userEvent.click(screen.getByRole("button", { name: /^Import model/ }));
     await waitFor(() => expect(imp).toHaveBeenCalledWith("/models/x.gguf", null));
   });
 

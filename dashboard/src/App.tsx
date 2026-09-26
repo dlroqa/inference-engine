@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type JSX, type ReactNode } fr
 import { api, ApiError, getApiKey, setApiKey, type Identity } from "./lib/api";
 import { Icon, type IconName } from "./components/Icon";
 import { Dialog } from "./components/Dialog";
+import { WiredTo } from "./components/WiredTo";
 import { buildHash, useHashRoute } from "./hooks/useHashRoute";
 import { Overview } from "./views/Overview";
 import { Monitoring } from "./views/Monitoring";
@@ -79,13 +80,17 @@ function KeyForm({
   const [value, setValue] = useState("");
   return (
     <form
+      data-wiring="local.saved-key app.identity"
       onSubmit={(e) => {
         e.preventDefault();
         if (value.trim()) onSubmit(value.trim());
       }}
     >
       <div className="field">
-        <label htmlFor="operator-key">Operator API key</label>
+        <div className="row label-row">
+          <label htmlFor="operator-key">Operator API key</label>
+          <WiredTo id={["local.saved-key", "app.identity"]} label="Operator sign-in" />
+        </div>
         <input
           id="operator-key"
           className="input"
@@ -140,10 +145,11 @@ function IdentityMenu({
 }): JSX.Element {
   const key = identity.key;
   return (
-    <section className="identity" aria-label="Signed-in identity">
+    <section className="identity" aria-label="Signed-in identity" data-wiring="app.identity local.saved-key">
       <div className="identity-name">
         <Icon name="key" size={16} />
         {key ? (key.label ?? "Unnamed key") : "Local development"}
+        <WiredTo id={["app.identity", "local.saved-key"]} />
       </div>
       <div className="sub">
         {key ? (
@@ -170,7 +176,7 @@ function IdentityMenu({
 
 function NotFound({ view, onHome }: { view: string; onHome: () => void }): JSX.Element {
   return (
-    <div className="card col-12">
+    <div className="card col-12" data-wiring="local.navigation">
       <h1>Page not available</h1>
       <p className="muted">
         There is no <span className="mono">{view}</span> view in this dashboard.
@@ -296,9 +302,10 @@ export function App(): JSX.Element {
       <nav className="sidebar" aria-label="Primary">
         <div className="brand">
           <span className="dot" /> Inference Engine
+          <WiredTo id="local.navigation" label="Navigation" />
         </div>
         {NAV_SECTIONS.map((section) => (
-          <div className="navsection" key={section.label}>
+          <div className="navsection" key={section.label} data-wiring="local.navigation">
             <div className="navsection-label" id={`nav-${section.label}`}>
               {section.label}
             </div>

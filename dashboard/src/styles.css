@@ -710,3 +710,159 @@ a.navbtn {
   color: var(--color-fg-muted);
   margin: 0 0 var(--space-2);
 }
+
+/* --- "How this works" wiring popovers --- */
+.wired {
+  display: inline-flex;
+  vertical-align: middle;
+}
+.wired-btn {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--color-border-strong);
+  background: transparent;
+  color: var(--color-info);
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background var(--dur) var(--ease);
+}
+/* 44×44 px hit area without growing the layout. */
+.wired-btn::after {
+  content: "";
+  position: absolute;
+  inset: -8px;
+}
+.wired-btn:hover,
+.wired-btn[aria-expanded="true"] {
+  background: rgba(56, 189, 248, 0.12);
+}
+.wired-btn.local {
+  border-style: dashed;
+  color: var(--color-fg-muted);
+}
+.wired-btn.local:hover,
+.wired-btn.local[aria-expanded="true"] {
+  background: var(--color-muted);
+}
+.wired-pop {
+  position: fixed;
+  z-index: 50;
+  width: min(360px, calc(100vw - 32px));
+  max-height: min(70vh, 520px);
+  overflow: auto;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-2);
+  color: var(--color-fg);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.5;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: normal;
+  white-space: normal;
+  animation: wired-in 150ms var(--ease);
+}
+.wired-pop:focus {
+  outline: none;
+}
+@keyframes wired-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+.wired-entry + .wired-entry {
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+.wired-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.wired-kind {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.wired-kind.wired {
+  border: 1px solid rgba(56, 189, 248, 0.5);
+  color: var(--color-info);
+}
+.wired-kind.local {
+  border: 1px dashed var(--color-border-strong);
+  color: var(--color-fg-muted);
+}
+.wired-what {
+  margin: var(--space-1) 0 var(--space-2);
+  color: var(--color-fg-muted);
+}
+.wired-local-note {
+  margin: 0;
+}
+.wired-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px var(--space-3);
+  margin: 0;
+}
+.wired-facts dt {
+  color: var(--color-fg-muted);
+}
+.wired-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.wired-chain {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.wired-chain li + li::before {
+  content: "→";
+  content: "→" / "";
+  margin: 0 6px;
+  color: var(--color-fg-subtle);
+}
+@media (max-width: 480px) {
+  .wired-facts {
+    grid-template-columns: 1fr;
+  }
+  .wired-facts dd {
+    margin-bottom: var(--space-1);
+  }
+}
+.panel-title {
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+.panel-title h2,
+.panel-title h3 {
+  margin: 0;
+}
+.spread > .panel-title {
+  margin-bottom: 0;
+}
+.label-row {
+  gap: var(--space-2);
+}
+.brand .wired {
+  margin-left: auto;
+}
+.identity-name .wired {
+  margin-left: auto;
+}
