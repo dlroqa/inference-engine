@@ -126,14 +126,11 @@ def create_app(
     """
     global _active_settings
     settings = settings or load_config()
-    # Canonical store paths: the ownership locks and every component use the
-    # same absolute, symlink-resolved database and model-directory paths.
-    settings = settings.model_copy(
-        update={
-            "db_path": canonical(settings.db_path),  # type: ignore[arg-type]
-            "models_dir": canonical(settings.models_dir),  # type: ignore[arg-type]
-        }
-    )
+    # Canonical store paths, set on the settings object itself: the ownership
+    # locks and every component (and the caller) use the same absolute,
+    # symlink-resolved database and model-directory paths.
+    settings.db_path = canonical(settings.db_path)  # type: ignore[arg-type]
+    settings.models_dir = canonical(settings.models_dir)  # type: ignore[arg-type]
     _active_settings = settings
     injected_backend = backend is not None
 

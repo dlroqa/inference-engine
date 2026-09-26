@@ -103,8 +103,7 @@ class StoreLock:
             fh.close()
             if _is_contention(exc):
                 raise StoreLockedError(
-                    f"another engine process already owns this {self.resource} "
-                    f"(lock: {self.path})"
+                    f"another engine process already owns this {self.resource} (lock: {self.path})"
                 ) from None
             raise StoreLockUnavailableError(
                 f"cannot lock the {self.resource} lock file {self.path} ({type(exc).__name__})"
