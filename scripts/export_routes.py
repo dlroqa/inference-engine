@@ -21,6 +21,7 @@ import inspect
 import json
 import sys
 import tempfile
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -49,41 +50,59 @@ def _gate(path: str, module: str, source: str) -> str:
     return "public"
 
 
-def build_inventory() -> list[dict[str, Any]]:
-    from fastapi.routing import APIRoute, APIWebSocketRoute
+def _walk(routes: Iterable[Any], prefix: str = "") -> Iterator[tuple[str, Any]]:
+    """Yield ``(full_path, route)`` for every route, descending into mounts and
+    included routers (duck-typed, so it does not depend on FastAPI's classes)."""
+    for route in routes:
+        path = prefix + getattr(route, "path", "")
+        children = getattr(route, "routes", None)
+        if children and getattr(route, "endpoint", None) is None:
+            yield from _walk(children, path)
+            continue
+        yield path, route
 
+
+def build_inventory() -> list[dict[str, Any]]:
     from engine.config import Settings
     from engine.main import create_app
 
     with tempfile.TemporaryDirectory() as tmp:
         app = create_app(Settings(data_dir=Path(tmp) / "data"))
     rows: list[dict[str, Any]] = []
-    for route in app.routes:
-        if isinstance(route, APIRoute):
-            if not route.include_in_schema:
-                continue
-            source = inspect.getsource(route.endpoint)
-            for method in sorted(route.methods - {"HEAD", "OPTIONS"}):
+    for path, route in _walk(app.router.routes):
+        endpoint = getattr(route, "endpoint", None)
+        if endpoint is None or not getattr(route, "include_in_schema", True):
+            continue
+        module = getattr(endpoint, "__module__", "")
+        if not module.startswith("engine."):
+            continue  # FastAPI's own docs/openapi routes
+        methods = getattr(route, "methods", None)
+        if methods:
+            source = inspect.getsource(endpoint)
+            for method in sorted(set(methods) - {"HEAD", "OPTIONS"}):
                 rows.append(
                     {
                         "method": method,
-                        "path": route.path,
-                        "gate": _gate(route.path, route.endpoint.__module__, source),
-                        "module": route.endpoint.__module__,
-                        "handler": route.endpoint.__name__,
+                        "path": path,
+                        "gate": _gate(path, module, source),
+                        "module": module,
+                        "handler": endpoint.__name__,
                     }
                 )
-        elif isinstance(route, APIWebSocketRoute):
+        elif "websocket" in type(route).__name__.lower():
             rows.append(
                 {
                     "method": "WS",
-                    "path": route.path,
+                    "path": path,
                     "gate": "operator",
-                    "module": route.endpoint.__module__,
-                    "handler": route.endpoint.__name__,
+                    "module": module,
+                    "handler": endpoint.__name__,
                 }
             )
     rows.sort(key=lambda r: (r["path"], r["method"]))
+    if not rows:
+        kinds = sorted({type(r).__name__ for r in app.router.routes})
+        raise SystemExit(f"no engine routes found (top-level route types: {kinds})")
     return rows
 
 
