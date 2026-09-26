@@ -39,6 +39,21 @@ function isMouse(e: React.PointerEvent): boolean {
   return !e.pointerType || e.pointerType === "mouse";
 }
 
+// Routes and dotted handler names wrap only after "/" or ".", never mid-word.
+function Breakable({ text }: { text: string }): JSX.Element {
+  const parts = text.split(/(?<=[/.])/);
+  return (
+    <>
+      {parts.map((p, i) => (
+        <span key={i}>
+          {p}
+          {i < parts.length - 1 && <wbr />}
+        </span>
+      ))}
+    </>
+  );
+}
+
 function callText(entry: WiringEntry): string {
   return entry.client.startsWith("useLive") ? `${entry.client}() hook` : `api.${entry.client}()`;
 }
@@ -49,10 +64,12 @@ function WiredFacts({ entry }: { entry: WiringEntry }): JSX.Element {
     <dl className="wired-facts">
       <dt>Route</dt>
       <dd className="mono">
-        {entry.endpoint.method} {entry.endpoint.path}
+        {entry.endpoint.method} <Breakable text={entry.endpoint.path} />
       </dd>
       <dt>Backend function</dt>
-      <dd className="mono">{route ? `${route.module}.${route.handler}` : "not in the route inventory"}</dd>
+      <dd className="mono">
+        {route ? <Breakable text={`${route.module}.${route.handler}`} /> : "not in the route inventory"}
+      </dd>
       <dt>Access</dt>
       <dd>{route ? (GATE_TEXT[route.gate] ?? route.gate) : "unknown"}</dd>
       <dt>Dashboard call</dt>
@@ -71,7 +88,7 @@ function WiredFacts({ entry }: { entry: WiringEntry }): JSX.Element {
       <dd>{entry.audited ? "Recorded" : "Not recorded"}</dd>
       {entry.killSwitch && (
         <>
-          <dt>Can be switched off by</dt>
+          <dt>Kill switch</dt>
           <dd className="mono">{entry.killSwitch}</dd>
         </>
       )}
@@ -84,7 +101,9 @@ function WiredFacts({ entry }: { entry: WiringEntry }): JSX.Element {
       {entry.docs && (
         <>
           <dt>Docs</dt>
-          <dd className="mono">{entry.docs}</dd>
+          <dd className="mono">
+            <Breakable text={entry.docs} />
+          </dd>
         </>
       )}
     </dl>

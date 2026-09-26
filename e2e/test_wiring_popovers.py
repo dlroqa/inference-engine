@@ -56,6 +56,7 @@ def _shot(page: Page, name: str, trigger: Locator, pop: Locator, engine: Engine)
     page.screenshot(
         path=str(SHOTS / f"{name}.png"),
         clip={"x": x0, "y": y0, "width": x1 - x0, "height": y1 - y0},
+        animations="disabled",
     )
 
 
@@ -148,7 +149,15 @@ def test_touch_tap_opens_and_outside_tap_closes(phone: Page, engine: Engine) -> 
     box = pop.bounding_box()
     assert box and box["x"] >= 0 and box["x"] + box["width"] <= 390
     _shot(phone, "04-touch-no-backend-call", trigger, pop, engine)
-    phone.get_by_role("heading", name="Logs").tap()
+    # A tap on the popover itself keeps it open.
+    pop.tap()
+    expect(pop).to_be_visible()
+    # A tap anywhere outside it closes it. (At phone width the popover may flip
+    # above the button, so the outside point is taken from its real position.)
+    y = box["y"] + box["height"] + 24
+    if y > 844 - 8:
+        y = box["y"] - 24
+    phone.touchscreen.tap(8, y)
     expect(pop).to_be_hidden()
 
 

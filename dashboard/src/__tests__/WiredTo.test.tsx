@@ -1,10 +1,13 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { WiredTo } from "../components/WiredTo";
 import { SUBSYSTEMS, routeFor, wiringFor } from "../lib/wiring";
 
 const LOAD = "How this works: Load model";
+
+// Lets the hover open/close timers run inside act().
+const pause = (ms: number) => act(() => new Promise<void>((r) => setTimeout(r, ms)));
 
 function setup(id: string | string[] = "models.load") {
   render(
@@ -94,13 +97,15 @@ describe("WiredTo popover", () => {
   it("opens on hover, stays open over the popover, and closes after the pointer leaves", async () => {
     const trigger = setup();
     await userEvent.hover(trigger);
-    const pop = await screen.findByRole("group");
+    await pause(200);
+    const pop = screen.getByRole("group");
     await userEvent.hover(pop);
-    await new Promise((r) => setTimeout(r, 300));
+    await pause(300);
     expect(screen.getByRole("group")).toBeInTheDocument();
     await userEvent.unhover(pop);
     await userEvent.hover(screen.getByRole("button", { name: "after" }));
-    await waitFor(() => expect(screen.queryByRole("group")).not.toBeInTheDocument());
+    await pause(300);
+    expect(screen.queryByRole("group")).not.toBeInTheDocument();
   });
 
   it("opens on tap, stays pinned, and closes on a tap outside", async () => {
@@ -108,7 +113,7 @@ describe("WiredTo popover", () => {
     const user = userEvent.setup();
     await user.pointer({ keys: "[TouchA]", target: trigger });
     expect(screen.getByRole("group")).toBeInTheDocument();
-    await new Promise((r) => setTimeout(r, 300));
+    await pause(300);
     expect(screen.getByRole("group")).toBeInTheDocument();
     fireEvent.pointerDown(document.body);
     expect(screen.queryByRole("group")).not.toBeInTheDocument();
@@ -119,7 +124,7 @@ describe("WiredTo popover", () => {
     await userEvent.click(trigger);
     expect(screen.getByRole("group")).toBeInTheDocument();
     await userEvent.unhover(trigger);
-    await new Promise((r) => setTimeout(r, 300));
+    await pause(300);
     expect(screen.getByRole("group")).toBeInTheDocument();
     await userEvent.click(trigger);
     expect(screen.queryByRole("group")).not.toBeInTheDocument();
