@@ -335,7 +335,7 @@ export const WIRING: WiringEntry[] = [
     id: "models.delete",
     label: "Delete model",
     what:
-      "Removes the model's registry entry and stops any download in progress. Models must be unloaded first. Files managed by the engine are deleted; imported files outside the model store remain on disk.",
+      "Removes the model's registry entry. Refused while a download (until its worker has stopped), load or import of the model is in progress; models must be unloaded first. Files managed by the engine are deleted; imported files outside the model store remain on disk.",
     chain: ["model_service", "model_registry", "audit"],
     endpoint: { method: "DELETE", path: "/admin/models/{model_id}" },
     client: "deleteModel",
