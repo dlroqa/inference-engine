@@ -149,3 +149,53 @@ def test_shutdown_finalizes_an_in_flight_grpc_request_before_release(
     assert trace.index("telemetry_stop") < trace.index("store_released"), trace
     assert trace.count("store_released") == 1
     assert _free(db, other_models) and _free(other_db, models)
+
+
+class _Context:
+    """The parts of a servicer context that ``Generate`` uses."""
+
+    def invocation_metadata(self) -> tuple[()]:
+        return ()
+
+    async def abort(self, code: Any, details: str) -> None:
+        raise AssertionError(f"aborted: {code} {details}")
+
+
+def test_edge_stop_finalizes_a_handler_abandoned_at_a_yield(
+    tmp_path: Path, trace: list[str]
+) -> None:
+    """``grpc.aio`` awaits each write outside the handler's generator. A call
+    cancelled during a write leaves the generator suspended at a ``yield``, so
+    the request is not finalized; ``Server.stop()`` does not wait for that, but
+    the edge's stop finalizes it before returning."""
+    backend = FakeBackend(tokens=TOKENS, model_id=MODEL_ID)
+    asyncio.run(backend.load())
+    app = create_app(Settings(data_dir=tmp_path / "data"), backend=backend)
+    request = pb.GenerateRequest(
+        model=MODEL_ID, messages=[pb.Message(role="user", content="hi")], max_tokens=16
+    )
+
+    async def main() -> None:
+        async with app.router.lifespan_context(app):
+            edge, _ = await grpc_server_module.create_grpc_server(app, host="127.0.0.1", port=0)
+            generator = edge.servicer.Generate(request, _Context())  # kept alive, like a frame
+            first = asyncio.Event()
+
+            async def call() -> None:  # drives the handler the way grpc.aio does
+                await generator.__anext__()
+                first.set()
+                await asyncio.Event().wait()  # a write that never completes
+
+            task = asyncio.create_task(call())
+            await asyncio.wait_for(first.wait(), WAIT)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            assert "grpc_finalized" not in trace, "the abandoned call was finalized anyway"
+
+            await asyncio.wait_for(edge.stop(grace=0), WAIT)
+            assert trace.count("grpc_finalized") == 1
+
+            await generator.aclose()  # a later finalization does not finish it twice
+            assert trace.count("grpc_finalized") == 1
+
+    asyncio.run(main())

@@ -105,7 +105,9 @@ use `-f compose.yaml`.)
 - Named volume `engine-data` at `/data` for everything operator-critical.
 - `127.0.0.1:8000:8000` host exposure only.
 - `IE_REQUIRE_AUTH=true`, `IE_REQUIRE_MODEL_READY=true`, `IE_ALLOW_NETWORK_BIND=true`.
-- `stop_grace_period: 40s`, longer than the 30s drain timeout.
+- `stop_grace_period: 40s`, longer than the 30s drain timeout. This is the
+  supervisor's allowance before it kills the process, not a shutdown guarantee
+  (see [Graceful shutdown & drain](#graceful-shutdown--drain)).
 - Secrets from the uncommitted `inference-engine.env`; nothing secret is committed.
 
 ### Volumes, model store, and database
@@ -169,7 +171,22 @@ inference.example.com {
 On `SIGTERM` (`docker compose stop`, a rolling update) the engine **drains**: it
 stops admitting new work (`/readyz` reports not-ready), lets in-flight generations
 finish for up to `drain_timeout_s` (default 30s), then releases the model and exits.
-The Compose `stop_grace_period` (40s) must stay longer than the drain timeout.
+
+**There is no fixed shutdown duration.** Shutdown requests cooperative stopping
+and waits for the current webhook delivery, each download worker, and each gRPC
+request's final usage write to finish, along with their persistence work.
+Network timeouts limit individual blocking operations; they do not guarantee a
+maximum shutdown duration. Several operations, redirects, database and
+filesystem work, and the sequential cleanup stages (gRPC stop, request drain,
+webhook worker, remote workers, telemetry, downloads, model unload) all add to
+the elapsed time.
+
+**Supervisor grace period.** The Compose `stop_grace_period` (40s) is how long
+the supervisor waits before killing the process. Keep it longer than
+`drain_timeout_s`, but that alone does not budget for gRPC, webhook, download,
+persistence and backend cleanup, and a longer grace period is still not a hard
+guarantee. Choose it for your workload. A forced kill can interrupt in-flight
+work; recovery at the next start then applies (see below).
 
 In-flight model downloads are stopped during shutdown too. Shutdown requests
 cancellation of each download and waits until its worker has actually stopped.
@@ -255,9 +272,11 @@ Locks and shutdown:
   other engine instead.
 - Shutdown releases the locks only after the **whole** cleanup sequence has run
   and every known store writer has stopped: download workers (including their
-  threads), and the webhook delivery worker together with its in-flight batch
-  thread. The webhook batch finishes the delivery it is on (bounded by
-  `webhook_delivery_timeout_s`) and leaves the rest pending.
+  threads), the webhook delivery worker together with its in-flight batch
+  thread, and the gRPC server together with every request handler. The webhook
+  batch finishes the delivery it is on and records its outcome, and leaves the
+  rest pending, unsent. `webhook_delivery_timeout_s` limits each network
+  operation of that delivery, not the wait.
   - **Cancellation.** If the shutdown is cancelled, even repeatedly, cleanup is
     not cut short: it runs to the end, the locks are released, and then the
     cancellation is passed on.
@@ -265,14 +284,36 @@ Locks and shutdown:
     first failure is reported. When cancellation and a failure coincide, the
     cancellation wins and the failure is logged
     (`shutdown_failed_while_cancelled`).
-  - **Unproven writers.** If a writer cannot be proven stopped (the cleanup
-    itself was cut short), the engine keeps both locks
-    (`store_ownership_retained`) until the process exits.
+  - **Cut-short cleanup.** If the cleanup task itself is cancelled from
+    inside (not by the caller), shutdown logs `shutdown_incomplete` and raises
+    `ShutdownIncompleteError` rather than reporting success. If the caller was
+    also cancelled, the cancellation wins and the diagnostic is still logged.
+  - **Unproven writers.** If a writer cannot be proven stopped (a gRPC stop
+    failed or was interrupted, or the cleanup was cut short), the engine keeps
+    both locks and logs `store_ownership_retained` with fixed writer names
+    (`grpc`, `webhook_task`, `webhook_thread`, `downloads`, `cleanup`) until the
+    process exits.
+- gRPC: calls get a 5-second grace period and are then cancelled. The gRPC
+  stop counts as done only after the server has stopped **and** every request
+  handler has ended, including its final usage and billing write; a handler
+  left suspended by a cancelled call is finalized first. The grace period
+  expiring, or cancellation being issued, is not treated as proof.
 - Covered writers are the ones the engine starts itself. HTTP requests have
-  already finished when the server runs shutdown. gRPC calls are given a
-  5-second grace period, then cancelled. A generation thread that is still
-  running does not write the store. A supervisor that kills the process ends
-  all of this; recovery at the next start then applies.
+  already finished when the server runs shutdown. A generation thread that is
+  still running does not write the store. A supervisor that kills the process
+  ends all of this; recovery at the next start then applies.
+- **Retained ownership: what to do.** Retention protects a writer that may
+  still be running. Read the shutdown diagnostics (`store_ownership_retained`,
+  `shutdown_step_failed`, `shutdown_incomplete`), then stop the owning process
+  (it exits, or your supervisor stops it) before starting an engine against
+  its database or model directory. The OS releases the locks when that process
+  exits. Do not delete, move or replace lock files, force-unlock them, or start
+  a competing engine as a way to recover.
+- Webhook delivery is at least once, not exactly once. A kill can land after a
+  receiver accepted a delivery but before its success was recorded; restart
+  recovery does not undo external effects, and that delivery is sent again.
+  Receivers should deduplicate on the stable `webhook-id` header (see
+  [webhooks](webhooks.md)).
 
 Requirements and limits:
 

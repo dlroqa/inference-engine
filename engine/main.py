@@ -16,8 +16,9 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, Request, Response
 from fastapi.openapi.utils import get_openapi
@@ -70,6 +71,29 @@ from engine.telemetry.service import Telemetry
 # The active settings for the running app. Set by ``create_app`` so request
 # handlers (e.g. readiness) can access configuration without a DI framework.
 _active_settings: Settings | None = None
+
+
+class ShutdownIncompleteError(RuntimeError):
+    """The shutdown cleanup sequence was cut short (its task was cancelled from
+    inside, not by the caller). Store writers may still be running, so the
+    store's locks are kept until the process exits."""
+
+
+@dataclass
+class _Lifecycle:
+    """What one engine lifespan knows about the store writers it started."""
+
+    webhook_task: asyncio.Task[None] | None = None
+    webhook_worker: DeliveryWorker | None = None
+    # The gRPC edge: never created, owned since before its start was awaited
+    # (a start that fails or is cancelled part-way may already be serving),
+    # stopping (a stop was issued; it may have failed or been interrupted), or
+    # terminated (its stop returned: the server and every handler have ended).
+    grpc: Literal["disabled", "owned", "stopping", "terminated"] = "disabled"
+    cleanup: asyncio.Future[None] | None = None
+    # Set by the cleanup sequence itself once every step has run (some may have
+    # failed). A done cleanup task alone does not mean that.
+    cleanup_completed: bool = False
 
 
 def get_settings() -> Settings:
@@ -171,10 +195,6 @@ def create_app(
     model_registry = ModelRegistry(settings.db_path)
     model_service = ModelService(settings, model_registry)
 
-    # Store writers started by the lifespan, and its cleanup task, for the
-    # release decision (see _live_writers).
-    lifecycle: dict[str, Any] = {}
-
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # One serving engine per writable store (its database AND its managed
@@ -186,8 +206,9 @@ def create_app(
         ownership = StoreOwnership(settings.db_path, settings.models_dir)  # type: ignore[arg-type]
         ownership.acquire()
         log_collector.persist = True
+        state = _Lifecycle()
         try:
-            async with _serve(app):
+            async with _serve(app, state):
                 yield
         finally:
             # Ownership outlives every worker that can write the store: drain the
@@ -197,7 +218,7 @@ def create_app(
                 await _drain_owned_work()
             finally:
                 logging.getLogger().removeHandler(log_collector)  # on every path
-                live = _live_writers()
+                live = _live_writers(state)
                 if live:
                     # A store writer may still be running (cleanup could not
                     # finish): fail closed and keep both locks; the OS releases
@@ -210,19 +231,19 @@ def create_app(
                     log_collector.persist = False
                     ownership.release()
 
-    def _live_writers() -> list[str]:
-        """Every known store writer that has not been proven stopped."""
+    def _live_writers(state: _Lifecycle) -> list[str]:
+        """Every known store writer that has not been proven stopped (fixed names)."""
         live = []
         if model_service.owns_work():
             live.append("downloads")
-        webhook_task = lifecycle.get("webhook_task")
-        if webhook_task is not None and not webhook_task.done():
+        if state.webhook_task is not None and not state.webhook_task.done():
             live.append("webhook_task")
-        webhook_worker = lifecycle.get("webhook_worker")
-        if webhook_worker is not None and not webhook_worker.idle:
+        if state.webhook_worker is not None and not state.webhook_worker.idle:
             live.append("webhook_thread")
-        cleanup = lifecycle.get("cleanup")
-        if cleanup is not None and not cleanup.done():
+        if state.grpc not in ("disabled", "terminated"):
+            live.append("grpc")
+        if state.cleanup is not None and not state.cleanup_completed:
+            # Cut short: later steps (and their writers) may not have been stopped.
             live.append("cleanup")
         return live
 
@@ -261,7 +282,7 @@ def create_app(
             raise asyncio.CancelledError
 
     @asynccontextmanager
-    async def _serve(app: FastAPI) -> AsyncIterator[None]:
+    async def _serve(app: FastAPI, state: _Lifecycle) -> AsyncIterator[None]:
         log.info(
             "startup",
             extra={
@@ -361,8 +382,8 @@ def create_app(
                     worker.run_loop(settings.webhook_poll_interval_s)
                 )
                 webhook_worker = worker
-                lifecycle["webhook_task"] = webhook_task
-                lifecycle["webhook_worker"] = worker
+                state.webhook_task = webhook_task
+                state.webhook_worker = worker
                 log.info("webhook_worker_started")
 
             # Start the metrics sampler once the loop is running (skip if disabled).
@@ -381,6 +402,7 @@ def create_app(
                     tls_cert=settings.grpc_tls_cert,
                     tls_key=settings.grpc_tls_key,
                 )
+                state.grpc = "owned"  # before the await: a partial start must be stopped
                 await grpc_server.start()
                 app.state.grpc_port = bound
                 log.info(
@@ -410,9 +432,15 @@ def create_app(
                     )
 
             async def stop_grpc() -> None:
-                if grpc_server is not None:
-                    await grpc_server.stop(grace=5.0)
-                    log.info("grpc_stopped")
+                if grpc_server is None:
+                    return
+                state.grpc = "stopping"
+                # Returns only once the server and every request handler, including
+                # its final usage write, have ended (GrpcEdge.stop). If it fails or
+                # is interrupted, termination stays unproven and the store owned.
+                await grpc_server.stop(grace=5.0)
+                state.grpc = "terminated"
+                log.info("grpc_stopped")
 
             async def drain_requests() -> None:
                 # Graceful drain (Block 9): stop admitting new work and let bounded
@@ -464,18 +492,30 @@ def create_app(
                 await step("model_service", model_service.shutdown)
                 logging.getLogger().removeHandler(log_collector)
                 await step("backend", unload_backend)
+                state.cleanup_completed = True  # every step ran; some may have failed
                 log.info("shutdown")
                 if errors:
                     raise errors[0]
 
             cleanup = asyncio.ensure_future(teardown())
-            lifecycle["cleanup"] = cleanup  # retained until the lifespan ends
+            state.cleanup = cleanup  # retained until the lifespan ends
             caller_cancelled = await _complete(cleanup)
-            failure = None if cleanup.cancelled() else cleanup.exception()
-            if cleanup.cancelled():
-                log.warning("shutdown_incomplete", extra={"reason": "cleanup_cancelled"})
+            # The cleanup task cancelled from inside (not via this caller, whose
+            # await is shielded): the sequence was cut short.
+            incomplete = cleanup.cancelled()
+            failure = None if incomplete else cleanup.exception()
+            if incomplete:
+                log.warning(
+                    "shutdown_incomplete",
+                    extra={
+                        "reason": "cleanup_cancelled",
+                        "error_type": type(errors[0]).__name__ if errors else None,
+                    },
+                )
             # Precedence: the caller's cancellation wins (it is re-raised after
-            # cleanup); an ordinary cleanup failure is then only logged.
+            # cleanup); an ordinary cleanup failure is then only logged. Without
+            # it, a cut-short cleanup is reported as ShutdownIncompleteError, and
+            # otherwise the first cleanup failure is raised.
             if caller_cancelled:
                 if failure is not None:
                     log.warning(
@@ -483,6 +523,8 @@ def create_app(
                         extra={"error_type": type(failure).__name__},
                     )
                 raise asyncio.CancelledError
+            if incomplete:
+                raise ShutdownIncompleteError("shutdown cleanup was cut short")
             if failure is not None:
                 raise failure
 

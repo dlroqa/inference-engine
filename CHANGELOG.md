@@ -74,8 +74,24 @@ release notes and refuses to publish without it (see `docs/releasing.md`).
     cleanup failure in the same shutdown is logged
     (`shutdown_failed_while_cancelled`). Otherwise, the first failure is raised.
   - If a writer cannot be proven stopped, the locks are kept
-    (`store_ownership_retained`) until the process exits.
+    (`store_ownership_retained`, with fixed writer names) until the process
+    exits.
   - This also applies when startup fails after background tasks have started.
+  - The gRPC server is a tracked writer. Its stop counts as done only after
+    the server has stopped and every request handler has ended, including its
+    final usage write; a handler left suspended by a cancelled call is
+    finalized first. A gRPC stop that fails or is interrupted, or a start that
+    fails part-way and cannot be stopped, keeps both locks (`grpc`).
+    Previously a failed gRPC stop could release the store while a request
+    could still record usage.
+  - A cleanup sequence cut short from inside (its task cancelled, not the
+    caller) now raises `ShutdownIncompleteError` and keeps the locks, instead
+    of returning as if shutdown had succeeded. A caller's cancellation still
+    takes precedence.
+  - Shutdown has no fixed maximum duration: network timeouts limit individual
+    operations, and the Compose `stop_grace_period` is a supervisor allowance.
+    Documentation now says so, and describes what to do about retained locks
+    and why webhook delivery is at least once (see `docs/deployment.md`).
 - New model records no longer keep any part of a URL download's address.
   - `source_ref` is `address not stored`.
   - The file name is generated (`download-<random>.gguf`) unless a safe

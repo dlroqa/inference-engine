@@ -184,9 +184,11 @@ class DeliveryWorker:
 
         Cancelling this task does not abandon a batch thread that is writing
         the store: the worker is asked to stop, the thread finishes the delivery
-        it is on (bounded by the delivery timeout) and returns, and only then
-        does the task end, still cancelled. Repeated cancellation does not cut
-        that wait short.
+        it is on, records its outcome and returns, and only then does the task
+        end, still cancelled. Repeated cancellation does not cut that wait
+        short. The delivery timeout limits each blocking network operation, not
+        this wait: redirects and the database writes add to it, so it has no
+        fixed maximum duration.
         """
         loop = asyncio.get_running_loop()
         while not self._stop.is_set():

@@ -147,7 +147,8 @@ is a warning threshold, not a limit: after it, the engine logs
 `model_download_shutdown_waiting` and keeps waiting. It never abandons a worker
 that could still change model files. How long this takes depends on the worker.
 It is usually one chunk. The 30-second network timeout applies to each blocking
-read, not to the whole shutdown, and checksumming stops between chunks. These
+read, not to the whole shutdown, and checksumming stops between chunks; no
+timeout gives shutdown a fixed maximum duration. These
 guarantees hold only while the process is allowed to finish. A supervisor that
 kills the process first can leave a `.part` file, or a promoted file whose
 metadata was not recorded. The next engine start marks such a download `error`
