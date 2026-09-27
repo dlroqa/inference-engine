@@ -253,10 +253,26 @@ Locks and shutdown:
   running.
 - Do not delete, move or replace a lock file to get around a refusal. Stop the
   other engine instead.
-- On a normal shutdown, the locks are released only after every download
-  worker has stopped. This still holds if another cleanup step fails or the
-  shutdown is interrupted. If a worker is still running when shutdown is cut
-  short, the locks stay held until the process exits.
+- Shutdown releases the locks only after the **whole** cleanup sequence has run
+  and every known store writer has stopped: download workers (including their
+  threads), and the webhook delivery worker together with its in-flight batch
+  thread. The webhook batch finishes the delivery it is on (bounded by
+  `webhook_delivery_timeout_s`) and leaves the rest pending.
+  - **Cancellation.** If the shutdown is cancelled, even repeatedly, cleanup is
+    not cut short: it runs to the end, the locks are released, and then the
+    cancellation is passed on.
+  - **Failures.** If a cleanup step fails, the later steps still run and the
+    first failure is reported. When cancellation and a failure coincide, the
+    cancellation wins and the failure is logged
+    (`shutdown_failed_while_cancelled`).
+  - **Unproven writers.** If a writer cannot be proven stopped (the cleanup
+    itself was cut short), the engine keeps both locks
+    (`store_ownership_retained`) until the process exits.
+- Covered writers are the ones the engine starts itself. HTTP requests have
+  already finished when the server runs shutdown. gRPC calls are given a
+  5-second grace period, then cancelled. A generation thread that is still
+  running does not write the store. A supervisor that kills the process ends
+  all of this; recovery at the next start then applies.
 
 Requirements and limits:
 

@@ -62,11 +62,20 @@ release notes and refuses to publish without it (see `docs/releasing.md`).
   both resolved to canonical paths and taken database-first. A second engine
   sharing either resource refuses to start (`StoreLockedError`, naming the
   resource) and writes nothing to the store. Other lock failures raise
-  `StoreLockUnavailableError`. The locks are released only after download
-  workers have stopped, even if another cleanup step fails or shutdown is
-  cancelled; the OS releases them on any exit. Shutdown cleanup now runs every
-  step even when an earlier one fails (the first error is re-raised), and also
-  runs when startup fails after background tasks have started.
+  `StoreLockUnavailableError`. The OS releases the locks on any exit.
+- Shutdown runs its whole cleanup sequence even when it is cancelled
+  (repeatedly), and even when a step fails: the later steps still run.
+  - It releases the store locks only after every known store writer has
+    stopped. That covers download workers and the webhook delivery worker,
+    whose in-flight batch thread is now awaited: it finishes its current
+    delivery and leaves the rest pending. Previously, cancelling the webhook
+    task left that thread writing.
+  - Precedence: a cancellation is re-raised after cleanup and release, and a
+    cleanup failure in the same shutdown is logged
+    (`shutdown_failed_while_cancelled`). Otherwise, the first failure is raised.
+  - If a writer cannot be proven stopped, the locks are kept
+    (`store_ownership_retained`) until the process exits.
+  - This also applies when startup fails after background tasks have started.
 - New model records no longer keep any part of a URL download's address.
   - `source_ref` is `address not stored`.
   - The file name is generated (`download-<random>.gguf`) unless a safe

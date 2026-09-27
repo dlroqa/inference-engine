@@ -423,10 +423,18 @@ def create_app(
                 log.info("drain_complete", extra={"drained": drained})
 
             async def stop_task(task: asyncio.Task[None] | None) -> None:
-                if task is not None:
-                    task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await task
+                if task is None:
+                    return
+                current = asyncio.current_task()
+                before = current.cancelling() if current is not None else 0
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    # The child's own (expected) cancellation is swallowed; a
+                    # cancellation of this cleanup itself is not.
+                    if current is not None and current.cancelling() > before:
+                        raise
 
             async def stop_webhooks() -> None:
                 # Ask the worker to stop first (its batch thread skips the rest of

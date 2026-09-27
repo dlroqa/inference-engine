@@ -371,14 +371,16 @@ def test_ownership_is_retained_while_a_writer_outlives_cleanup(harness: Harness)
     """Fail closed: if cleanup itself is cut short while the writer runs, the
     store stays owned (and says so) instead of being released."""
     h = harness
+    h.gate_drain = True
 
     async def main() -> Any:
         app, stop, lifespan = _start(h)
         try:
             assert await _wait(h.batch_started)
             stop.set()
-            assert await _wait(h.stop_requested)
-            # Cancel the cleanup task itself (as a loop teardown would).
+            assert await _wait(h.drain_entered)
+            # Cut the cleanup task itself short (as a loop teardown would) before
+            # it reaches the webhook worker, which is still writing.
             [cleanup] = [
                 t
                 for t in asyncio.all_tasks()
