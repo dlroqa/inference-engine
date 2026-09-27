@@ -27,6 +27,8 @@ on:
       - deploy/**
       - scripts/release.py
       - scripts/release_image_e2e.py
+      - scripts/release_image_ownership.py
+      - tests/support/download_child.py
       - .github/workflows/release.yml
       - .github/workflows/ci.yml
 
@@ -205,6 +207,15 @@ jobs:
             --expect-version "$VERSION" --expect-commit "$COMMIT" --expect-built-at "$CREATED" \
             | tee e2e.txt
           { echo "### Image E2E"; echo '```'; cat e2e.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Image-level store ownership + interrupted-download recovery
+        # Shared model volume conflict, owner kill + reacquisition, and downloads
+        # killed before/after the final rename (the repository's test child runs
+        # read-only mounted against the image's installed engine). Test-only.
+        timeout-minutes: 15
+        run: |
+          python3 scripts/release_image_ownership.py --image "$CANDIDATE" | tee ownership.txt
+          { echo "### Image ownership E2E"; echo '```'; cat ownership.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Generate SBOM from the candidate image
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2

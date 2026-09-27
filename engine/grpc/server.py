@@ -14,8 +14,9 @@ deferred until benchmarked (see docs/grpc.md).
 
 from __future__ import annotations
 
+import asyncio
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -98,11 +99,72 @@ def _build_request(request: pb.GenerateRequest, request_id: str) -> tuple[Genera
     return GenerationRequest(prompt=request.prompt, **common), request.prompt
 
 
+class _Handler:
+    """One ``Generate`` call: the task running it and its response stream."""
+
+    def __init__(self, task: asyncio.Task[Any] | None) -> None:
+        self.task = task
+        self.stream: AsyncGenerator[Any, None] | None = None
+        self._lock = asyncio.Lock()
+
+    async def finish(self) -> None:
+        """Closes the response stream, which finalizes the request if it has not
+        been finalized yet (an idle, finished stream closes as a no-op)."""
+        async with self._lock:
+            if self.stream is not None:
+                await self.stream.aclose()
+
+
+class _Handlers:
+    """Tracks every live ``Generate`` handler until its final usage write is done.
+
+    ``grpc.aio`` iterates a streaming handler from its own per-call task and
+    awaits each write outside the generator. A call cancelled during a write
+    leaves the generator suspended at a ``yield``: nothing finalizes it until
+    garbage collection does, and ``Server.stop()`` does not wait for that.
+    """
+
+    def __init__(self) -> None:
+        self._open: set[_Handler] = set()
+
+    def open(self) -> _Handler:
+        handler = _Handler(asyncio.current_task())
+        self._open.add(handler)
+        return handler
+
+    async def close(self, handler: _Handler) -> None:
+        # Stop tracking only once its stream has closed (and so finalized the
+        # request). If closing is interrupted, the handler stays tracked, and
+        # ``close_all`` closes it; closing an already-closed stream is a no-op,
+        # so the request is never finalized twice.
+        await handler.finish()
+        self._open.discard(handler)
+
+    async def close_all(self) -> None:
+        """Returns once every tracked handler has ended and been finalized.
+
+        Call after the server has stopped (no new calls). Waits for each
+        handler's task without cancelling it again, then closes any stream it
+        abandoned. There is no time limit; a caller that is cancelled here has
+        not established that the handlers ended.
+        """
+        while self._open:
+            handlers = list(self._open)
+            current = asyncio.current_task()
+            tasks = [h.task for h in handlers if h.task is not None]
+            pending = {t for t in tasks if t is not current and not t.done()}
+            if pending:
+                await asyncio.wait(pending)
+            for handler in handlers:
+                await self.close(handler)
+
+
 class InferenceServicer(pb_grpc.InferenceServiceServicer):
     """Implements InferenceService against the shared serving pipeline."""
 
     def __init__(self, app: object) -> None:
         self._app = app
+        self.handlers = _Handlers()
 
     async def ListModels(
         self, request: pb.ListModelsRequest, context: grpc.aio.ServicerContext
@@ -112,6 +174,16 @@ class InferenceServicer(pb_grpc.InferenceServiceServicer):
 
     async def Generate(
         self, request: pb.GenerateRequest, context: grpc.aio.ServicerContext
+    ) -> AsyncIterator[pb.GenerateChunk]:
+        handler = self.handlers.open()
+        try:
+            async for chunk in self._generate(request, context, handler):
+                yield chunk
+        finally:
+            await self.handlers.close(handler)
+
+    async def _generate(
+        self, request: pb.GenerateRequest, context: grpc.aio.ServicerContext, handler: _Handler
     ) -> AsyncIterator[pb.GenerateChunk]:
         request_id = f"grpc-{uuid.uuid4().hex}"
         model = request.model
@@ -154,13 +226,15 @@ class InferenceServicer(pb_grpc.InferenceServiceServicer):
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
             return
 
-        async for chunk in _stream(served, request_id, context):
+        stream = _stream(served, request_id, context)
+        handler.stream = stream  # from here, closing it finalizes the request
+        async for chunk in stream:
             yield chunk
 
 
 async def _stream(
     served: Served, request_id: str, context: grpc.aio.ServicerContext
-) -> AsyncIterator[pb.GenerateChunk]:
+) -> AsyncGenerator[pb.GenerateChunk, None]:
     """Stream token deltas, then a terminal chunk; clean up on every exit path."""
     error: BaseException | None = None
     failed = False
@@ -187,11 +261,57 @@ async def _stream(
 
 
 async def _drain_and_finish(served: Served, *, error: BaseException | None) -> Any:
+    """Closes the generation stream, then finalizes the request exactly once.
+
+    Closing is best-effort: an ordinary close failure is ignored. If the close
+    is interrupted (cancellation), the request is still finalized and the
+    interruption then propagates; a finalizer failure at that point is logged
+    by type only, so the cancellation keeps precedence. Otherwise a finalizer
+    failure propagates. ``finish_generation`` is never retried (its accounting
+    is not idempotent).
+    """
     try:
         await served.stream.aclose()
-    except Exception:  # pragma: no cover - best-effort teardown
+    except Exception:  # best-effort teardown; the request is still finalized
         pass
-    return finish_generation(served, error=error)
+    except BaseException:
+        try:
+            finish_generation(served, error=error)
+        except Exception as exc:
+            _log.warning(
+                "grpc_request_finalize_failed",
+                extra={"error_type": type(exc).__name__, "interrupted": True},
+            )
+        raise
+    try:
+        return finish_generation(served, error=error)
+    except Exception as exc:
+        _log.warning(
+            "grpc_request_finalize_failed",
+            extra={"error_type": type(exc).__name__, "interrupted": False},
+        )
+        raise
+
+
+class GrpcEdge:
+    """The gRPC server and its request handlers, stopped as one unit."""
+
+    def __init__(self, server: grpc.aio.Server, servicer: InferenceServicer) -> None:
+        self.server = server
+        self.servicer = servicer
+
+    async def start(self) -> None:
+        await self.server.start()
+
+    async def stop(self, grace: float | None) -> None:
+        """Stops the server, then waits until every handler has ended.
+
+        ``Server.stop`` returns once the gRPC core has no live calls, which does
+        not prove that a handler's final usage write has run. This returns only
+        after it has; if it raises or is cancelled, that is not established.
+        """
+        await self.server.stop(grace)
+        await self.servicer.handlers.close_all()
 
 
 async def create_grpc_server(
@@ -201,14 +321,15 @@ async def create_grpc_server(
     port: int,
     tls_cert: Path | None = None,
     tls_key: Path | None = None,
-) -> tuple[grpc.aio.Server, int]:
+) -> tuple[GrpcEdge, int]:
     """Build (not start) a gRPC server bound to host:port; return it and the port.
 
     With both a cert and key an mTLS-ready secure port is used; otherwise an
     insecure port (front it with a TLS-terminating proxy — see docs/grpc.md).
     """
     server = grpc.aio.server()
-    pb_grpc.add_InferenceServiceServicer_to_server(InferenceServicer(app), server)
+    servicer = InferenceServicer(app)
+    pb_grpc.add_InferenceServiceServicer_to_server(servicer, server)
     address = f"{host}:{port}"
     if tls_cert and tls_key:
         creds = grpc.ssl_server_credentials(
@@ -217,4 +338,4 @@ async def create_grpc_server(
         bound = server.add_secure_port(address, creds)
     else:
         bound = server.add_insecure_port(address)
-    return server, bound
+    return GrpcEdge(server, servicer), bound

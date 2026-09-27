@@ -134,6 +134,11 @@ the release unless `deploy/vulnerability-exceptions.json` lists it with `id`,
 the release too, and every applied exception is printed in the release notes.
 Keep exceptions short-lived; prefer rebuilding on a patched base image.
 
+Passing the gate means no unexcepted critical finding, not that the image is
+free of vulnerabilities: High, Medium, Low, Negligible and Unknown findings are
+counted in the gate's summary table but do not fail it, and they need their own
+triage. The SBOM is an inventory, not a security result.
+
 ## Verifying a published release
 
 ```bash

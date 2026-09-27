@@ -37,7 +37,7 @@ services:
       # from the dashboard Models page (stored in /data/models on the volume
       # above) or mount an existing host directory of models:
       # - /srv/models:/data/models
-    stop_grace_period: 40s            # > IE_DRAIN_TIMEOUT_S so in-flight work drains
+    stop_grace_period: 40s            # > IE_DRAIN_TIMEOUT_S; a kill allowance, not a shutdown bound
 
 volumes:
   engine-data:

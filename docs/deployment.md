@@ -105,7 +105,9 @@ use `-f compose.yaml`.)
 - Named volume `engine-data` at `/data` for everything operator-critical.
 - `127.0.0.1:8000:8000` host exposure only.
 - `IE_REQUIRE_AUTH=true`, `IE_REQUIRE_MODEL_READY=true`, `IE_ALLOW_NETWORK_BIND=true`.
-- `stop_grace_period: 40s`, longer than the 30s drain timeout.
+- `stop_grace_period: 40s`, longer than the 30s drain timeout. This is the
+  supervisor's allowance before it kills the process, not a shutdown guarantee
+  (see [Graceful shutdown & drain](#graceful-shutdown--drain)).
 - Secrets from the uncommitted `inference-engine.env`; nothing secret is committed.
 
 ### Volumes, model store, and database
@@ -169,7 +171,22 @@ inference.example.com {
 On `SIGTERM` (`docker compose stop`, a rolling update) the engine **drains**: it
 stops admitting new work (`/readyz` reports not-ready), lets in-flight generations
 finish for up to `drain_timeout_s` (default 30s), then releases the model and exits.
-The Compose `stop_grace_period` (40s) must stay longer than the drain timeout.
+
+**There is no fixed shutdown duration.** Shutdown requests cooperative stopping
+and waits for the current webhook delivery, each download worker, and each gRPC
+request's final usage write to finish, along with their persistence work.
+Network timeouts limit individual blocking operations; they do not guarantee a
+maximum shutdown duration. Several operations, redirects, database and
+filesystem work, and the sequential cleanup stages (gRPC stop, request drain,
+webhook worker, remote workers, telemetry, downloads, model unload) all add to
+the elapsed time.
+
+**Supervisor grace period.** The Compose `stop_grace_period` (40s) is how long
+the supervisor waits before killing the process. Keep it longer than
+`drain_timeout_s`, but that alone does not budget for gRPC, webhook, download,
+persistence and backend cleanup, and a longer grace period is still not a hard
+guarantee. Choose it for your workload. A forced kill can interrupt in-flight
+work; recovery at the next start then applies (see below).
 
 In-flight model downloads are stopped during shutdown too. Shutdown requests
 cancellation of each download and waits until its worker has actually stopped.
@@ -197,15 +214,132 @@ download had got:
   metadata probe or its registry update was unfinished. There is then no
   `.part` file.
 
-Either way, the registry can still say `downloading` for a model with no worker,
-and nothing reconciles this automatically. `POST /admin/models/{id}/cancel`
-answers `409 model_cancel_not_accepted` for such a record. Starting the same
-download again is refused while the record exists, because the file name is
-taken. To recover, delete the record with `DELETE /admin/models/{id}`, which
-needs model management enabled. A record with no running worker is not
-"busy", so the delete is allowed. The dashboard does not offer Delete for a row
-that says downloading. Deleting removes the engine-managed model file and its
-`.part` file, if present. Then download again.
+Either way, the killed process's registry row still says `downloading`. On the
+next start, before admitting any model operation, the engine marks every such
+row `error` with a fixed message: "download interrupted: the engine stopped
+before it finished. Delete this model (which removes any file it kept) and
+download it again." It logs `model_download_interrupted` with a fixed label for
+the files it found (`partial`, `promoted`, `both` or `neither`). Recovery is
+deliberately conservative:
+
+- Kept files are not changed or deleted, and links are not followed.
+- A file is never trusted: nothing is marked ready or loaded, and there is no
+  automatic resume.
+- The update is conditional, so later starts change nothing, and rows that had
+  already finished are never touched.
+- If the database update fails, startup fails rather than claiming recovery.
+
+To recover, delete the model (dashboard Delete or `DELETE /admin/models/{id}`,
+which needs model management enabled). This removes the engine-managed file
+and `.part` file it kept. Then download it again.
+
+**One engine per writable store.** A serving engine (which can serve any
+number of clients) exclusively owns two things: its **database** and its
+**managed model directory** (`models_dir`, `/data/models` by default). Recovery
+and model operations are only correct if no other engine writes either one. For
+its whole lifetime the engine holds two exclusive, non-blocking OS locks:
+
+- `<database>.lock`, next to the database (`inference_engine.db.lock` by
+  default);
+- `.engine-model-store.lock`, inside the model directory. Engines that reach the
+  same directory through different paths or container mount points contend on
+  this same file.
+
+Both paths are resolved to canonical absolute paths first (relative paths,
+`..` and symlinked directories). The database lock is taken first and released
+last. A second engine that shares either resource refuses to start, with
+`StoreLockedError` naming the resource: "another engine process already owns
+this database" or "... this model directory". It writes nothing to that store,
+not even log rows. A lock file that cannot be opened or locked (permissions, a
+filesystem without lock support) fails startup with
+`StoreLockUnavailableError` instead. The engine user needs write access to
+both lock files.
+
+| Arrangement | Supported |
+| --- | --- |
+| One engine serving many clients | Yes: one exclusively owned store |
+| Several engines, each with its own database and model directory | Yes |
+| Several engines sharing a database or a writable model directory | No: the second refuses to start |
+| Shared read-only model assets | Not in this version (see `docs/rfcs/shared-read-only-model-assets.md`) |
+
+Locks and shutdown:
+
+- The OS releases both locks when the process exits, however it exits
+  (including a forced kill). The lock files stay behind, unlocked. That is
+  normal: they are reused, never cleaned up, and do not mean another engine is
+  running.
+- Do not delete, move or replace a lock file to get around a refusal. Stop the
+  other engine instead.
+- Shutdown releases the locks only after the **whole** cleanup sequence has run
+  and every known store writer has stopped: download workers (including their
+  threads), the webhook delivery worker together with its in-flight batch
+  thread, and the gRPC server together with every request handler. The webhook
+  batch finishes the delivery it is on and records its outcome, and leaves the
+  rest pending, unsent. `webhook_delivery_timeout_s` limits each network
+  operation of that delivery, not the wait.
+  - **Cancellation.** If the shutdown is cancelled, even repeatedly, cleanup is
+    not cut short: it runs to the end, the locks are released, and then the
+    cancellation is passed on.
+  - **Failures.** If a cleanup step fails, the later steps still run and the
+    first failure is reported. When cancellation and a failure coincide, the
+    cancellation wins and the failure is logged
+    (`shutdown_failed_while_cancelled`).
+  - **Cut-short cleanup.** If the cleanup task itself is cancelled from
+    inside (not by the caller), shutdown logs `shutdown_incomplete` and raises
+    `ShutdownIncompleteError` rather than reporting success. If the caller was
+    also cancelled, the cancellation wins and the diagnostic is still logged.
+  - **Unproven writers.** If a writer cannot be proven stopped (a gRPC stop
+    failed or was interrupted, or the cleanup was cut short), the engine keeps
+    both locks and logs `store_ownership_retained` with fixed writer names
+    (`grpc`, `webhook_task`, `webhook_thread`, `downloads`, `cleanup`) until the
+    process exits.
+- gRPC: calls get a 5-second grace period and are then cancelled. The gRPC
+  stop counts as done only after the server has stopped **and** every request
+  handler has ended, including its finalization; a handler left suspended by a
+  cancelled call is finalized first. The grace period expiring, or
+  cancellation being issued, is not treated as proof.
+- Each gRPC request is finalized exactly once (capacity released, counters,
+  route metrics and its usage record), also when a cancellation interrupts the
+  closing of its stream; the cancellation then still propagates. Finalization
+  runs once, but a database failure can still prevent the usage record from
+  being written: that failure is logged (`grpc_request_finalize_failed`, by
+  type) and never retried, since retrying could count the request twice.
+- Covered writers are the ones the engine starts itself. HTTP requests have
+  already finished when the server runs shutdown. A generation thread that is
+  still running does not write the store. A supervisor that kills the process
+  ends all of this; recovery at the next start then applies.
+- **Retained ownership: what to do.** Retention protects a writer that may
+  still be running. Read the shutdown diagnostics (`store_ownership_retained`,
+  `shutdown_step_failed`, `shutdown_incomplete`), then stop the owning process
+  (it exits, or your supervisor stops it) before starting an engine against
+  its database or model directory. The OS releases the locks when that process
+  exits. Do not delete, move or replace lock files, force-unlock them, or start
+  a competing engine as a way to recover.
+- Webhook delivery is at least once, not exactly once. A kill can land after a
+  receiver accepted a delivery but before its success was recorded; restart
+  recovery does not undo external effects, and that delivery is sent again.
+  Receivers should deduplicate on the stable `webhook-id` header (see
+  [webhooks](webhooks.md)).
+
+Requirements and limits:
+
+- Use distinct, non-overlapping stores. Do not nest one store inside another,
+  do not import files across stores, and do not create hard-link aliases of a
+  database.
+- Keep the directory configuration trusted and stable. An administrator
+  replacing lock files, or hostile path changes, are not defended against.
+- The locks are qualified on local filesystems and Docker named volumes: the
+  portable tests on GitHub-hosted Linux, macOS and Windows runners (one
+  architecture each, as the CI runner inventory reports), and the image test
+  on Linux x86-64. Other native targets are not qualified by this. Exclusion
+  across hosts on NFS, SMB, FUSE or object-store mounts is not promised.
+- The locks are advisory. They coordinate engines of this version, not external
+  tools or older releases that do not take the model-directory lock. Stop every
+  old engine before rolling out this version.
+- Run offline maintenance with all engines stopped. Maintenance commands that
+  open the database directly, such as backups, do not take these locks.
+
+Scale out with separate stores (or remote workers), not by sharing one.
 
 ## Readiness & liveness
 

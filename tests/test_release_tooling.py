@@ -560,6 +560,8 @@ RELEASE_INPUT_PATHS = {
     "deploy/**",
     "scripts/release.py",
     "scripts/release_image_e2e.py",
+    "scripts/release_image_ownership.py",
+    "tests/support/download_child.py",
     ".github/workflows/release.yml",
     ".github/workflows/ci.yml",
 }
@@ -634,6 +636,14 @@ def test_image_e2e_is_given_the_candidate_metadata() -> None:
         '--expect-built-at "$CREATED"',
     ):
         assert flag in step["run"]
+
+
+def test_image_ownership_e2e_runs_on_the_candidate_image() -> None:
+    steps = _steps("candidate")
+    step = next(st for st in steps if "release_image_ownership.py" in st.get("run", ""))
+    assert '--image "$CANDIDATE"' in step["run"]
+    e2e = _step_index(steps, lambda st: "release_image_e2e.py" in st.get("run", ""))
+    assert steps.index(step) > e2e  # after the main image E2E, on the same candidate
 
 
 def test_publish_verifies_downloaded_archive_before_push_or_attest() -> None:

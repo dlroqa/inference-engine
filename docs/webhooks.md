@@ -57,6 +57,15 @@ due deliveries:
 The worker runs off the event loop (a worker thread), so a slow endpoint never
 stalls request serving.
 
+**Shutdown and at-least-once delivery.** On shutdown the worker is asked to
+stop: the batch finishes the delivery it is on and records its outcome, and the
+remaining due deliveries stay `pending`, unsent, for the next start.
+`webhook_delivery_timeout_s` limits each network operation, not how long that
+takes. Delivery is at least once, not exactly once: if the process is killed
+after a receiver accepted a delivery but before its success was recorded, the
+delivery is sent again after restart. Each delivery keeps the same
+`webhook-id` across attempts, so receivers should deduplicate on it.
+
 ## Signature verification (receiver side)
 
 Headers: `webhook-id`, `webhook-timestamp`, `webhook-signature`. Compute

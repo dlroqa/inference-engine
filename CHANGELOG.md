@@ -49,6 +49,56 @@ release notes and refuses to publish without it (see `docs/releasing.md`).
     grace period it logs `model_download_shutdown_waiting` and keeps waiting
     rather than abandoning the worker, so shutdown can take longer while a
     download is in flight (see `docs/deployment.md`).
+- Downloads left running by a killed engine are recovered at the next start.
+  Before admitting model operations, the engine marks each `downloading` or
+  `verifying` row `error` with a fixed "download interrupted" message and logs
+  `model_download_interrupted` with a fixed files label. Files are kept as
+  found, nothing is marked ready, the update is conditional (a repeated start
+  changes nothing), and a database failure fails startup. Delete the model,
+  then download again.
+- A serving engine now exclusively owns its writable store: its database and
+  its managed model directory. It holds two OS locks for its lifetime:
+  `<database>.lock` and `.engine-model-store.lock` inside the model directory,
+  both resolved to canonical paths and taken database-first. A second engine
+  sharing either resource refuses to start (`StoreLockedError`, naming the
+  resource) and writes nothing to the store. Other lock failures raise
+  `StoreLockUnavailableError`. The OS releases the locks on any exit.
+- Shutdown runs its whole cleanup sequence even when it is cancelled
+  (repeatedly), and even when a step fails: the later steps still run.
+  - It releases the store locks only after every known store writer has
+    stopped. That covers download workers and the webhook delivery worker,
+    whose in-flight batch thread is now awaited: it finishes its current
+    delivery and leaves the rest pending. Previously, cancelling the webhook
+    task left that thread writing.
+  - Precedence: a cancellation is re-raised after cleanup and release, and a
+    cleanup failure in the same shutdown is logged
+    (`shutdown_failed_while_cancelled`). Otherwise, the first failure is raised.
+  - If a writer cannot be proven stopped, the locks are kept
+    (`store_ownership_retained`, with fixed writer names) until the process
+    exits.
+  - This also applies when startup fails after background tasks have started.
+  - The gRPC server is a tracked writer. Its stop counts as done only after
+    the server has stopped and every request handler has ended, including its
+    final usage write; a handler left suspended by a cancelled call is
+    finalized first. A gRPC stop that fails or is interrupted, or a start that
+    fails part-way and cannot be stopped, keeps both locks (`grpc`).
+    Previously a failed gRPC stop could release the store while a request
+    could still record usage.
+  - A gRPC request is now finalized even when a cancellation interrupts the
+    closing of its generation stream. Previously that cancellation skipped
+    `finish_generation`, so the request's scheduler and backend capacity, its
+    counters, route metrics and usage record were never completed. It is
+    finalized exactly once, then the cancellation propagates. A finalizer
+    failure is logged (`grpc_request_finalize_failed`, by type) and not
+    retried; a failed database write means no usage row, not a duplicate.
+  - A cleanup sequence cut short from inside (its task cancelled, not the
+    caller) now raises `ShutdownIncompleteError` and keeps the locks, instead
+    of returning as if shutdown had succeeded. A caller's cancellation still
+    takes precedence.
+  - Shutdown has no fixed maximum duration: network timeouts limit individual
+    operations, and the Compose `stop_grace_period` is a supervisor allowance.
+    Documentation now says so, and describes what to do about retained locks
+    and why webhook delivery is at least once (see `docs/deployment.md`).
 - New model records no longer keep any part of a URL download's address.
   - `source_ref` is `address not stored`.
   - The file name is generated (`download-<random>.gguf`) unless a safe

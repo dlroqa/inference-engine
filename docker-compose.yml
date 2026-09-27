@@ -19,7 +19,7 @@ services:
       # IE_MODEL_PATH: "/data/models/model.gguf"  # preload a model on startup
     volumes:
       - engine-data:/data
-    stop_grace_period: 40s          # allow graceful drain (drain_timeout_s + margin)
+    stop_grace_period: 40s          # supervisor allowance > drain_timeout_s; not a shutdown bound (docs/deployment.md)
 
 volumes:
   engine-data:

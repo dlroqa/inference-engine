@@ -224,3 +224,24 @@ class ModelRegistry:
             return cur.rowcount > 0
         finally:
             conn.close()
+
+    def mark_interrupted(
+        self, model_id: str, *, from_statuses: tuple[str, ...], error: str
+    ) -> bool:
+        """Sets ``error`` status only if the row is still in ``from_statuses``.
+
+        Conditional, so it is idempotent and never overwrites a row that has
+        already reached another state. Returns whether the row changed.
+        """
+        marks = ", ".join("?" for _ in from_statuses)
+        conn = connect(self._db_path)
+        try:
+            with conn:
+                cur = conn.execute(
+                    f"UPDATE models SET status = ?, error = ?, updated_at = ? "
+                    f"WHERE id = ? AND status IN ({marks});",
+                    (str(ModelStatus.ERROR), error, _now(), model_id, *from_statuses),
+                )
+            return cur.rowcount > 0
+        finally:
+            conn.close()

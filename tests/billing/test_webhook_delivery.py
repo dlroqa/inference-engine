@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from pathlib import Path
 
 from engine.billing.store import BillingStore
@@ -115,3 +117,64 @@ def test_disabled_endpoint_dead_letters_without_send(tmp_path: Path) -> None:
     d = store.list_deliveries()[0]
     assert d.status == "dead"
     assert transport.calls == []  # nothing was sent
+
+
+class GatedTransport(FakeTransport):
+    """Blocks the first POST until released, so a stop can arrive mid-delivery."""
+
+    def __init__(self) -> None:
+        super().__init__(status=200)
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def post(self, url: str, body: str, headers: dict[str, str], timeout: float) -> int:
+        status = super().post(url, body, headers, timeout)
+        if len(self.calls) == 1:
+            self.entered.set()
+            assert self.release.wait(30), "the first delivery was never released"
+        return status
+
+
+def test_stop_finishes_the_current_delivery_and_leaves_the_rest_pending(
+    tmp_path: Path,
+) -> None:
+    """Through the real batch loop: a stop during the first delivery lets it
+    finish and be recorded; the other due deliveries are not sent and stay
+    pending, untouched, for a later run."""
+    store, _, _ = _setup(tmp_path)
+    for n in (2, 3):
+        store.enqueue_event(
+            client_id="c1",
+            event_id=f"evt_{n}",
+            event_type="subscription.activated",
+            payload=f'{{"id":"evt_{n}"}}',
+            now=1_000.0 + n,
+        )
+    transport = GatedTransport()
+    worker = DeliveryWorker(store, transport=transport, clock=lambda: 2_000.0)
+
+    async def main() -> None:
+        loop_task = asyncio.create_task(worker.run_loop(poll_interval_s=0.05))
+        try:
+            assert await asyncio.to_thread(transport.entered.wait, 30)
+            worker.request_stop()
+            loop_task.cancel()  # as shutdown does: the task ends only after the batch
+            done, _ = await asyncio.wait({loop_task}, timeout=0.3)
+            assert not done, "the loop ended while its batch was still delivering"
+        finally:
+            transport.release.set()
+        try:
+            await asyncio.wait_for(asyncio.shield(loop_task), 30)
+        except asyncio.CancelledError:
+            pass
+        assert worker.idle
+
+    asyncio.run(main())
+    assert len(transport.calls) == 1, "a delivery after the stop was sent"
+    by_event = {d.event_id: d for d in store.list_deliveries()}
+    first = by_event["evt_1"]
+    assert first.status == "succeeded" and first.attempts == 1
+    for event_id in ("evt_2", "evt_3"):
+        rest = by_event[event_id]
+        assert rest.status == "pending" and rest.attempts == 0, rest
+        assert rest.last_status_code is None and rest.last_error is None

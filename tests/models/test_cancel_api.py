@@ -133,7 +133,7 @@ def test_cancel_before_commit_is_accepted_and_the_worker_stops(
 
 
 def _seed_untracked(settings: Settings, tmp_path: Path) -> str:
-    """A ``downloading`` record with no worker (e.g. after a forced kill)."""
+    """A ``downloading`` record with no worker (seed it while the app runs)."""
     record = ModelRegistry(settings.db_path).create(  # type: ignore[arg-type]
         name="orphan",
         filename="orphan.gguf",
@@ -173,10 +173,12 @@ def test_cancel_keeps_the_operator_gate(tmp_path: Path) -> None:
     billing = BillingStore(settings.db_path)
     billing.create_client(id="acme")
     assert billing.attach_key(client_rec.id, "acme")
-    model_id = _seed_untracked(settings, tmp_path)
-    path = f"/admin/models/{model_id}/cancel"
-
     with TestClient(create_app(settings), client=LOOPBACK) as c:
+        # Seeded after startup: startup recovery marks rows left over from
+        # before the start as interrupted, so this row has no worker yet
+        # still says downloading.
+        model_id = _seed_untracked(settings, tmp_path)
+        path = f"/admin/models/{model_id}/cancel"
         assert c.post(path).status_code == 401
         denied = c.post(path, headers={"authorization": f"Bearer {client_key}"})
         assert denied.status_code == 403
