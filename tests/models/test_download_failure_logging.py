@@ -193,8 +193,11 @@ def test_failure_record_and_json_output_carry_no_credentials(
     monkeypatch: pytest.MonkeyPatch,
     case: str,
 ) -> None:
+    # Flagged safe, as the downloader does for the messages it builds: the log
+    # line still passes through the shared redaction (defense in depth).
     text, kept = CASES[case]
-    monkeypatch.setattr(downloader, "download", _failing(downloader.DownloadError(text)))
+    exc = downloader.DownloadError(text, safe=True)
+    monkeypatch.setattr(downloader, "download", _failing(exc))
     model_id = _run(service)
 
     [record] = _failures(records)
@@ -212,13 +215,31 @@ def test_failure_record_and_json_output_carry_no_credentials(
     assert payload["model_id"] == model_id
     assert kept in payload["detail"]
 
-    # Lifecycle is unchanged: error state, raw text kept in the registry (API
-    # responses redact it), and the task is no longer tracked.
+    # Lifecycle: error state, and the task is no longer tracked.
     stored = service.registry.get(model_id)
     assert stored is not None
     assert stored.status == ModelStatus.ERROR.value
-    assert stored.error == text
     assert model_id not in service._tasks and model_id not in service._cancels
+
+
+@pytest.mark.parametrize("case", sorted(CASES))
+def test_unclassified_failure_text_is_never_stored_or_logged(
+    service: ModelService,
+    records: list[logging.LogRecord],
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+) -> None:
+    text, _ = CASES[case]
+    monkeypatch.setattr(downloader, "download", _failing(downloader.DownloadError(text)))
+    model_id = _run(service)
+
+    label = "download failed during download (DownloadError)"
+    [record] = _failures(records)
+    assert record.detail == label  # type: ignore[attr-defined]
+    assert not _record_leaks(record), f"{case}: failure text reached the LogRecord"
+    stored = service.registry.get(model_id)
+    assert stored is not None and stored.error == label
+    assert not any(m in repr(stored) for m in SECRET_MARKERS), f"{case}: stored"
 
 
 @pytest.mark.parametrize("text", USEFUL)
@@ -229,9 +250,9 @@ def test_non_sensitive_failures_stay_useful(
     text: str,
 ) -> None:
     exc = (
-        downloader.ChecksumMismatch(text)
+        downloader.ChecksumMismatch(text, safe=True)
         if text.startswith("checksum")
-        else downloader.DownloadError(text)
+        else downloader.DownloadError(text, safe=True)
     )
     monkeypatch.setattr(downloader, "download", _failing(exc))
     model_id = _run(service)
@@ -275,7 +296,7 @@ def test_unconvertible_exception_logs_a_neutral_detail(
         def __str__(self) -> str:
             raise RuntimeError("cannot render")
 
-    monkeypatch.setattr(downloader, "download", _failing(Unprintable()))
+    monkeypatch.setattr(downloader, "download", _failing(Unprintable("x", safe=True)))
     model_id = _run(service)
     [record] = _failures(records)
     assert record.detail == redaction.WITHHELD  # type: ignore[attr-defined]
@@ -443,12 +464,13 @@ def test_unexpected_worker_exception_is_contained(
     [record] = _failures(records)
     assert record.stage == "download"  # type: ignore[attr-defined]
     assert record.error_type == "RuntimeError"  # type: ignore[attr-defined]
-    assert "https://h.example/m?token=***" in record.detail  # type: ignore[attr-defined]
+    # Unclassified exception text is never stored or logged: stage and type only.
+    label = "download failed during download (RuntimeError)"
+    assert record.detail == label  # type: ignore[attr-defined]
     _assert_safe(all_records, "unexpected worker exception")
     stored = service.registry.get(model_id)
     assert stored is not None and stored.status == ModelStatus.ERROR.value
-    assert stored.error is not None
-    assert stored.error.startswith("download failed during download (RuntimeError): ")
+    assert stored.error == label
     assert model_id not in service._tasks and model_id not in service._cancels
 
 
