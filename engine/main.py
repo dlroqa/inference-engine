@@ -17,6 +17,7 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, Request, Response
 from fastapi.openapi.utils import get_openapi
@@ -170,6 +171,10 @@ def create_app(
     model_registry = ModelRegistry(settings.db_path)
     model_service = ModelService(settings, model_registry)
 
+    # Store writers started by the lifespan, and its cleanup task, for the
+    # release decision (see _live_writers).
+    lifecycle: dict[str, Any] = {}
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # One serving engine per writable store (its database AND its managed
@@ -191,13 +196,56 @@ def create_app(
             try:
                 await _drain_owned_work()
             finally:
-                if model_service.owns_work():
-                    # A worker is still running (the drain was interrupted): keep
-                    # both locks; the OS releases them when the process exits.
-                    log.warning("store_ownership_retained", extra={"reason": "worker_running"})
+                logging.getLogger().removeHandler(log_collector)  # on every path
+                live = _live_writers()
+                if live:
+                    # A store writer may still be running (cleanup could not
+                    # finish): fail closed and keep both locks; the OS releases
+                    # them when the process exits.
+                    log.warning("store_ownership_retained", extra={"writers": ",".join(live)})
+                    # Keep a strong reference: dropping the handles would let
+                    # garbage collection close them and release the locks.
+                    app.state.store_ownership_retained = ownership
                 else:
                     log_collector.persist = False
                     ownership.release()
+
+    def _live_writers() -> list[str]:
+        """Every known store writer that has not been proven stopped."""
+        live = []
+        if model_service.owns_work():
+            live.append("downloads")
+        webhook_task = lifecycle.get("webhook_task")
+        if webhook_task is not None and not webhook_task.done():
+            live.append("webhook_task")
+        webhook_worker = lifecycle.get("webhook_worker")
+        if webhook_worker is not None and not webhook_worker.idle:
+            live.append("webhook_thread")
+        cleanup = lifecycle.get("cleanup")
+        if cleanup is not None and not cleanup.done():
+            live.append("cleanup")
+        return live
+
+    async def _complete(task: asyncio.Future[Any]) -> bool:
+        """Awaits ``task`` to completion even if the awaiting task is cancelled.
+
+        Repeated cancellation of the caller neither restarts, detaches nor
+        cancels ``task``. Returns whether the caller was cancelled meanwhile
+        (the caller re-raises that after its own cleanup). The task's own
+        outcome, including its own cancellation, is left for the caller.
+        """
+        current = asyncio.current_task()
+        before = current.cancelling() if current is not None else 0
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                if current is not None and current.cancelling() > before:
+                    cancelled = True
+            except Exception:
+                break  # the task failed; its exception is retrieved by the caller
+        return cancelled
 
     async def _drain_owned_work() -> None:
         """Awaits model-service shutdown to completion, through cancellation."""
@@ -281,6 +329,7 @@ def create_app(
 
         health_task: asyncio.Task[None] | None = None
         webhook_task: asyncio.Task[None] | None = None
+        webhook_worker: DeliveryWorker | None = None
         grpc_server = None
         try:
             # Periodic backend liveness refresh so routing skips a remote that went down.
@@ -311,6 +360,9 @@ def create_app(
                 webhook_task = asyncio.create_task(
                     worker.run_loop(settings.webhook_poll_interval_s)
                 )
+                webhook_worker = worker
+                lifecycle["webhook_task"] = webhook_task
+                lifecycle["webhook_worker"] = worker
                 log.info("webhook_worker_started")
 
             # Start the metrics sampler once the loop is running (skip if disabled).
@@ -338,10 +390,13 @@ def create_app(
 
             yield
         finally:
+            # One cleanup sequence, run as a single retained task and awaited to
+            # completion even if this shutdown is cancelled (repeatedly): a
+            # cancelled caller must not skip steps or release the store while a
+            # writer (webhook delivery, download workers) is still running.
             # Every step runs even if an earlier one fails (the first error is
-            # re-raised at the end), so no store writer (webhook delivery,
-            # download workers) outlives cleanup because a step before it threw.
-            # This also runs when startup fails after these tasks started.
+            # re-raised at the end). This also runs when startup fails after
+            # these tasks started.
             errors: list[Exception] = []
 
             async def step(name: str, action: Callable[[], Awaitable[object]]) -> None:
@@ -373,6 +428,14 @@ def create_app(
                     with contextlib.suppress(asyncio.CancelledError):
                         await task
 
+            async def stop_webhooks() -> None:
+                # Ask the worker to stop first (its batch thread skips the rest of
+                # the batch), then cancel and await the task, which ends only once
+                # that thread has returned.
+                if webhook_worker is not None:
+                    webhook_worker.request_stop()
+                await stop_task(webhook_task)
+
             async def unload_remote_workers() -> None:
                 for worker in getattr(app.state, "remote_workers", []):
                     with contextlib.suppress(Exception):
@@ -383,18 +446,37 @@ def create_app(
                 if active is not None and not injected_backend:
                     await active.unload()
 
-            await step("grpc", stop_grpc)
-            await step("drain", drain_requests)
-            await step("health_task", lambda: stop_task(health_task))
-            await step("webhook_task", lambda: stop_task(webhook_task))
-            await step("remote_workers", unload_remote_workers)
-            await step("telemetry", telemetry.stop)
-            await step("model_service", model_service.shutdown)
-            logging.getLogger().removeHandler(log_collector)
-            await step("backend", unload_backend)
-            log.info("shutdown")
-            if errors:
-                raise errors[0]
+            async def teardown() -> None:
+                await step("grpc", stop_grpc)
+                await step("drain", drain_requests)
+                await step("health_task", lambda: stop_task(health_task))
+                await step("webhook_task", stop_webhooks)
+                await step("remote_workers", unload_remote_workers)
+                await step("telemetry", telemetry.stop)
+                await step("model_service", model_service.shutdown)
+                logging.getLogger().removeHandler(log_collector)
+                await step("backend", unload_backend)
+                log.info("shutdown")
+                if errors:
+                    raise errors[0]
+
+            cleanup = asyncio.ensure_future(teardown())
+            lifecycle["cleanup"] = cleanup  # retained until the lifespan ends
+            caller_cancelled = await _complete(cleanup)
+            failure = None if cleanup.cancelled() else cleanup.exception()
+            if cleanup.cancelled():
+                log.warning("shutdown_incomplete", extra={"reason": "cleanup_cancelled"})
+            # Precedence: the caller's cancellation wins (it is re-raised after
+            # cleanup); an ordinary cleanup failure is then only logged.
+            if caller_cancelled:
+                if failure is not None:
+                    log.warning(
+                        "shutdown_failed_while_cancelled",
+                        extra={"error_type": type(failure).__name__},
+                    )
+                raise asyncio.CancelledError
+            if failure is not None:
+                raise failure
 
     app = FastAPI(
         title="Inference Engine",

@@ -10,6 +10,7 @@ blocking POST never stalls the event loop.
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -90,6 +91,18 @@ class DeliveryWorker:
         self._timeout = delivery_timeout_s
         self._batch_limit = batch_limit
         self._clock = clock or time.time
+        # Set when the worker must stop: the batch in progress finishes the
+        # delivery it is on and leaves the rest pending (nothing is leased).
+        self._stop = threading.Event()
+        self._inflight: asyncio.Future[int] | None = None
+
+    def request_stop(self) -> None:
+        self._stop.set()
+
+    @property
+    def idle(self) -> bool:
+        """No batch thread is running (so this worker is not writing the store)."""
+        return self._inflight is None or self._inflight.done()
 
     def run_once(self) -> int:
         """Process every currently-due delivery once. Returns the number attempted.
@@ -99,9 +112,13 @@ class DeliveryWorker:
         """
         now = self._clock()
         due = self._store.claim_due(now=now, limit=self._batch_limit)
+        attempted = 0
         for delivery in due:
+            if self._stop.is_set():
+                break
             self._attempt(delivery, now)
-        return len(due)
+            attempted += 1
+        return attempted
 
     def _attempt(self, delivery: object, now: float) -> None:
         d = delivery  # typed as Delivery; kept loose to avoid a cyclic import here
@@ -163,10 +180,39 @@ class DeliveryWorker:
         )
 
     async def run_loop(self, poll_interval_s: float) -> None:
-        """Background loop: process due deliveries off-thread, then sleep."""
-        while True:
+        """Background loop: process due deliveries off-thread, then sleep.
+
+        Cancelling this task does not abandon a batch thread that is writing
+        the store: the worker is asked to stop, the thread finishes the delivery
+        it is on (bounded by the delivery timeout) and returns, and only then
+        does the task end, still cancelled. Repeated cancellation does not cut
+        that wait short.
+        """
+        loop = asyncio.get_running_loop()
+        while not self._stop.is_set():
+            batch = loop.run_in_executor(None, self.run_once)
+            self._inflight = batch
             try:
-                await asyncio.to_thread(self.run_once)
+                await asyncio.shield(batch)
+            except asyncio.CancelledError:
+                self._stop.set()
+                await self._finish(batch)
+                raise
             except Exception:  # never let the loop die on a transient error
                 _log.exception("webhook_worker_iteration_failed")
             await asyncio.sleep(poll_interval_s)
+
+    async def _finish(self, batch: asyncio.Future[int]) -> None:
+        """Waits for a batch thread to return, through further cancellation."""
+        while not batch.done():
+            try:
+                await asyncio.shield(batch)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if not batch.cancelled() and batch.exception() is not None:
+            _log.warning(
+                "webhook_worker_iteration_failed",
+                extra={"error_type": type(batch.exception()).__name__},
+            )
