@@ -106,7 +106,7 @@ class Engine:
     def assert_settled(self) -> None:
         """The request's capacity is released and its accounting done."""
         assert self.app.state.scheduler.snapshot()["in_use"] == 0, "scheduler slot held"
-        entries = self.app.state.backend_registry.entries()
+        entries = self.app.state.backend_registry.entries
         assert all(e.in_flight == 0 for e in entries), "backend in-flight slot held"
         counters = self.app.state.counters.snapshot()
         assert counters.requests_active == 0, "request still counted as active"
@@ -354,13 +354,13 @@ def test_a_failing_finalizer_is_reported_and_not_retried(
                 await asyncio.wait_for(seam.entered.wait(), WAIT)
                 task.cancel()
             [outcome] = await asyncio.gather(task, return_exceptions=True)
+            assert len(spy) == 1, "the finalizer did not run exactly once"
             if cancelled:
                 assert isinstance(outcome, asyncio.CancelledError), repr(outcome)
                 names = [r.getMessage() for r in grpc_warnings]
                 assert "grpc_request_finalize_failed" in names, names
             else:
                 assert isinstance(outcome, sqlite3.OperationalError), repr(outcome)
-            assert len(spy) == 1, "the finalizer did not run exactly once"
             assert engine.usage_rows() == []  # nothing claims a durable record
             assert engine.app.state.scheduler.snapshot()["in_use"] == 0
 
