@@ -1,0 +1,111 @@
+# TEMPORARY diagnostic (never merged): rebuilds the release candidate image of
+# this commit exactly as release.yml's candidate job does, then keeps the
+# detailed SBOM + grype report (release.yml keeps them only when publishing) and
+# package inventories from inside the image, for vulnerability triage.
+# Non-publishing: nothing is pushed or released; read-only token; no secrets.
+name: Candidate scan (diagnostic)
+
+on:
+  push:
+    branches: ["ci/candidate-scan*"]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  scan:
+    name: Build candidate + SBOM + grype (no publish)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      CANDIDATE: ghcr.io/dlroqa/inference-engine:candidate
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Runner inventory
+        run: python3 scripts/runner_inventory.py --job "Candidate scan (diagnostic)"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build the candidate image once (linux/amd64), as release.yml
+        id: build
+        run: |
+          set -euo pipefail
+          VERSION=$(python3 scripts/release.py check-version)
+          COMMIT=$(git rev-parse HEAD)
+          CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          docker buildx build --platform linux/amd64 \
+            --build-arg IE_VERSION="$VERSION" \
+            --build-arg IE_BUILD_SHA="$COMMIT" \
+            --build-arg IE_BUILD_DATE="$CREATED" \
+            --provenance=false --sbom=false \
+            --output "type=oci,dest=candidate.oci.tar,name=$CANDIDATE" \
+            --output "type=docker,name=$CANDIDATE" \
+            .
+          DIGESTS=$(python3 scripts/release.py oci-digests candidate.oci.tar)
+          mkdir -p out
+          jq -n --arg version "$VERSION" --arg commit "$COMMIT" --arg created "$CREATED" \
+            --arg tree "$(git rev-parse HEAD^{tree})" \
+            --argjson digests "$DIGESTS" \
+            --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" \
+            '{version: $version, commit: $commit, tree: $tree, built_at: $created,
+              manifest_digest: $digests.manifest, config_digest: $digests.config, run: $run}' \
+            | tee out/candidate.json
+          cat out/candidate.json >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Package inventories from inside the image
+        run: |
+          set -euo pipefail
+          run() { docker run --rm --entrypoint "$1" "$CANDIDATE" "${@:2}"; }
+          run cat /etc/os-release > out/os-release.txt
+          run dpkg-query -W -f '${Package}\t${Version}\t${Source}\t${Priority}\t${Essential}\n' \
+            > out/dpkg.tsv
+          run python -c 'import sys; print(sys.version); print(sys.executable); print(sys.prefix)' \
+            > out/python.txt
+          run python -m pip list --format=json > out/pip-list.json 2> out/pip-list.err || true
+          run python -c 'import importlib.metadata as m, json; print(json.dumps(sorted(
+              [{"name": d.metadata["Name"], "version": d.version, "path": str(d._path)}
+               for d in m.distributions()], key=lambda x: x["name"].lower())))' > out/dists.json
+          docker image inspect "$CANDIDATE" --format '{{json .Config}}' > out/config.json
+          docker history --no-trunc --format '{{.CreatedBy}}' "$CANDIDATE" > out/history.txt
+          wc -l out/dpkg.tsv; head -5 out/os-release.txt
+
+      - name: Generate SBOM from the candidate image (same pin as release.yml)
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          image: ${{ env.CANDIDATE }}
+          format: spdx-json
+          output-file: out/sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+          dependency-snapshot: false
+
+      - name: Vulnerability scan (grype, same pin as release.yml)
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          sbom: out/sbom.spdx.json
+          fail-build: false
+          output-format: json
+          output-file: out/grype.json
+
+      - name: Gate summary (unchanged policy) + scanner/DB identity
+        run: |
+          set -euo pipefail
+          python3 scripts/release.py scan-gate --report out/grype.json --summary-out out/scan-summary.md || echo "gate exit $?"
+          jq '{scan_time: .descriptor.timestamp, grype: .descriptor.version, db: .descriptor.db}' out/grype.json \
+            | tee out/scanner.json
+          { echo "### Scan"; cat out/scan-summary.md; echo '```'; cat out/scanner.json; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload triage evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: candidate-scan
+          path: out/
+          if-no-files-found: error
+          retention-days: 30
