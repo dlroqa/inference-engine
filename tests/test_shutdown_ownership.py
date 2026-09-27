@@ -576,9 +576,8 @@ def test_a_failed_grpc_stop_keeps_both_locks(
             assert getattr(app.state, "store_ownership_retained", None) is None
             stop.set()
             outcome = await _outcome(lifespan)
-            assert isinstance(outcome, RuntimeError) and "grpc stop failed" in str(outcome), (
-                repr(outcome)
-            )
+            assert isinstance(outcome, RuntimeError), repr(outcome)
+            assert "grpc stop failed" in str(outcome)
             assert "telemetry_stop" in h.trace  # later cleanup steps still ran
 
             # The request can still write: both resources stay excluded.
