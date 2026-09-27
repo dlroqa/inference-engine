@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
-CHILD_DIR = ROOT / "tests" / "support"
+CHILD_SCRIPT = ROOT / "tests" / "support" / "download_child.py"
 LOCK_REFUSAL = "owns this model directory"
 INTERRUPTED_PREFIX = "download interrupted"
 
@@ -172,6 +172,7 @@ class Run:
             f"exit={code}",
         )
         docker("rm", "-f", owner, second, check=False)
+        self.containers = [c for c in self.containers if c not in (owner, second)]
 
     # -- scenario 2 -----------------------------------------------------------
 
@@ -179,8 +180,10 @@ class Run:
         data = self.volume(f"data-{barrier}")
         child = f"ie-own-{self.tag}-child-{barrier}"
         marker = f"/data/{barrier}.reached"
-        mounts = ["-v", f"{data}:/data", "-v", f"{CHILD_DIR}:/opt/test-support:ro"]
-        script = ["python", "/opt/test-support/download_child.py", "/data", barrier, marker]
+        # Mount only the child script: a mounted tests/support directory would sit
+        # first on sys.path and shadow stdlib modules (e.g. its operator.py).
+        mounts = ["-v", f"{data}:/data", "-v", f"{CHILD_SCRIPT}:/opt/test-support/child.py:ro"]
+        script = ["python", "/opt/test-support/child.py", "/data", barrier, marker]
         docker("run", "-d", "--name", child, *mounts, self.image, *script)
         self.containers.append(child)
         deadline = time.monotonic() + 120
