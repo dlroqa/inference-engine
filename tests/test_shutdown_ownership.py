@@ -8,11 +8,18 @@ is no active download, so the download guard (``owns_work``) cannot mask a
 premature release. Every wait is bounded, every gate is released in ``finally``,
 and competitor checks take real OS locks: the same database with another model
 directory, and the same model directory with another database.
+
+The gRPC edge is replaced at its production seam (``create_grpc_server``) by a
+double whose in-flight request is a real store writer: a thread that, once
+released, records the request's final usage in the database. Its ``stop`` can
+fail or block before termination is established. In those tests webhooks are
+off and no download runs, so only the gRPC state can keep the store owned.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import sqlite3
 import threading
@@ -55,10 +62,13 @@ class Harness:
         self.gate_drain = False
         self.gate_telemetry = False
         self.fail_drain = False
+        self.extra_releases: list[Any] = []
 
     def release_all(self) -> None:
         for gate in (self.release_batch, self.release_drain, self.release_telemetry):
             gate.set()
+        for release in self.extra_releases:
+            release()
 
     # -- competitors (real OS locks) --------------------------------------------
 
@@ -100,11 +110,30 @@ class Harness:
         finally:
             conn.close()
 
+    def write(self, note: str) -> None:
+        conn = connect(self.settings.db_path)  # type: ignore[arg-type]
+        try:
+            with conn:
+                conn.execute("CREATE TABLE IF NOT EXISTS shutdown_probe (note TEXT)")
+                conn.execute("INSERT INTO shutdown_probe VALUES (?)", (note,))
+        finally:
+            conn.close()
+
+    def store_snapshot(self) -> tuple[str, ...]:
+        """Contents of the protected database files and the model directory."""
+        db = Path(self.settings.db_path)
+        parts = []
+        for path in (db, db.with_name(db.name + "-wal")):
+            data = path.read_bytes() if path.exists() else b""
+            parts.append(f"{path.name}:{hashlib.sha256(data).hexdigest()}")
+        models = Path(self.settings.models_dir)
+        parts.extend(sorted(p.name for p in models.iterdir()) if models.exists() else [])
+        return tuple(parts)
+
 
 @pytest.fixture
 def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Harness]:
     h = Harness(tmp_path)
-    db_path = h.settings.db_path
 
     def run_once(self: DeliveryWorker) -> int:
         # The first batch blocks until released, then writes to the store; this
@@ -116,13 +145,7 @@ def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Harness
         h.release_batch.wait(WAIT)
         if getattr(self, "_stop", None) is not None and self._stop.is_set():
             h.trace.append("stop_seen_by_batch")
-        conn = connect(db_path)  # type: ignore[arg-type]
-        try:
-            with conn:
-                conn.execute("CREATE TABLE IF NOT EXISTS shutdown_probe (note TEXT)")
-                conn.execute("INSERT INTO shutdown_probe VALUES ('final')")
-        finally:
-            conn.close()
+        h.write("final")
         h.trace.append("final_write")
         return 0
 
@@ -169,6 +192,143 @@ def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Harness
         yield h
     finally:
         h.release_all()
+
+
+class FakeGrpcEdge:
+    """Stands in for the gRPC edge returned by ``create_grpc_server``.
+
+    ``start`` begins one in-flight request: a thread that, once released, makes
+    the request's final write to the store. A successful ``stop`` establishes
+    termination (releases the request and joins its thread); a failed or
+    blocked ``stop`` leaves it running.
+    """
+
+    def __init__(self, h: Harness) -> None:
+        self.h = h
+        self.started = threading.Event()
+        self.start_entered = threading.Event()
+        self.release_start = threading.Event()
+        self.stop_entered = threading.Event()
+        self.release_stop = threading.Event()
+        self.release_request = threading.Event()
+        self.gate_start = False
+        self.fail_start = False
+        self.gate_stop = False
+        self.fail_stop = False
+        self.request: threading.Thread | None = None
+
+    def _serve_request(self) -> None:
+        self.release_request.wait(WAIT)
+        self.h.write("grpc_final")
+        self.h.trace.append("grpc_final_write")
+
+    async def start(self) -> None:
+        self.h.trace.append("grpc_start")
+        self.request = threading.Thread(target=self._serve_request, daemon=True)
+        self.request.start()  # serving: a start failing after this is a partial start
+        self.started.set()
+        self.start_entered.set()
+        if self.gate_start:
+            await asyncio.to_thread(self.release_start.wait, WAIT)
+        if self.fail_start:
+            raise RuntimeError("grpc start failed")
+
+    async def stop(self, grace: float | None = None) -> None:
+        self.h.trace.append("grpc_stop")
+        self.stop_entered.set()
+        if self.gate_stop:
+            await asyncio.to_thread(self.release_stop.wait, WAIT)
+        if self.fail_stop:
+            raise RuntimeError("grpc stop failed")
+        self.release_request.set()
+        await asyncio.to_thread(self.join)
+        self.h.trace.append("grpc_terminated")
+
+    def release(self) -> None:
+        for gate in (self.release_start, self.release_stop, self.release_request):
+            gate.set()
+
+    def join(self) -> None:
+        if self.request is not None:
+            self.request.join(WAIT)
+
+
+@pytest.fixture
+def grpc_edge(harness: Harness, monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeGrpcEdge]:
+    import engine.grpc.server as grpc_server_module
+
+    h = harness
+    h.settings.webhooks_enabled = False  # no webhook guard can mask the gRPC state
+    h.settings.grpc_enabled = True
+    edge = FakeGrpcEdge(h)
+
+    async def create(*args: Any, **kwargs: Any) -> tuple[FakeGrpcEdge, int]:
+        return edge, 0
+
+    monkeypatch.setattr(grpc_server_module, "create_grpc_server", create)
+    h.extra_releases.append(edge.release)
+    try:
+        yield edge
+    finally:
+        edge.release()
+        edge.join()
+
+
+class Events:
+    """Warnings logged by the engine, with their safe ``writers``/``reason``."""
+
+    def __init__(self) -> None:
+        self.records: list[logging.LogRecord] = []
+
+    def names(self) -> list[str]:
+        return [r.getMessage() for r in self.records]
+
+    def retained_writers(self) -> list[str]:
+        for r in self.records:
+            if r.getMessage() == "store_ownership_retained":
+                return str(getattr(r, "writers", "")).split(",")
+        return []
+
+
+@pytest.fixture
+def events() -> Iterator[Events]:
+    captured = Events()
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.records.append(record)
+
+    # create_app resets the root logger's handlers, so listen on the engine's logger.
+    startup_logger = logging.getLogger("engine.startup")
+    handler = _Capture(level=logging.WARNING)
+    startup_logger.addHandler(handler)
+    try:
+        yield captured
+    finally:
+        startup_logger.removeHandler(handler)
+
+
+def _teardown_task() -> asyncio.Task[Any]:
+    [cleanup] = [
+        t
+        for t in asyncio.all_tasks()
+        if getattr(t.get_coro(), "__qualname__", "").endswith("teardown")
+    ]
+    return cleanup
+
+
+async def _outcome(lifespan: asyncio.Task[None]) -> BaseException | None:
+    """The lifespan's outcome (``None`` for a normal return), bounded."""
+    try:
+        await asyncio.wait_for(asyncio.shield(lifespan), WAIT)
+    except BaseException as exc:  # noqa: BLE001 - the outcome is what is tested
+        return exc
+    return None
+
+
+def _assert_incomplete(outcome: BaseException | None) -> None:
+    assert outcome is not None, "shutdown reported success although cleanup was cut short"
+    assert type(outcome).__name__ == "ShutdownIncompleteError", repr(outcome)
 
 
 async def _wait(event: threading.Event) -> bool:
@@ -369,7 +529,7 @@ def test_a_startup_failure_after_the_writer_started_stops_it_first(
 
 def test_ownership_is_retained_while_a_writer_outlives_cleanup(harness: Harness) -> None:
     """Fail closed: if cleanup itself is cut short while the writer runs, the
-    store stays owned (and says so) instead of being released."""
+    store stays owned (and says so) and shutdown reports that it is incomplete."""
     h = harness
     h.gate_drain = True
 
@@ -381,14 +541,9 @@ def test_ownership_is_retained_while_a_writer_outlives_cleanup(harness: Harness)
             assert await _wait(h.drain_entered)
             # Cut the cleanup task itself short (as a loop teardown would) before
             # it reaches the webhook worker, which is still writing.
-            [cleanup] = [
-                t
-                for t in asyncio.all_tasks()
-                if getattr(t.get_coro(), "__qualname__", "").endswith("teardown")
-            ]
-            cleanup.cancel()
-            await asyncio.wait_for(asyncio.shield(lifespan), WAIT)
-            # Shutdown returned, but the writer is still running: still owned.
+            _teardown_task().cancel()
+            _assert_incomplete(await _outcome(lifespan))
+            # Shutdown ended, but the writer is still running: still owned.
             assert h.final_writes() == 0
             await _assert_owned(h, "cleanup cut short with a live writer")
             assert getattr(app.state, "store_ownership_retained", None) is not None
@@ -400,4 +555,287 @@ def test_ownership_is_retained_while_a_writer_outlives_cleanup(harness: Harness)
     assert h.final_writes() == 1
     assert "store_released" not in h.trace
     app.state.store_ownership_retained.release()  # test cleanup
+    assert h.database_free() and h.model_directory_free()
+
+
+# -- gRPC: termination must be established before release ----------------------
+
+
+def test_a_failed_grpc_stop_keeps_both_locks(
+    harness: Harness, grpc_edge: FakeGrpcEdge, events: Events
+) -> None:
+    h, edge = harness, grpc_edge
+    edge.fail_stop = True
+
+    async def main() -> Any:
+        app, stop, lifespan = _start(h)
+        try:
+            assert await _wait(edge.started), "the gRPC edge never started"
+            assert app.state.model_service.owns_work() is False  # no download guard
+            assert h.settings.webhooks_enabled is False  # no webhook guard
+            assert getattr(app.state, "store_ownership_retained", None) is None
+            stop.set()
+            outcome = await _outcome(lifespan)
+            assert isinstance(outcome, RuntimeError) and "grpc stop failed" in str(outcome), (
+                repr(outcome)
+            )
+            assert "telemetry_stop" in h.trace  # later cleanup steps still ran
+
+            # The request can still write: both resources stay excluded.
+            await _assert_owned(h, "after a failed gRPC stop")
+            assert "grpc" in events.retained_writers(), events.names()
+            assert getattr(app.state, "store_ownership_retained", None) is not None
+            before = h.store_snapshot()
+            assert await asyncio.to_thread(h.competing_engine_refused)
+            assert h.store_snapshot() == before, "a refused competitor changed the store"
+            assert h.final_writes() == 0
+
+            # The request's final write lands while the store is still owned.
+            edge.release_request.set()
+            await asyncio.to_thread(edge.join)
+            assert h.final_writes() == 1
+            await _assert_owned(h, "after the request's final write")
+        finally:
+            h.release_all()
+        return app
+
+    app = asyncio.run(main())
+    assert "store_released" not in h.trace
+    # Fixture disposal of the test-held locks; not a production unlock policy.
+    app.state.store_ownership_retained.release()
+    assert h.database_free() and h.model_directory_free()
+
+
+def test_cleanup_cancelled_before_the_grpc_stop_is_incomplete_and_retains(
+    harness: Harness, grpc_edge: FakeGrpcEdge, events: Events
+) -> None:
+    h, edge = harness, grpc_edge
+
+    async def main() -> Any:
+        loop = asyncio.get_running_loop()
+
+        def cut_short(loop: asyncio.AbstractEventLoop, coro: Any, **kwargs: Any) -> Any:
+            task = asyncio.Task(coro, loop=loop, **kwargs)
+            if getattr(coro, "__qualname__", "").endswith("teardown"):
+                task.cancel()  # before its first step: gRPC stop is never reached
+            return task
+
+        app, stop, lifespan = _start(h)
+        try:
+            assert await _wait(edge.started)
+            loop.set_task_factory(cut_short)
+            stop.set()
+            outcome = await _outcome(lifespan)
+            loop.set_task_factory(None)
+            _assert_incomplete(outcome)
+            assert "grpc_stop" not in h.trace
+            assert "shutdown_incomplete" in events.names()
+            await _assert_owned(h, "cleanup cancelled before the gRPC stop")
+            assert "grpc" in events.retained_writers(), events.names()
+        finally:
+            loop.set_task_factory(None)
+            h.release_all()
+        await asyncio.to_thread(edge.join)
+        return app
+
+    app = asyncio.run(main())
+    assert "store_released" not in h.trace
+    app.state.store_ownership_retained.release()  # fixture disposal
+    assert h.database_free() and h.model_directory_free()
+
+
+def test_cleanup_cancelled_during_the_grpc_stop_is_incomplete_and_retains(
+    harness: Harness, grpc_edge: FakeGrpcEdge, events: Events
+) -> None:
+    h, edge = harness, grpc_edge
+    edge.gate_stop = True
+
+    async def main() -> Any:
+        app, stop, lifespan = _start(h)
+        try:
+            assert await _wait(edge.started)
+            stop.set()
+            assert await _wait(edge.stop_entered), "cleanup never began the gRPC stop"
+            _teardown_task().cancel()  # the stop began; termination is not established
+            _assert_incomplete(await _outcome(lifespan))
+            assert "shutdown_incomplete" in events.names()
+            await _assert_owned(h, "cleanup cancelled during the gRPC stop")
+            assert "grpc" in events.retained_writers(), events.names()
+            assert h.final_writes() == 0
+        finally:
+            h.release_all()
+        await asyncio.to_thread(edge.join)
+        return app
+
+    app = asyncio.run(main())
+    assert "store_released" not in h.trace
+    app.state.store_ownership_retained.release()  # fixture disposal
+    assert h.database_free() and h.model_directory_free()
+
+
+def test_repeated_outer_cancellation_waits_for_grpc_termination(
+    harness: Harness, grpc_edge: FakeGrpcEdge
+) -> None:
+    h, edge = harness, grpc_edge
+    edge.gate_stop = True
+
+    async def main() -> None:
+        _, stop, lifespan = _start(h)
+        try:
+            assert await _wait(edge.started)
+            stop.set()
+            assert await _wait(edge.stop_entered)
+            for attempt in (1, 2):
+                lifespan.cancel()
+                assert await _still_running(lifespan), f"cancel {attempt} cut shutdown short"
+                await _assert_owned(h, f"outer cancel {attempt} during the gRPC stop")
+        finally:
+            h.release_all()
+        outcome = await _outcome(lifespan)
+        assert isinstance(outcome, asyncio.CancelledError), repr(outcome)
+
+    asyncio.run(main())
+    order = h.trace
+    assert order.index("grpc_final_write") < order.index("grpc_terminated"), order
+    assert order.index("grpc_terminated") < order.index("telemetry_stop"), order
+    assert order.index("telemetry_stop") < order.index("store_released"), order
+    assert order.count("store_released") == 1
+    assert h.database_free() and h.model_directory_free()
+
+
+def test_caller_cancellation_wins_over_a_failed_grpc_stop_and_retains(
+    harness: Harness, grpc_edge: FakeGrpcEdge, events: Events
+) -> None:
+    h, edge = harness, grpc_edge
+    edge.gate_stop = True
+    edge.fail_stop = True
+
+    async def main() -> Any:
+        app, stop, lifespan = _start(h)
+        try:
+            assert await _wait(edge.started)
+            stop.set()
+            assert await _wait(edge.stop_entered)
+            lifespan.cancel()
+            assert await _still_running(lifespan)
+            edge.release_stop.set()  # the stop now fails
+            outcome = await _outcome(lifespan)
+            assert isinstance(outcome, asyncio.CancelledError), repr(outcome)
+            assert "shutdown_failed_while_cancelled" in events.names()
+            await _assert_owned(h, "cancelled with a failed gRPC stop")
+            assert "grpc" in events.retained_writers(), events.names()
+        finally:
+            h.release_all()
+        await asyncio.to_thread(edge.join)
+        return app
+
+    app = asyncio.run(main())
+    assert "store_released" not in h.trace
+    app.state.store_ownership_retained.release()  # fixture disposal
+    assert h.database_free() and h.model_directory_free()
+
+
+def test_a_partial_grpc_start_is_stopped_before_release(
+    harness: Harness, grpc_edge: FakeGrpcEdge
+) -> None:
+    h, edge = harness, grpc_edge
+    edge.fail_start = True  # fails after it began serving
+
+    async def main() -> None:
+        _, _, lifespan = _start(h)
+        outcome = await _outcome(lifespan)
+        assert isinstance(outcome, RuntimeError) and "grpc start failed" in str(outcome)
+
+    asyncio.run(main())
+    order = h.trace
+    assert order.index("grpc_final_write") < order.index("store_released"), order
+    assert order.index("grpc_terminated") < order.index("store_released"), order
+    assert h.database_free() and h.model_directory_free()
+
+
+def test_a_cancelled_grpc_start_is_stopped_before_release(
+    harness: Harness, grpc_edge: FakeGrpcEdge
+) -> None:
+    h, edge = harness, grpc_edge
+    edge.gate_start = True
+
+    async def main() -> None:
+        _, _, lifespan = _start(h)
+        try:
+            assert await _wait(edge.start_entered)
+            lifespan.cancel()  # startup is cancelled while the server is starting
+        finally:
+            edge.release_start.set()
+        outcome = await _outcome(lifespan)
+        assert isinstance(outcome, asyncio.CancelledError), repr(outcome)
+
+    asyncio.run(main())
+    order = h.trace
+    assert "grpc_stop" in order, order
+    assert order.index("grpc_terminated") < order.index("store_released"), order
+    assert h.database_free() and h.model_directory_free()
+
+
+def test_a_partial_grpc_start_whose_stop_fails_retains(
+    harness: Harness, grpc_edge: FakeGrpcEdge, events: Events
+) -> None:
+    h, edge = harness, grpc_edge
+    edge.fail_start = True
+    edge.fail_stop = True
+
+    async def main() -> Any:
+        app, _, lifespan = _start(h)
+        try:
+            outcome = await _outcome(lifespan)
+            assert isinstance(outcome, RuntimeError), repr(outcome)
+            await _assert_owned(h, "partial start, termination unknown")
+            assert "grpc" in events.retained_writers(), events.names()
+        finally:
+            h.release_all()
+        await asyncio.to_thread(edge.join)
+        return app
+
+    app = asyncio.run(main())
+    assert "store_released" not in h.trace
+    app.state.store_ownership_retained.release()  # fixture disposal
+    assert h.database_free() and h.model_directory_free()
+
+
+def test_an_ordinary_failure_after_grpc_terminated_still_releases(
+    harness: Harness, grpc_edge: FakeGrpcEdge, events: Events
+) -> None:
+    h = harness
+    h.fail_drain = True  # a later step fails after gRPC termination was established
+
+    async def main() -> Any:
+        app, stop, lifespan = _start(h)
+        assert await _wait(grpc_edge.started)
+        stop.set()
+        outcome = await _outcome(lifespan)
+        assert isinstance(outcome, RuntimeError) and "drain failed" in str(outcome)
+        return app
+
+    app = asyncio.run(main())
+    assert h.trace.index("grpc_terminated") < h.trace.index("store_released")
+    assert h.trace.count("store_released") == 1
+    assert getattr(app.state, "store_ownership_retained", None) is None
+    assert "store_ownership_retained" not in events.names()
+    assert h.database_free() and h.model_directory_free()
+
+
+def test_grpc_disabled_shutdown_releases(harness: Harness) -> None:
+    h = harness
+    h.settings.webhooks_enabled = False
+    assert h.settings.grpc_enabled is False
+
+    async def main() -> Any:
+        app, stop, lifespan = _start(h)
+        await asyncio.sleep(0)
+        stop.set()
+        assert await _outcome(lifespan) is None
+        return app
+
+    app = asyncio.run(main())
+    assert h.trace.count("store_released") == 1
+    assert getattr(app.state, "store_ownership_retained", None) is None
     assert h.database_free() and h.model_directory_free()
