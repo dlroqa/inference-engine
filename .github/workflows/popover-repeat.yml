@@ -120,13 +120,13 @@ jobs:
           echo "failed iterations: $fails / $ITERATIONS" | tee -a "$GITHUB_STEP_SUMMARY"
           [ "$fails" -eq 0 ]
 
-      - name: Upload iteration outputs and screenshots
+      # Only the screenshots (taken after assert_no_secrets). Raw pytest output
+      # stays in the masked step log: a traceback can print fixture reprs.
+      - name: Upload screenshots
         if: always()
         continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: popover-repeat
-          path: |
-            iter-*.txt
-            e2e-screenshots/
+          name: popover-repeat-screenshots
+          path: e2e-screenshots/
           if-no-files-found: warn
