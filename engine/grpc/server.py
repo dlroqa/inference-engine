@@ -133,10 +133,12 @@ class _Handlers:
         return handler
 
     async def close(self, handler: _Handler) -> None:
-        try:
-            await handler.finish()
-        finally:
-            self._open.discard(handler)
+        # Stop tracking only once its stream has closed (and so finalized the
+        # request). If closing is interrupted, the handler stays tracked, and
+        # ``close_all`` closes it; closing an already-closed stream is a no-op,
+        # so the request is never finalized twice.
+        await handler.finish()
+        self._open.discard(handler)
 
     async def close_all(self) -> None:
         """Returns once every tracked handler has ended and been finalized.
@@ -259,11 +261,36 @@ async def _stream(
 
 
 async def _drain_and_finish(served: Served, *, error: BaseException | None) -> Any:
+    """Closes the generation stream, then finalizes the request exactly once.
+
+    Closing is best-effort: an ordinary close failure is ignored. If the close
+    is interrupted (cancellation), the request is still finalized and the
+    interruption then propagates; a finalizer failure at that point is logged
+    by type only, so the cancellation keeps precedence. Otherwise a finalizer
+    failure propagates. ``finish_generation`` is never retried (its accounting
+    is not idempotent).
+    """
     try:
         await served.stream.aclose()
-    except Exception:  # pragma: no cover - best-effort teardown
+    except Exception:  # best-effort teardown; the request is still finalized
         pass
-    return finish_generation(served, error=error)
+    except BaseException:
+        try:
+            finish_generation(served, error=error)
+        except Exception as exc:
+            _log.warning(
+                "grpc_request_finalize_failed",
+                extra={"error_type": type(exc).__name__, "interrupted": True},
+            )
+        raise
+    try:
+        return finish_generation(served, error=error)
+    except Exception as exc:
+        _log.warning(
+            "grpc_request_finalize_failed",
+            extra={"error_type": type(exc).__name__, "interrupted": False},
+        )
+        raise
 
 
 class GrpcEdge:

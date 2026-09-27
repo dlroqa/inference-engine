@@ -84,6 +84,13 @@ release notes and refuses to publish without it (see `docs/releasing.md`).
     fails part-way and cannot be stopped, keeps both locks (`grpc`).
     Previously a failed gRPC stop could release the store while a request
     could still record usage.
+  - A gRPC request is now finalized even when a cancellation interrupts the
+    closing of its generation stream. Previously that cancellation skipped
+    `finish_generation`, so the request's scheduler and backend capacity, its
+    counters, route metrics and usage record were never completed. It is
+    finalized exactly once, then the cancellation propagates. A finalizer
+    failure is logged (`grpc_request_finalize_failed`, by type) and not
+    retried; a failed database write means no usage row, not a duplicate.
   - A cleanup sequence cut short from inside (its task cancelled, not the
     caller) now raises `ShutdownIncompleteError` and keeps the locks, instead
     of returning as if shutdown had succeeded. A caller's cancellation still

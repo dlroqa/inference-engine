@@ -295,9 +295,15 @@ Locks and shutdown:
     process exits.
 - gRPC: calls get a 5-second grace period and are then cancelled. The gRPC
   stop counts as done only after the server has stopped **and** every request
-  handler has ended, including its final usage and billing write; a handler
-  left suspended by a cancelled call is finalized first. The grace period
-  expiring, or cancellation being issued, is not treated as proof.
+  handler has ended, including its finalization; a handler left suspended by a
+  cancelled call is finalized first. The grace period expiring, or
+  cancellation being issued, is not treated as proof.
+- Each gRPC request is finalized exactly once (capacity released, counters,
+  route metrics and its usage record), also when a cancellation interrupts the
+  closing of its stream; the cancellation then still propagates. Finalization
+  runs once, but a database failure can still prevent the usage record from
+  being written: that failure is logged (`grpc_request_finalize_failed`, by
+  type) and never retried, since retrying could count the request twice.
 - Covered writers are the ones the engine starts itself. HTTP requests have
   already finished when the server runs shutdown. A generation thread that is
   still running does not write the store. A supervisor that kills the process
