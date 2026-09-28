@@ -9,6 +9,9 @@ and asserts the operator flow end to end:
   4. log inspection        (GET /logs)
   5. key create + revoke   (POST/DELETE /admin/keys)
   6. system contract       (GET /admin/system — shape, types, and readiness)
+  7. System + Routing views (GET /admin/backends, GET /admin/routes,
+     POST /admin/route/plan, GET /diagnostics — shapes only; the diagnostics
+     bundle is never printed)
 
 Usage:
     python scripts/dashboard_smoke.py --base-url http://127.0.0.1:8000 [--api-key sk-ie-...]
@@ -150,6 +153,131 @@ def validate_system(body: Any, *, require_inference: bool) -> list[str]:
     return problems
 
 
+BACKEND_KEYS = {
+    "name",
+    "kind",
+    "location",
+    "state",
+    "available",
+    "in_flight",
+    "max_in_flight",
+    "model_id",
+    "served_model",
+    "context_length",
+    "supports_prefix_cache",
+    "supports_kv_cache_metrics",
+    "tier",
+    "external",
+}
+ROUTE_KEYS = {
+    "model",
+    "backend",
+    "requests",
+    "errors",
+    "cancelled",
+    "prompt_tokens",
+    "completion_tokens",
+    "cost",
+    "success_rate",
+    "avg_total_ms",
+    "avg_ttft_ms",
+    "avg_queue_wait_ms",
+    "avg_output_tps",
+    "upstream_attempts",
+    "tier",
+    "reasons",
+    "fallbacks",
+    "policies",
+    "workload_rules",
+}
+PLAN_KEYS = {
+    "model",
+    "policy",
+    "known",
+    "chosen",
+    "chosen_step",
+    "steps",
+    "workload_rule",
+    "workload_rule_preferred_targets",
+}
+
+
+def _is_count(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _is_num_or_none(value: object) -> bool:
+    return value is None or (isinstance(value, int | float) and not isinstance(value, bool))
+
+
+def validate_backends(body: Any, *, require_ready: bool) -> list[str]:
+    """Problems with a ``GET /admin/backends`` body (the Backends & Routing pool)."""
+    if not isinstance(body, dict) or set(body) != {"backends", "ready", "count"}:
+        return ["backends body is not {backends, ready, count}"]
+    rows = body["backends"]
+    if not isinstance(rows, list) or body["count"] != len(rows):
+        return ["backends count does not match the list"]
+    problems: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict) or not BACKEND_KEYS <= set(row):
+            problems.append("a backend row lacks the agreed fields")
+            continue
+        if any("url" in k.lower() or "key" in k.lower() for k in row):
+            problems.append("a backend row exposes a URL or key field")
+        flags = ("available", "supports_prefix_cache", "supports_kv_cache_metrics", "external")
+        if not all(isinstance(row[f], bool) for f in flags):
+            problems.append("a backend flag is not a boolean")
+        if row["location"] not in ("local", "remote") or row["tier"] not in (
+            "primary",
+            "spillover",
+        ):
+            problems.append("a backend location/tier is outside the agreed values")
+        if not (_is_count(row["in_flight"]) and _is_count(row["max_in_flight"])):
+            problems.append("a backend in-flight count is not a non-negative int")
+    if not isinstance(body["ready"], bool):
+        problems.append("backends.ready is not a boolean")
+    elif require_ready and not (body["ready"] and any(r.get("available") for r in rows)):
+        problems.append("no backend is ready after model load")
+    return problems
+
+
+def validate_routes(body: Any, *, model: str | None) -> list[str]:
+    """Problems with a ``GET /admin/routes`` body; with ``model``, it must have traffic."""
+    if not isinstance(body, dict) or set(body) != {"routes", "sheds", "totals"}:
+        return ["routes body is not {routes, sheds, totals}"]
+    problems: list[str] = []
+    for row in body["routes"] if isinstance(body["routes"], list) else [None]:
+        if not isinstance(row, dict) or set(row) != ROUTE_KEYS:
+            problems.append("a route row does not have the agreed fields")
+            continue
+        averages = ("success_rate", "avg_total_ms", "avg_ttft_ms", "avg_queue_wait_ms")
+        if not all(_is_num_or_none(row[k]) for k in (*averages, "avg_output_tps")):
+            problems.append("a route average is not a number or null")
+    rows = body["routes"] if isinstance(body["routes"], list) else []
+    served = [r for r in rows if isinstance(r, dict) and r.get("model") == model]
+    recorded = any(_is_count(r.get("requests")) and r["requests"] >= 1 for r in served)
+    if model is not None and not recorded:
+        problems.append("no route row records the smoke's generation")
+    return problems
+
+
+def validate_plan(body: Any, *, model: str, require_choice: bool) -> list[str]:
+    """Problems with a ``POST /admin/route/plan`` body for ``model``."""
+    if not isinstance(body, dict) or set(body) != PLAN_KEYS:
+        return ["route plan does not have the agreed fields"]
+    problems: list[str] = []
+    if body["model"] != model:
+        problems.append("route plan is for a different model")
+    steps = body["steps"]
+    if not isinstance(steps, list) or not all(
+        isinstance(s, dict) and {"targets", "chosen", "candidates"} <= set(s) for s in steps
+    ):
+        problems.append("route plan steps are malformed")
+    if require_choice and not isinstance(body["chosen"], str):
+        problems.append("route plan chose no backend for the loaded model")
+    return problems
+
+
 class Smoke:
     def __init__(self, base_url: str, api_key: str | None) -> None:
         self.base = base_url.rstrip("/")
@@ -261,6 +389,47 @@ class Smoke:
                 + (" + inference available" if real_model else " (no-model mode)"),
                 not problems,
                 "; ".join(problems),
+            )
+
+        # 7. System + Backends & Routing views (A3a). Shapes and statuses only.
+        status, backends = self._req("GET", "/admin/backends")
+        problems = validate_backends(backends, require_ready=real_model) if status == 200 else []
+        detail = "; ".join(problems) or f"status={status}"
+        self.check("backends pool", status == 200 and not problems, detail)
+
+        plan_model = (ov1.get("model", {}) or {}).get("model_id") or "smoke-unknown-model"
+        status, plan = self._req(
+            "POST", "/admin/route/plan", {"model": plan_model, "required_features": []}
+        )
+        problems = []
+        if status == 200:
+            problems = validate_plan(plan, model=plan_model, require_choice=real_model)
+        detail = "; ".join(problems) or f"status={status}"
+        self.check("route plan dry run", status == 200 and not problems, detail)
+        bad_feature = {"model": plan_model, "required_features": ["not_a_feature"]}
+        status, _ = self._req("POST", "/admin/route/plan", bad_feature)
+        self.check("route plan rejects an unknown feature (400)", status == 400, f"status={status}")
+
+        status, routes = self._req("GET", "/admin/routes")
+        problems = []
+        if status == 200:
+            problems = validate_routes(routes, model=plan_model if real_model else None)
+        detail = "; ".join(problems) or f"status={status}"
+        self.check("per-route metrics", status == 200 and not problems, detail)
+
+        # The bundle is only inspected for its top-level shape, never printed.
+        status, bundle = self._req("GET", "/diagnostics")
+        switches = system.get("switches", {}) if isinstance(system, dict) else {}
+        enabled = bool(switches.get("diagnostics_enabled"))
+        if enabled:
+            shaped = isinstance(bundle, dict) and {"engine_version", "config"} <= set(bundle)
+            self.check("diagnostics bundle (enabled)", status == 200 and shaped, f"status={status}")
+        else:
+            code = bundle.get("error", {}).get("code") if isinstance(bundle, dict) else None
+            self.check(
+                "diagnostics refused (disabled)",
+                status == 403 and code == "diagnostics_disabled",
+                f"status={status}",
             )
 
         print()

@@ -468,8 +468,9 @@ jobs:
           wait_healthy 8140
 
           # Restricted engine (A2b): seed a ready model while management is on,
-          # then restart with model management and downloads off and the fixture
-          # configured as its loaded model. Separate data dir and credential.
+          # then restart with model management, downloads and (A3a) the
+          # diagnostics bundle off, and the fixture configured as its loaded
+          # model. Separate data dir and credential.
           RDATA=/tmp/ie-e2e-restricted
           ROWNER=$(owner_key "$RDATA")
           echo "::add-mask::$ROWNER"
@@ -484,6 +485,7 @@ jobs:
             python -m e2e.seed_restricted
           kill "$SEED"; wait "$SEED" || true; SEED=""
           IE_REQUIRE_AUTH=true IE_ALLOW_MODEL_MANAGEMENT=false IE_ALLOW_NETWORK_DOWNLOADS=false \
+          IE_DIAGNOSTICS_ENABLED=false \
           IE_MODEL_PATH="$HOME/models/tiny.gguf" IE_MODEL_ID=tiny \
             inference-engine serve --port 8141 --data-dir "$RDATA" &
           RSRV=$!
