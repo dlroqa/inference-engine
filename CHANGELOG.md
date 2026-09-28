@@ -134,6 +134,13 @@ release notes and refuses to publish without it (see `docs/releasing.md`).
 
 ### Added
 
+- Dashboard **System** view (`#/system`): build, readiness checks and drain state,
+  a read-only feature-switch table with the setting that controls each switch,
+  and a diagnostics-bundle download (saved by the browser, never displayed;
+  disabled with the switch named when `diagnostics_enabled=false`).
+- Dashboard **Backends & routing** view (`#/routing`): the backend pool,
+  per-route cost/latency averages, the configured routing summary, and a
+  route-plan dry run that sends only `model` and `required_features`.
 - `GET /admin/identity` (current operator key metadata or local-dev identity,
   never a token) and `GET /admin/system` (read-only build, readiness, feature
   switches as booleans, and a redacted routing summary).
@@ -167,6 +174,11 @@ release notes and refuses to publish without it (see `docs/releasing.md`).
   the client's button).
 - `docs/dashboard.md` gains a UI → subsystem → endpoint table generated from
   the wiring registry. CI checks it for drift and prints the regenerated diff.
+
+### Fixed
+
+- `POST /admin/route/plan` rejects an unknown `required_features` name with
+  `400 invalid_request_error` instead of failing with an internal error.
 
 ## [0.1.1] - 2026-09-25
 

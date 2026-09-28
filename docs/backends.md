@@ -183,7 +183,8 @@ Block 12 routing leaves the Block 10 deterministic model map in place.
 `GET /admin/backends` shows each backend's live `model_id` and its configured
 `served_model` (so operators see why a model stays known while unavailable), and
 `POST /admin/route/plan` accepts `{"model": ..., "required_features": [...]}` to
-dry-run which engines are eligible.
+dry-run which engines are eligible. The only feature name it checks is
+`structured_output`; any other name is rejected with `400 invalid_request_error`.
 
 ### Prompt/KV-cache metrics & prefix affinity (sub-slice 4)
 
@@ -280,6 +281,10 @@ their state/load — without reserving a slot or generating:
 curl -X POST .../admin/route/plan -H "authorization: Bearer $KEY" \
   -d '{"model": "tiered", "prompt": "optional, for affinity"}'
 ```
+
+The dashboard's **Backends & routing** view offers the same dry run but sends
+only `model` and `required_features`, never a prompt, so its result does not
+reflect prompt-prefix affinity.
 
 #### Per-route cost & performance (sub-slice 5b)
 

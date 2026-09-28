@@ -152,6 +152,25 @@ control to have a registry scope explained by a visible hint on the same surface
   client's own button (Enter or Space). The audit counts a clickable row as
   pointer-only unless it contains that button, and requires none to be.
 
+## System and Backends & routing views
+
+Both views are read-only: configuration is changed in `config.toml` or `IE_…`
+environment variables on the engine, which reads them at startup.
+
+- **System** reads the shared `GET /admin/system` state. Readiness is computed
+  by the same function as the public `GET /readyz` probe (HTTP 200 when ready,
+  503 when not). The public probes (`/healthz`, `/readyz`, `/version`) are not
+  called by the dashboard; they stay in the "no UI" list with that reason.
+- **Diagnostics bundle.** `GET /diagnostics` returns JSON; the dashboard saves it
+  as a file and never renders, logs or screenshots its contents. A
+  `403 diagnostics_disabled` names the `diagnostics_enabled` switch; any other
+  403 is shown as an authorization failure, and a lost operator session ends it.
+- **Backends & routing** keeps unknown values unknown: route latencies are
+  averages since the engine started (no percentiles are collected), and `—`
+  means no samples. The route-plan dry run sends only `model` and
+  `required_features` (`structured_output` is the only checkable feature), so
+  it never simulates prompt-prefix affinity; nothing is reserved or generated.
+
 ## Live metrics states
 
 The Overview's stat cards and Scheduler card read the live metrics stream

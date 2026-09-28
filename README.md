@@ -455,7 +455,7 @@ summary.
 ## Operator dashboard (Block 5)
 
 A small React/Vite single-page app — the local operator UI — is served by the
-engine at **`/dashboard`** (the root path redirects there). Seven views, all driven
+engine at **`/dashboard`** (the root path redirects there). Nine views, all driven
 by the typed admin API and the Block 4 WebSocket feeds:
 
 - **Overview** — health, loaded model + state, uptime, request/token counters
@@ -481,6 +481,17 @@ by the typed admin API and the Block 4 WebSocket feeds:
   deliveries.
 - **Security** (Block 11.6) — the tamper-evident operator/security **audit log**
   with an on-demand hash-chain **integrity check**.
+- **System** — build (version, commit, build time), readiness with each check and
+  the drain state, a **read-only** feature-switch table (state, effect, and the
+  `config.toml` key / `IE_…` variable that sets it), and a **diagnostics bundle**
+  download that is saved, never displayed; with `diagnostics_enabled=false` the
+  control is disabled and names the switch.
+- **Backends & routing** — the backend **pool** (kind, local/remote, tier, state,
+  in-flight vs limit, model, cache capabilities), **per-route cost and latency**
+  averages since start, the configured routing summary, and a **route-plan dry
+  run** that sends only the model name and required features (never a prompt, so
+  prefix affinity is not simulated; nothing is reserved or generated). Routing is
+  configured in `config.toml`; the view is read-only.
 
 Every control explains its backend call through a "How this works" hint. The
 generated **UI → subsystem → endpoint** table, the model details drawer, and the
