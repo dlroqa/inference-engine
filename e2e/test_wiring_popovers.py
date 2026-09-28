@@ -26,6 +26,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from urllib.parse import urlparse
 
+import playwright.sync_api
 import pytest
 from playwright.sync_api import Browser, Locator, Page, expect
 
@@ -61,6 +62,52 @@ def _assert_contained(page: Page, pop: Locator) -> None:
     assert box["x"] >= -eps and box["y"] >= -eps, box
     assert box["x"] + box["width"] <= vp["width"] + eps, (box, vp)
     assert box["y"] + box["height"] <= vp["height"] + eps, (box, vp)
+
+
+# A viewport resize or page scroll reaches the popover through a window listener
+# that calls setState, so its new box is committed a frame or more after the
+# Playwright call returns. Measuring straight away can read the box placed for
+# the previous viewport. Before the action, arm a one-shot listener for its
+# event; afterwards wait (bounded) until that event has fired, two frames have
+# passed, and the box, sampled together with the live viewport, is visible and
+# inside all four edges. The end condition is containment, not movement: a box
+# that is still valid may stay put. A popover that stays misplaced fails with
+# its last geometry.
+_ARM_SETTLE = """type => {
+    window.__ieSettled = false;
+    addEventListener(type, () => requestAnimationFrame(() =>
+        requestAnimationFrame(() => { window.__ieSettled = true; })),
+        { capture: true, once: true });
+}"""
+
+_GEOMETRY = """([el, w, h, eps]) => {
+    const r = el.getBoundingClientRect();
+    const g = { settled: window.__ieSettled === true, vw: innerWidth, vh: innerHeight,
+                x: r.x, y: r.y, width: r.width, height: r.height,
+                visibility: getComputedStyle(el).visibility };
+    g.ok = g.settled && g.vw === w && g.vh === h && g.visibility === "visible"
+        && g.width > 0 && g.height > 0 && g.x >= -eps && g.y >= -eps
+        && g.x + g.width <= w + eps && g.y + g.height <= h + eps;
+    return g;
+}"""
+
+
+def _arm_settle(page: Page, event: str) -> None:
+    page.evaluate(_ARM_SETTLE, event)
+
+
+def _wait_settled_inside(page: Page, pop: Locator, timeout: float = 5_000) -> None:
+    vp = page.viewport_size
+    assert vp
+    arg = [pop.element_handle(), vp["width"], vp["height"], 0.5]
+    try:
+        page.wait_for_function(f"a => ({_GEOMETRY})(a).ok", arg=arg, timeout=timeout)
+    except playwright.sync_api.TimeoutError:
+        last = page.evaluate(_GEOMETRY, arg)
+        raise AssertionError(
+            f"popover not settled inside the viewport within {timeout:.0f} ms: {last}"
+        ) from None
+    _assert_contained(page, pop)
 
 
 def _end_is_reachable(pop: Locator) -> None:
@@ -350,16 +397,37 @@ def test_centered_trigger_in_short_viewport_stays_inside_all_edges(
     _end_is_reachable(pop)
     _shot(page, "05-short-viewport-scrolled-to-end", trigger, pop, engine)
 
-    # Resizing and page scrolling keep it inside the viewport.
+    # Resizing and page scrolling keep it inside the viewport, once each has been
+    # handled (see _wait_settled_inside).
+    _arm_settle(page, "resize")
     page.set_viewport_size({"width": 900, "height": 360})
-    _assert_contained(page, pop)
+    _wait_settled_inside(page, pop)
+    _arm_settle(page, "scroll")
     page.mouse.move(5, 5)
     page.mouse.wheel(0, 120)
-    page.wait_for_timeout(150)
+    _wait_settled_inside(page, pop)
     expect(pop).to_be_visible()
-    _assert_contained(page, pop)
+    _arm_settle(page, "resize")
     page.set_viewport_size({"width": 1280, "height": 900})
-    _assert_contained(page, pop)
+    _wait_settled_inside(page, pop)
+
+
+def test_containment_wait_fails_a_popover_that_stays_outside(page: Page, engine: Engine) -> None:
+    """Negative control: the bounded wait above cannot pass a misplaced popover."""
+    login(page, engine)
+    page.get_by_role("link", name="Logs").click()
+    _info(page, "Logs").click()
+    pop = _popover(page)
+    expect(pop).to_be_visible()
+    # Pin the panel below the bottom edge; placement's inline top cannot win.
+    page.add_style_tag(content=".wired-pop { top: 2000px !important; }")
+    _arm_settle(page, "resize")
+    page.set_viewport_size({"width": 1000, "height": 600})
+    with pytest.raises(AssertionError, match="not settled inside the viewport") as err:
+        _wait_settled_inside(page, pop, timeout=1_500)
+    # It failed on geometry after the resize was handled, and reports that geometry.
+    assert "'settled': True" in str(err.value), str(err.value)
+    assert "'y': 2000" in str(err.value), str(err.value)
 
 
 def test_reduced_motion_disables_the_popover_animation(page: Page, engine: Engine) -> None:
