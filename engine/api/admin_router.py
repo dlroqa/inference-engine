@@ -19,7 +19,7 @@ single configured GGUF model (Block 1); a full model catalog is a later block.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
@@ -154,7 +154,9 @@ class RoutePlanRequest(BaseModel):
     prompt: str | None = None
     #: Request features to enforce during the dry-run (Block 12.1), e.g.
     #: ``["structured_output"]``; candidates are narrowed to supporting backends.
-    required_features: list[str] = Field(default_factory=list)
+    #: Only features the registry can check are accepted: an unknown name is a
+    #: 400 validation error, not an internal error.
+    required_features: list[Literal["structured_output"]] = Field(default_factory=list)
 
 
 @router.post("/route/plan")

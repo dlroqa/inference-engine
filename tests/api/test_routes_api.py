@@ -128,3 +128,23 @@ def test_routes_and_plan_expose_matched_workload_rule(tmp_path) -> None:
         assert response.status_code == 200
         row = client.get("/admin/routes").json()["routes"][0]
         assert row["workload_rules"] == {"json-primary": 1}
+
+
+def test_plan_rejects_unknown_required_feature(priced_client: TestClient) -> None:
+    # An unknown feature name is a client error. It used to reach the registry's
+    # feature lookup and fail there as a 500.
+    resp = priced_client.post(
+        "/admin/route/plan", json={"model": MODEL_ID, "required_features": ["telepathy"]}
+    )
+    assert resp.status_code == 400
+    error = resp.json()["error"]
+    assert error["type"] == "invalid_request_error"
+    assert error["param"] == "required_features.0"
+
+
+def test_plan_accepts_known_required_feature(priced_client: TestClient) -> None:
+    resp = priced_client.post(
+        "/admin/route/plan", json={"model": MODEL_ID, "required_features": ["structured_output"]}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["model"] == MODEL_ID
