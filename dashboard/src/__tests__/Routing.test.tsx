@@ -155,7 +155,8 @@ describe("Backends & Routing view", () => {
     expect(cells.filter((c) => c === "—").length).toBeGreaterThanOrEqual(2); // ttft, output rate
     expect(cells).toContain("67%");
     expect(row).toHaveTextContent("model_map ×3");
-    expect(screen.queryByText(/p50|p95|percentile/i)).toBeNull();
+    // Never labelled as percentiles (the page says none are collected).
+    expect(document.body).not.toHaveTextContent(/\bp(50|95|99)\b/);
   });
 
   it("shows empty states and per-panel errors with Retry", async () => {
@@ -182,7 +183,7 @@ describe("Backends & Routing view", () => {
     const spy = vi.spyOn(api, "routePlan").mockResolvedValue(plan());
     renderRouting();
     await screen.findByRole("region", { name: "Backend pool table" });
-    const submit = screen.getByRole("button", { name: /Plan route/ });
+    const submit = screen.getByRole("button", { name: "Plan route" });
     expect(submit).toBeDisabled();
     await userEvent.type(screen.getByLabelText("Model name"), "auto");
     await userEvent.click(screen.getByLabelText(/Requires structured output/));

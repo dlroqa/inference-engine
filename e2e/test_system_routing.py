@@ -63,7 +63,7 @@ def _switch_row(page: Page, name: str) -> Locator:
 
 def test_system_view_shows_what_the_engine_reports(page: Page, engine: Engine) -> None:
     login(page, engine)
-    page.get_by_role("link", name="System").click()
+    page.get_by_role("link", name="System", exact=True).click()
     expect(page.get_by_role("heading", name="System", exact=True)).to_be_visible()
     expect(page).to_have_url(f"{engine.dashboard}#/system")
     system = _system(engine)
@@ -96,7 +96,7 @@ def test_system_view_shows_what_the_engine_reports(page: Page, engine: Engine) -
 def test_diagnostics_bundle_is_saved_not_shown(page: Page, engine: Engine, tmp_path: Path) -> None:
     login(page, engine)
     page.goto(f"{engine.dashboard}#/system")
-    button = page.get_by_role("button", name="Download diagnostics bundle")
+    button = page.get_by_role("button", name="Download diagnostics bundle", exact=True)
     expect(button).to_be_enabled()
     with page.expect_download() as info:
         button.click()
@@ -135,7 +135,7 @@ def test_diagnostics_disabled_is_explained_and_refused(
 
     _login_restricted(page, restricted)
     page.goto(f"{restricted.dashboard}#/system")
-    button = page.get_by_role("button", name="Download diagnostics bundle")
+    button = page.get_by_role("button", name="Download diagnostics bundle", exact=True)
     expect(button).to_be_disabled()
     described = button.get_attribute("aria-describedby")
     assert described
@@ -156,7 +156,7 @@ def test_client_key_is_an_authorization_failure_not_a_disabled_switch(engine: En
 
 def test_routing_view_lists_the_pool_the_engine_reports(page: Page, engine: Engine) -> None:
     login(page, engine)
-    page.get_by_role("link", name="Backends & routing").click()
+    page.get_by_role("link", name="Backends & routing", exact=True).click()
     expect(page.get_by_role("heading", name="Backends & routing")).to_be_visible()
     with engine.api(engine.operator_key) as c:
         pool = c.get("/admin/backends").json()
@@ -190,7 +190,7 @@ def test_route_plan_sends_no_prompt_and_matches_the_engine(
     page.keyboard.press("Space")
     expect(checkbox).to_be_checked()
     page.keyboard.press("Tab")
-    expect(page.get_by_role("button", name="Plan route")).to_be_focused()
+    expect(page.get_by_role("button", name="Plan route", exact=True)).to_be_focused()
     with page.expect_request(
         lambda r: r.url.endswith("/admin/route/plan") and r.method == "POST"
     ) as req:
@@ -212,7 +212,7 @@ def test_route_plan_sends_no_prompt_and_matches_the_engine(
     # The plain request (no features) for the loaded model chooses a backend.
     checkbox.uncheck()
     with page.expect_request(lambda r: r.url.endswith("/admin/route/plan")) as req2:
-        page.get_by_role("button", name="Plan route").click()
+        page.get_by_role("button", name="Plan route", exact=True).click()
     assert req2.value.post_data_json == {"model": "tiny", "required_features": []}
     with restricted.api() as c:
         plain = c.post("/admin/route/plan", json={"model": "tiny", "required_features": []}).json()
@@ -224,12 +224,13 @@ def test_deep_links_and_history_between_the_new_views(page: Page, engine: Engine
     login(page, engine)
     page.goto(f"{engine.dashboard}#/system")
     expect(page.get_by_role("heading", name="System", exact=True)).to_be_visible()
-    page.get_by_role("link", name="Backends & routing").click()
+    page.get_by_role("link", name="Backends & routing", exact=True).click()
     expect(page.get_by_role("heading", name="Backends & routing")).to_be_visible()
     expect(page.locator("main")).to_be_focused()
     page.go_back()
     expect(page.get_by_role("heading", name="System", exact=True)).to_be_visible()
-    expect(page.get_by_role("link", name="System")).to_have_attribute("aria-current", "page")
+    system_link = page.get_by_role("link", name="System", exact=True)
+    expect(system_link).to_have_attribute("aria-current", "page")
 
 
 @pytest.fixture

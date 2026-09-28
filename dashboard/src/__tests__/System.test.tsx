@@ -77,7 +77,8 @@ describe("System view", () => {
     expect(screen.getByText("applied")).toBeInTheDocument();
     const table = screen.getByRole("region", { name: "Feature switches table" });
     for (const name of SWITCH_NAMES) {
-      expect(within(table).getByText(name)).toBeInTheDocument();
+      // The name and the config key are usually the same text.
+      expect(within(table).getAllByText(name).length).toBeGreaterThan(0);
       expect(within(table).getByText(envVarFor(SWITCH_DETAILS[name].setting))).toBeInTheDocument();
     }
     // The ip allowlist is a boolean; its setting is the list, never its contents.
@@ -120,7 +121,7 @@ describe("System view", () => {
     vi.spyOn(api, "system").mockResolvedValue(info());
     vi.spyOn(api, "diagnostics").mockResolvedValue({ config: { secret_marker: "DO-NOT-RENDER" } });
     renderSystem();
-    await userEvent.click(await screen.findByRole("button", { name: /Download diagnostics bundle/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Download diagnostics bundle" }));
     expect(await screen.findByText(/bundle to your downloads/)).toBeInTheDocument();
     expect(createObjectURL).toHaveBeenCalledTimes(1);
     expect(clicked).toHaveLength(1);
@@ -132,7 +133,7 @@ describe("System view", () => {
     vi.spyOn(api, "system").mockResolvedValue(info({}, { diagnostics_enabled: false }));
     const diag = vi.spyOn(api, "diagnostics");
     renderSystem();
-    const button = await screen.findByRole("button", { name: /Download diagnostics bundle/ });
+    const button = await screen.findByRole("button", { name: "Download diagnostics bundle" });
     await waitFor(() => expect(button).toBeDisabled());
     expect(button).toHaveAccessibleDescription(/diagnostics_enabled=false/);
     expect(diag).not.toHaveBeenCalled();
@@ -145,7 +146,7 @@ describe("System view", () => {
     );
     const reporter = vi.fn(() => false);
     renderSystem(reporter);
-    await userEvent.click(await screen.findByRole("button", { name: /Download diagnostics bundle/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Download diagnostics bundle" }));
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("(diagnostics_enabled=false)");
     expect(alert).not.toHaveTextContent(/Not authorized/);
@@ -158,7 +159,7 @@ describe("System view", () => {
     vi.spyOn(api, "system").mockResolvedValue(info());
     vi.spyOn(api, "diagnostics").mockRejectedValue(new ApiError("address not allowed", 403, "ip_not_allowed"));
     renderSystem();
-    await userEvent.click(await screen.findByRole("button", { name: /Download diagnostics bundle/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Download diagnostics bundle" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Not authorized to download the bundle: address not allowed",
     );
@@ -170,7 +171,7 @@ describe("System view", () => {
     vi.spyOn(api, "diagnostics").mockRejectedValue(lost);
     const reporter = vi.fn((e: unknown) => e === lost);
     renderSystem(reporter);
-    await userEvent.click(await screen.findByRole("button", { name: /Download diagnostics bundle/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Download diagnostics bundle" }));
     await waitFor(() => expect(reporter).toHaveBeenCalledWith(lost));
     expect(screen.queryByRole("alert")).toBeNull();
   });
