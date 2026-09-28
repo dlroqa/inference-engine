@@ -285,7 +285,7 @@ _Generated from `dashboard/src/lib/wiring.ts` and `routes.generated.json`; do no
 | Control | ID | Endpoint | Passes through | Access | Audited | Kill switches | Docs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Signed-in identity | `app.identity` | `GET /admin/identity` | Gateway → Keystore | `operator` | no | — | [Security: operator access](security.md#operator-access) |
-| Feature-switch status | `app.system` | `GET /admin/system` | Gateway → Store → Backend pool → Scheduler | `operator` | no | — | [Security: kill switches](security.md#kill-switches) |
+| System status and feature switches | `app.system` | `GET /admin/system` | Gateway → Store → Backend pool → Scheduler | `operator` | no | — | [Security: kill switches](security.md#kill-switches) |
 | Recent deliveries | `clients.deliveries` | `GET /admin/billing/webhooks/deliveries` | Webhooks | `operator` | no | — | — |
 | Webhook endpoints | `clients.endpoints` | `GET /admin/billing/webhooks/endpoints` | Webhooks | `operator` | no | — | [Webhooks](webhooks.md) |
 | Clients | `clients.list` | `GET /admin/billing/clients` | Billing | `operator` | no | — | [Billing](billing.md) |
@@ -309,7 +309,11 @@ _Generated from `dashboard/src/lib/wiring.ts` and `routes.generated.json`; do no
 | Live metrics | `overview.metrics` | `WS /ws/metrics` | Telemetry → Scheduler → Backend | `operator` | no | — | [Operability](operability.md) |
 | Metrics snapshot (polling fallback) | `overview.metrics-fallback` | `GET /metrics` | Telemetry | `operator` | no | — | — |
 | Engine version and readiness | `overview.readiness` | `GET /admin/overview` | Store → Backend | `operator` | no | — | — |
+| Backend pool | `routing.backends` | `GET /admin/backends` | Backend pool → Backend | `operator` | no | — | [Backends: multiple backends & routing](backends.md#multiple-backends--routing-block-10-sub-slice-3) |
+| Route plan (dry run) | `routing.plan` | `POST /admin/route/plan` | Router → Backend pool | `operator` | no | — | [Backends: virtual models & routing policies](backends.md#virtual-auto-models--routing-policies-sub-slice-5a) |
+| Per-route cost and latency | `routing.routes` | `GET /admin/routes` | Router → Telemetry | `operator` | no | — | [Backends: per-route cost & performance](backends.md#per-route-cost--performance-sub-slice-5b) |
 | Audit log and integrity check | `security.audit` | `GET /admin/audit` | Audit log | `operator` | no | — | [Security: tamper-evident audit log](security.md#tamper-evident-audit-log) |
+| Download diagnostics bundle | `system.diagnostics` | `GET /diagnostics` | Gateway → Telemetry → Log buffer | `operator` | no | The diagnostics bundle (`diagnostics_enabled`) | [Security: log redaction](security.md#log-redaction) |
 
 **Controls with no backend call** (they change only what this browser shows or stores)
 
@@ -321,6 +325,7 @@ _Generated from `dashboard/src/lib/wiring.ts` and `routes.generated.json`; do no
 | Copy checksum | `local.copy-checksum` | Copies the model's SHA-256 checksum text to your clipboard. Nothing is sent to the engine. | — |
 | Copy token | `local.copy-token` | Copies the new token to your clipboard. It is not sent anywhere and cannot be shown again. | — |
 | Cancel | `local.dialog-cancel` | Closes this confirmation. Nothing is sent and nothing changes. | — |
+| Documentation link | `local.docs-link` | Opens the repository documentation on GitHub in a new tab. Nothing is sent to the engine. | — |
 | Text filter | `local.logs-filter` | Filters the log events already loaded in this browser. The server is not queried again. | — |
 | Navigation | `local.navigation` | Changes the page address (#/view) in this browser. | The view that opens then loads its own data from the engine. |
 | Saved operator key | `local.saved-key` | Stores the key in this browser's local storage, or removes it. | The dashboard then calls GET /admin/identity, sending the saved key (if any) as a Bearer token, to re-check who it is signed in as. |
