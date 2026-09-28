@@ -356,6 +356,95 @@ export interface AuditPage {
   verify?: { ok: boolean; count: number; first_bad_id: number | null };
 }
 
+// --- Backends & routing (A3a) ---
+
+// One backend in the pool (GET /admin/backends). Secret-free: no base URL.
+export interface BackendRow {
+  name: string;
+  kind: string;
+  location: "local" | "remote";
+  state: string;
+  available: boolean;
+  in_flight: number;
+  max_in_flight: number;
+  model_id: string | null;
+  served_model: string | null;
+  context_length: number | null;
+  supports_prefix_cache: boolean;
+  supports_kv_cache_metrics: boolean;
+  tier: "primary" | "spillover";
+  external: boolean;
+  /** Last-scraped KV/prefix-cache stats, only when the backend reports them. */
+  cache?: Record<string, number>;
+}
+
+export interface BackendsPage {
+  backends: BackendRow[];
+  ready: boolean;
+  count: number;
+}
+
+// Per-(model, backend) cost and performance since the engine started
+// (GET /admin/routes). Averages only; null means "no samples yet".
+export interface RouteRow {
+  model: string;
+  backend: string;
+  requests: number;
+  errors: number;
+  cancelled: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost: number;
+  success_rate: number | null;
+  avg_total_ms: number | null;
+  avg_ttft_ms: number | null;
+  avg_queue_wait_ms: number | null;
+  avg_output_tps: number | null;
+  upstream_attempts: number;
+  tier: string | null;
+  reasons: Record<string, number>;
+  fallbacks: Record<string, number>;
+  policies: Record<string, number>;
+  workload_rules: Record<string, number>;
+}
+
+export interface RoutesPage {
+  routes: RouteRow[];
+  sheds: Record<string, number>;
+  totals: { requests: number; errors: number; cancelled: number; cost: number; sheds: number };
+}
+
+/** The request features the route-plan dry run can check. */
+export type RouteFeature = "structured_output";
+
+export interface RoutePlanCandidate {
+  name: string;
+  state: string;
+  available: boolean;
+  in_flight: number;
+  has_capacity: boolean;
+}
+
+export interface RoutePlanStep {
+  /** Backend names this step may use; ["*all*"] means the whole pool. */
+  targets: string[];
+  chosen: string | null;
+  candidates: RoutePlanCandidate[];
+}
+
+// POST /admin/route/plan: how a model name would route right now. Nothing is
+// reserved or generated.
+export interface RoutePlan {
+  model: string;
+  policy: string;
+  known: boolean;
+  chosen: string | null;
+  chosen_step: number | null;
+  steps: RoutePlanStep[];
+  workload_rule: string | null;
+  workload_rule_preferred_targets: string[] | null;
+}
+
 // --- Endpoints ---
 
 export const api = {
@@ -413,6 +502,19 @@ export const api = {
     const qs = q.toString();
     return request<{ deliveries: DeliveryRow[] }>(`/admin/billing/webhooks/deliveries${qs ? `?${qs}` : ""}`);
   },
+  // System and routing (A3a)
+  /** The redacted diagnostics bundle, for download only (never rendered). */
+  diagnostics: () => request<Record<string, unknown>>("/diagnostics"),
+  backends: () => request<BackendsPage>("/admin/backends"),
+  routes: () => request<RoutesPage>("/admin/routes"),
+  // Only the model name and required features are sent: never a prompt, so the
+  // dry run does not (and cannot) simulate prompt-prefix affinity.
+  routePlan: (model: string, requiredFeatures: RouteFeature[]) =>
+    request<RoutePlan>("/admin/route/plan", {
+      method: "POST",
+      body: JSON.stringify({ model, required_features: requiredFeatures }),
+    }),
+
   audit: (params: { limit?: number; verify?: boolean } = {}) => {
     const q = new URLSearchParams();
     if (params.limit) q.set("limit", String(params.limit));

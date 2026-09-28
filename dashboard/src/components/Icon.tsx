@@ -21,7 +21,9 @@ type IconName =
   | "lock"
   | "link"
   | "x"
-  | "eye";
+  | "eye"
+  | "server"
+  | "route";
 
 const paths: Record<IconName, JSX.Element> = {
   gauge: (
@@ -111,6 +113,20 @@ const paths: Record<IconName, JSX.Element> = {
     </>
   ),
   x: <path d="M18 6 6 18M6 6l12 12" />,
+  server: (
+    <>
+      <rect x="3" y="4" width="18" height="7" rx="2" />
+      <rect x="3" y="13" width="18" height="7" rx="2" />
+      <path d="M7 7.5h.01M7 16.5h.01" />
+    </>
+  ),
+  route: (
+    <>
+      <circle cx="6" cy="19" r="2" />
+      <circle cx="18" cy="5" r="2" />
+      <path d="M8 19h8.5a3.5 3.5 0 0 0 0-7h-9a3.5 3.5 0 0 1 0-7H16" />
+    </>
+  ),
   eye: (
     <>
       <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" />
