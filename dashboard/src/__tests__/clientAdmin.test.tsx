@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Clients } from "../views/Clients";
-import { api, ApiError, type WebhookEndpointRow } from "../lib/api";
+import { api, ApiError, type PlanRow, type WebhookEndpointRow } from "../lib/api";
 
 const endpoint = (over: Partial<WebhookEndpointRow> = {}): WebhookEndpointRow => ({
   id: "e1",
@@ -95,6 +95,123 @@ describe("plans", () => {
     await userEvent.click(screen.getByRole("button", { name: /^Update plan/ }));
     await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Update plan" }));
     await waitFor(() => expect(api.upsertPlan).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe("plan contract", () => {
+  const plan = (id: string, over: Partial<PlanRow> = {}): PlanRow => ({
+    id,
+    name: id.toUpperCase(),
+    quota_5h_cu: 10,
+    quota_weekly_cu: 100,
+    rate_limit_per_min: null,
+    allowed_models: null,
+    ...over,
+  });
+
+  beforeEach(() => {
+    vi.mocked(api.listPlans).mockResolvedValue({
+      plans: [
+        plan("pro"),
+        plan("closed", { allowed_models: [] }),
+        plan("some", { allowed_models: ["tiny", "big"], rate_limit_per_min: 30 }),
+      ],
+    });
+  });
+
+  async function openPlans() {
+    render(<Clients onNavigate={vi.fn()} />);
+    await screen.findByText("a@example.com");
+    await userEvent.click(screen.getByRole("tab", { name: "Plans" }));
+  }
+
+  async function editAndSave(id: string, name: string) {
+    await userEvent.click(await screen.findByRole("button", { name: `Edit plan ${id}` }));
+    await userEvent.clear(screen.getByLabelText("Name"));
+    await userEvent.type(screen.getByLabelText("Name"), name);
+    await userEvent.click(screen.getByRole("button", { name: /^Update plan/ }));
+    await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Update plan" }));
+  }
+
+  it("keeps a deny-all plan deny-all when an unrelated field is edited", async () => {
+    await openPlans();
+    await editAndSave("closed", "Closed, renamed");
+    await waitFor(() => expect(api.upsertPlan).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.upsertPlan).mock.calls[0][0]).toMatchObject({ name: "Closed, renamed", allowed_models: [] });
+  });
+
+  it("round-trips all models and a selected model list", async () => {
+    await openPlans();
+    await editAndSave("pro", "Pro 2");
+    await waitFor(() => expect(api.upsertPlan).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.upsertPlan).mock.calls[0][0]).toMatchObject({ id: "pro", allowed_models: null });
+    await editAndSave("some", "Some 2");
+    await waitFor(() => expect(api.upsertPlan).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(api.upsertPlan).mock.calls[1][0]).toMatchObject({
+      id: "some",
+      allowed_models: ["tiny", "big"],
+      rate_limit_per_min: 30,
+    });
+  });
+
+  it("labels an inherited rate limit as the engine default, not as no limit", async () => {
+    await openPlans();
+    const row = (await screen.findByText("PRO")).closest("tr") as HTMLElement;
+    expect(row).toHaveTextContent("Engine default");
+    expect(row).not.toHaveTextContent(/no limit/i);
+  });
+
+  it("shows a deny-all plan as allowing no models", async () => {
+    await openPlans();
+    const row = (await screen.findByText("CLOSED")).closest("tr") as HTMLElement;
+    expect(row).toHaveTextContent("No models");
+    expect(row).not.toHaveTextContent(/all models/i);
+  });
+
+  async function fillNewPlan(id: string) {
+    await userEvent.type(screen.getByLabelText("Plan id"), id);
+    await userEvent.type(screen.getByLabelText("Name"), "Team");
+    await userEvent.click(screen.getByRole("button", { name: /^Create plan/ }));
+  }
+
+  it("does not save while the plan list is still loading", async () => {
+    vi.mocked(api.listPlans).mockReturnValue(new Promise(() => {}));
+    await openPlans();
+    await fillNewPlan("pro");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(api.upsertPlan).not.toHaveBeenCalled();
+  });
+
+  it("does not save when the plan list failed to load", async () => {
+    vi.mocked(api.listPlans).mockRejectedValue(new ApiError("engine unavailable", 503, "unavailable"));
+    await openPlans();
+    await screen.findByText(/engine unavailable/);
+    await fillNewPlan("pro");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(api.upsertPlan).not.toHaveBeenCalled();
+  });
+
+  it("asks before saving an id the loaded list does not have, since it may exist by now", async () => {
+    await openPlans();
+    await screen.findByText("PRO");
+    await fillNewPlan("team");
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("replaced");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(api.upsertPlan).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: /^Create plan/ }));
+    await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Create plan" }));
+    await waitFor(() => expect(api.upsertPlan).toHaveBeenCalledTimes(1));
+    expect(api.upsertPlan).toHaveBeenCalledWith({
+      id: "team",
+      name: "Team",
+      quota_5h_cu: 0,
+      quota_weekly_cu: 0,
+      rate_limit_per_min: null,
+      allowed_models: null,
+    });
   });
 });
 

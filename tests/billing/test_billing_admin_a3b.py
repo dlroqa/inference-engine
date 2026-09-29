@@ -22,8 +22,9 @@ from typing import Any
 import pytest
 
 from engine.audit.log import AuditLog
+from engine.auth.keys import KeyStore
 from engine.billing.store import BillingStore
-from engine.billing.webhooks.delivery import DeliveryWorker, UrllibTransport
+from engine.billing.webhooks.delivery import DeliveryWorker, TransportError, UrllibTransport
 from engine.billing.webhooks.store import WebhookStore
 from engine.config import Settings
 from engine.main import create_app
@@ -163,6 +164,60 @@ def test_the_punycode_form_of_an_allowlisted_subdomain_is_accepted(tmp_path: Pat
     assert resp.status_code == 200
 
 
+# ---- plan model entitlements -------------------------------------------------------
+
+
+def test_null_empty_and_named_allowed_models_round_trip_and_are_enforced(
+    tmp_path: Path,
+) -> None:
+    """null = every model, [] = no model, a list = only those. The admin API keeps
+    the three apart, and re-saving a deny-all plan with [] keeps it deny-all."""
+    app, settings = _app(tmp_path)
+    billing = BillingStore(settings.db_path)  # type: ignore[arg-type]
+    with operator_client(app, settings) as client:
+        billing.create_client(id="c1")
+        record, token = KeyStore(settings.db_path).create()  # type: ignore[arg-type]
+        billing.attach_key(record.id, "c1")
+        billing.upsert_subscription(
+            id="s1",
+            client_id="c1",
+            plan_id="p",
+            provider="stripe",
+            provider_sub_id="sub_1",
+            status="active",
+        )
+
+        def save(name: str, models: list[str] | None) -> None:
+            body = {"id": "p", "name": name, "quota_5h_cu": 0, "quota_weekly_cu": 0}
+            resp = client.post("/admin/billing/plans", json={**body, "allowed_models": models})
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["allowed_models"] == models
+            (listed,) = client.get("/admin/billing/plans").json()["plans"]
+            assert listed["allowed_models"] == models
+
+        def chat() -> tuple[int, str | None]:
+            resp = client.post(
+                "/v1/chat/completions",
+                json={"model": "fake", "messages": [{"role": "user", "content": "hi"}]},
+                headers={"authorization": f"Bearer {token}"},
+            )
+            code = resp.json().get("error", {}).get("code") if resp.status_code != 200 else None
+            return resp.status_code, code
+
+        save("closed", [])
+        assert chat() == (403, "model_not_entitled")
+        save("closed, renamed", [])  # an unrelated edit
+        assert chat() == (403, "model_not_entitled")
+        save("some", ["other"])
+        assert chat() == (403, "model_not_entitled")
+        save("some", ["fake"])
+        assert chat() == (200, None)
+        save("all", None)
+        assert chat() == (200, None)
+        save("closed again", [])
+        assert chat() == (403, "model_not_entitled")
+
+
 # ---- no redirects ----------------------------------------------------------------
 
 
@@ -237,3 +292,65 @@ def test_a_redirecting_endpoint_is_a_failed_delivery(tmp_path: Path) -> None:
     (delivery,) = store.list_deliveries()
     assert (delivery.status, delivery.last_status_code) == ("dead", 302)
     assert elsewhere.hits == []
+
+
+# ---- legacy non-ASCII endpoints -------------------------------------------------
+
+
+class _RecordingTransport:
+    def __init__(self) -> None:
+        self.urls: list[str] = []
+
+    def post(self, url: str, body: str, headers: dict[str, str], timeout: float) -> int:
+        self.urls.append(url)
+        return 200
+
+
+def test_a_stored_non_ascii_endpoint_is_dead_lettered_without_a_connection(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An endpoint stored before the ASCII rule (inserted through the store, so the
+    registration check never ran) is never sent to: the delivery is dead-lettered
+    at once, the record names neither host nor URL, and the worker carries on with
+    the other deliveries in its batch."""
+    db = tmp_path / "db.sqlite"
+    conn = connect(db)
+    try:
+        apply_migrations(conn)
+    finally:
+        conn.close()
+    store = WebhookStore(db)
+    BillingStore(db).create_client(id="c1")
+    legacy, _ = store.create_endpoint(client_id="c1", url=f"https://bücher.{ALLOWED}/h")
+    ascii_ep, _ = store.create_endpoint(client_id="c1", url=f"https://xn--bcher-kva.{ALLOWED}/h")
+    store.enqueue_event(client_id="c1", event_id="e1", event_type="x", payload="{}")
+    transport = _RecordingTransport()
+    worker = DeliveryWorker(store, transport=transport, max_attempts=5)
+
+    with caplog.at_level("DEBUG"):
+        assert worker.run_once() == 2
+
+    assert transport.urls == [f"https://xn--bcher-kva.{ALLOWED}/h"]
+    by_endpoint = {d.endpoint_id: d for d in store.list_deliveries()}
+    dead = by_endpoint[legacy.id]
+    assert dead.status == "dead"  # not retried: the stored host cannot change
+    assert dead.last_status_code is None
+    assert dead.last_error is not None and "ASCII" in dead.last_error
+    assert "bücher" not in dead.last_error and ALLOWED not in dead.last_error
+    assert by_endpoint[ascii_ep.id].status == "succeeded"
+    logged = " ".join(f"{r.getMessage()} {r.__dict__}" for r in caplog.records)
+    assert "bücher" not in logged and ALLOWED not in logged
+
+
+def test_the_transport_refuses_a_non_ascii_host_before_opening(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = UrllibTransport()
+
+    def never(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("the transport opened a connection")
+
+    monkeypatch.setattr(transport._opener, "open", never)
+    with pytest.raises(TransportError) as exc:
+        transport.post("https://bücher.example.com/h", "{}", {}, timeout=5)
+    assert "bücher" not in str(exc.value)

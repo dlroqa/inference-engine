@@ -107,14 +107,19 @@ def stripe_secret() -> str:
     return secret
 
 
-def stripe_event(engine: Engine, event_type: str, customer: str, status: str = "active") -> None:
+def stripe_event(
+    engine: Engine,
+    event_type: str,
+    customer: str,
+    status: str = "active",
+    plan: str | None = None,
+) -> None:
     """Emit a real lifecycle event through the signed inbound Stripe webhook."""
     secret = stripe_secret()
-    event = {
-        "id": f"evt_{uuid.uuid4().hex}",
-        "type": event_type,
-        "data": {"object": {"id": f"sub_{customer}", "customer": customer, "status": status}},
-    }
+    obj: dict[str, Any] = {"id": f"sub_{customer}", "customer": customer, "status": status}
+    if plan is not None:
+        obj["metadata"] = {"plan": plan}
+    event = {"id": f"evt_{uuid.uuid4().hex}", "type": event_type, "data": {"object": obj}}
     raw = json.dumps(event).encode()
     ts = int(time.time())
     sig = hmac.new(secret.encode(), f"{ts}.".encode() + raw, hashlib.sha256).hexdigest()
@@ -219,6 +224,67 @@ def test_plans_client_and_one_time_client_key(page: Page, engine: Engine) -> Non
     finally:
         if key_id:
             purge_key(engine, key_id)
+
+
+def test_a_deny_all_plan_stays_deny_all_after_an_unrelated_edit(page: Page, engine: Engine) -> None:
+    """allowed_models [] (no model) is enforced by the real engine, and editing the
+    plan's name in the dashboard keeps it: the request that was refused by the
+    entitlement is still refused by the entitlement, not by auth or the model."""
+    plan_id = f"e2e-deny-{uuid.uuid4().hex[:6]}"
+    customer = f"cus_deny_{uuid.uuid4().hex[:8]}"
+    with engine.api(engine.operator_key) as c:
+        resp = c.post(
+            "/admin/billing/plans",
+            json={
+                "id": plan_id,
+                "name": "Deny all",
+                "quota_5h_cu": 0,
+                "quota_weekly_cu": 0,
+                "allowed_models": [],
+            },
+        )
+        assert resp.status_code == 200, resp.status_code
+    stripe_event(engine, "customer.subscription.created", customer, plan=plan_id)
+    with engine.api(engine.operator_key) as c:
+        clients = c.get("/admin/billing/clients").json()["clients"]
+        (client_id,) = [x["id"] for x in clients if x["external_ref"] == customer]
+        resp = c.post(f"/admin/billing/clients/{client_id}/keys", json={"label": "e2e-deny"})
+        assert resp.status_code in (200, 201), resp.status_code
+        key_id, token = resp.json()["id"], resp.json()["token"]
+    mask(token)
+
+    def attempt() -> tuple[int, str | None]:
+        with engine.api(token) as c:
+            me = c.get("/client/me")
+            assert me.status_code == 200, "the client key must authenticate"
+            resp = c.post(
+                "/v1/chat/completions",
+                json={"model": "tiny", "messages": [{"role": "user", "content": "hi"}]},
+            )
+        if resp.status_code == 200:
+            return 200, None
+        return resp.status_code, resp.json()["error"]["code"]
+
+    def stored_models() -> Any:
+        with engine.api(engine.operator_key) as c:
+            plans = {p["id"]: p for p in c.get("/admin/billing/plans").json()["plans"]}
+        return plans[plan_id]["allowed_models"]
+
+    try:
+        assert attempt() == (403, "model_not_entitled")
+
+        open_clients(page, engine)
+        page.get_by_role("tab", name="Plans").click()
+        button(page, f"Edit plan {plan_id}").click()
+        page.get_by_label("Name", exact=True).fill("Deny all, renamed")
+        page.get_by_role("button", name=re.compile(r"^Update plan")).click()
+        confirm(page, "Update plan")
+        expect(page.get_by_text(f"Updated plan {plan_id}.")).to_be_visible()
+
+        assert stored_models() == []
+        assert attempt() == (403, "model_not_entitled")
+    finally:
+        purge_key(engine, key_id)
 
 
 def test_client_key_token_does_not_survive_a_key_change(page: Page, engine: Engine) -> None:
