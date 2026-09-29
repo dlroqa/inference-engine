@@ -288,6 +288,16 @@ are in the repository's release Compose file. A deployment gains them only when
 its configuration is updated, which is separate deployment work that has not
 been done.
 
+### New since the triage scan: CVE-2026-97399 (Low, glibc)
+
+The #46 dry run on 2026-09-29 (grype DB built 2026-09-29T06:32Z) matched a new
+advisory to `libc6` and `libc-bin`, whose versions are unchanged. It moved the Low
+count from 10 to 12. Per its description, the affected code is glibc's
+`strncasecmp` **optimized for Power8**. This image is linux/amd64, so that
+implementation is not selected on it. Proposed: not applicable by architecture
+(from the advisory text; the image was not inspected for this item). The fix
+state is not-fixed. Not accepted by the user yet.
+
 ### Still open
 
 - Runtime-resolved (`dlsym`), intra-library, and stripped or static uses of the
@@ -308,6 +318,7 @@ been done.
 | G3 diskcache | scoped non-applicability for the inspected configuration | not yet |
 | G12 SQLite | provisional per advisory (see table) | not yet |
 | G1 imaplib/poplib/HTTPPasswordMgr | not used by the parsed installed code | not yet |
+| CVE-2026-97399 (new Low) | not applicable by architecture (Power8-only code; image is amd64) | not yet |
 | Everything else in §3a | status as listed; open items stay open | not yet |
 
 ## 4. Decision for A3a (2026-09-28, historical)
@@ -369,7 +380,7 @@ decision. The decision and any risk acceptance are the user's.
 | F4a | Native/CPython reachability audit of the affected zlib (`gzwrite`/`gz_vacate`, `crc32_combine64`) and glibc functions in the image's shared objects | Claude after authorization; user reviews | **partially investigated** (§3a, draft PR #47, audit 36523922216). Open: runtime-resolved/intra-library calls, stripped or static copies, `libstdc++` iconv, binary-to-source identity; G4 proposal awaits the user | none (does not wait for a package fix) | Source/package-specific evidence; before release review |
 | F4b | Monitor for a fixed Debian zlib package (bug #1146895) and the glibc/util-linux items | user/operator (proposed) | **open; monitoring not scheduled**. Proposed cadence: weekly tracker check (rechecked 2026-09-29: trixie still *vulnerable*), plus a re-dispatch of the image audit at each base refresh. It is not closed by an internal disposition. Contacting Debian needs explicit authorization | Debian | Weekly while the zlib High is unfixed |
 | F5 | When a newer CPython 3.12 or `python:3.12-slim` digest exists, verify each G1 advisory against its release notes, re-scan and compare | user/operator (proposed); Claude can prepare | waiting on upstream | a new release/digest | Advisory-by-advisory fix list, scan diff, compatibility + Release gates |
-| F6 | Retain SBOM + full grype JSON as a bounded-retention artifact on non-publishing Release runs | Claude after authorization; user decides | **pending**: #46 retargeted to `main` after #45 merged and reconciled with `199c4da` (merge commit, F6-only diff); requalification on `main` in progress (see the #46 description). Earlier: dry run 36514562548; combined F1+F6 stack 36523517754. **A failing-gate run has not been exercised.** Integrated only after the user merges | user authorization | Scoped workflow PR (minimal permissions, publication guard unchanged) + a dry run proving retention |
+| F6 | Retain SBOM + full grype JSON as a bounded-retention artifact on non-publishing Release runs | Claude after authorization; user decides | **pending the user's merge**: #46 was retargeted to `main` after #45 merged and reconciled with `199c4da` (merge commit `6c183e9`; F6-only diff, +95/−0). Requalified on `main`: CI 36567830306 and Release 36567830756 (checkout `3dc8a8a`; publish skipped; 53 PASS/0 FAIL; artifact 11032663606 checksums verified). Earlier: dry run 36514562548; combined F1+F6 stack 36523517754. **A failing-gate run has not been exercised.** Integrated only after the user merges | user authorization | Scoped workflow PR (minimal permissions, publication guard unchanged) + a dry run proving retention |
 
 ## 6. Revision log
 
@@ -408,7 +419,10 @@ decision. The decision and any risk acceptance are the user's.
 - 2026-09-29 (integration status): #45 merged as `199c4da` (main CI
   36565420928 green), so F1 is recorded as integrated, not deployed. #46 was
   retargeted to `main`. F-statuses are reported individually instead of
-  "F1–F6 open". Evidence, findings and dispositions are unchanged.
+  "F1–F6 open". #46 was requalified on `main` (Release 36567830756). Added
+  CVE-2026-97399, a new Low matched by the 2026-09-29 grype database, with a
+  proposed architecture-based non-applicability. Other evidence, findings and
+  dispositions are unchanged.
 
 ## Appendix: every advisory in the fresh scan
 
