@@ -1,0 +1,88 @@
+{
+  "ok": true,
+  "steps": [
+    {
+      "step": "healthz",
+      "ok": true
+    },
+    {
+      "step": "import model",
+      "ok": true,
+      "status": 200,
+      "model_status": "ready",
+      "sha256": "2e8040ceae7815abe0dcb3540b9995eaa1fa0d2ca9e797d0a635ae4433c68c2d"
+    },
+    {
+      "step": "load model + ready",
+      "ok": true,
+      "status": 200,
+      "readyz": 200
+    },
+    {
+      "step": "OpenAI chat completion",
+      "ok": true,
+      "status": 200,
+      "content_chars": 24,
+      "finish_reason": "length"
+    },
+    {
+      "step": "OpenAI streamed completion",
+      "ok": true,
+      "chunks": 6,
+      "content_chars": 11,
+      "finish_reason": "stop"
+    },
+    {
+      "step": "Anthropic messages",
+      "ok": true,
+      "status": 200,
+      "content_chars": 8,
+      "stop_reason": "end_turn"
+    },
+    {
+      "step": "GET /admin/overview",
+      "ok": true,
+      "status": 200
+    },
+    {
+      "step": "GET /admin/system",
+      "ok": true,
+      "status": 200
+    },
+    {
+      "step": "GET /admin/models",
+      "ok": true,
+      "status": 200
+    },
+    {
+      "step": "GET /admin/keys",
+      "ok": true,
+      "status": 200
+    },
+    {
+      "step": "GET /metrics",
+      "ok": true,
+      "status": 200
+    },
+    {
+      "step": "GET /logs",
+      "ok": true,
+      "status": 200
+    },
+    {
+      "step": "GET /dashboard/",
+      "ok": true,
+      "status": 200
+    },
+    {
+      "step": "GET /version",
+      "ok": true,
+      "status": 200
+    },
+    {
+      "step": "GET /readyz",
+      "ok": true,
+      "status": 200
+    }
+  ]
+}
