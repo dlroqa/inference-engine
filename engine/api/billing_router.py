@@ -25,7 +25,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from engine.api.deps import require_operator
+from engine.api.deps import operator_identity, require_operator
 from engine.api.errors import error_response
 from engine.billing import stripe as stripe_adapter
 from engine.billing.store import BillingStore
@@ -176,6 +176,19 @@ class KeyForClient(BaseModel):
     label: str | None = Field(default=None, max_length=256)
 
 
+def _audit(
+    request: Request, action: str, target: str, detail: dict[str, Any] | None = None
+) -> None:
+    """Record an operator billing/webhook change in the tamper-evident audit log.
+
+    Details carry ids, labels and hosts only: never a token, a signing secret, or
+    a full endpoint URL (its path or query may hold a receiver's credentials).
+    """
+    request.app.state.audit.record(
+        action, actor=operator_identity(request), target=target, detail=detail
+    )
+
+
 def _require_billing(request: Request) -> BillingStore:
     billing = _billing(request)
     # The store is always constructed in create_app; assert for the type-checker.
@@ -195,6 +208,7 @@ def upsert_plan(request: Request, body: PlanUpsert) -> dict[str, Any]:
         rate_limit_per_min=body.rate_limit_per_min,
         allowed_models=body.allowed_models,
     )
+    _audit(request, "billing.plan.upsert", plan.id, {"name": plan.name})
     return _plan_dict(plan)
 
 
@@ -212,6 +226,7 @@ def create_client(request: Request, body: ClientCreate) -> dict[str, Any]:
     client = billing.create_client(
         id=uuid.uuid4().hex, external_ref=body.external_ref, email=body.email
     )
+    _audit(request, "billing.client.create", client.id)
     return {
         "id": client.id,
         "external_ref": client.external_ref,
@@ -248,6 +263,8 @@ def create_key_for_client(request: Request, client_id: str, body: KeyForClient) 
     key_store = request.app.state.gateway.keys
     record, token = key_store.create(label=body.label)
     billing.attach_key(record.id, client_id)
+    # The same audit action as an operator-created key, with the owning client.
+    _audit(request, "key.create", record.id, {"label": body.label, "client_id": client_id})
     # The token is displayed exactly once, at creation.
     return {
         "id": record.id,
@@ -358,6 +375,15 @@ def create_endpoint(request: Request, body: EndpointCreate) -> dict[str, Any]:
             status_code=400,
             code="invalid_endpoint_url",
         )
+    # Only ASCII hostnames (use the xn-- form for an internationalized name).
+    # The allowlist check and the connection then see the same name, and delivery
+    # never goes through the IDNA 2003 ("idna" codec) conversion.
+    if not parsed.hostname.isascii():
+        return error_response(  # type: ignore[return-value]
+            "endpoint host must be ASCII; use the xn-- (punycode) form",
+            status_code=400,
+            code="endpoint_host_not_ascii",
+        )
     if not _host_allowed(parsed.hostname, settings.egress_allowlist):
         return error_response(  # type: ignore[return-value]
             "endpoint host is not in egress_allowlist",
@@ -369,6 +395,12 @@ def create_endpoint(request: Request, body: EndpointCreate) -> dict[str, Any]:
         url=body.url,
         description=body.description,
         event_types=body.event_types,
+    )
+    _audit(
+        request,
+        "webhook.endpoint.create",
+        endpoint.id,
+        {"client_id": body.client_id, "host": parsed.hostname},
     )
     # The signing secret is displayed exactly once, at creation.
     return {**_endpoint_dict(endpoint), "secret": secret}
@@ -389,6 +421,8 @@ def disable_endpoint(request: Request, endpoint_id: str, disabled: bool = True) 
         return error_response(  # type: ignore[return-value]
             "unknown endpoint", status_code=404, code="endpoint_not_found"
         )
+    action = "webhook.endpoint.disable" if disabled else "webhook.endpoint.enable"
+    _audit(request, action, endpoint_id)
     return {"id": endpoint_id, "disabled": disabled}
 
 
@@ -400,6 +434,7 @@ def delete_endpoint(request: Request, endpoint_id: str) -> dict[str, Any]:
         return error_response(  # type: ignore[return-value]
             "unknown endpoint", status_code=404, code="endpoint_not_found"
         )
+    _audit(request, "webhook.endpoint.delete", endpoint_id)
     return {"id": endpoint_id, "deleted": True}
 
 
@@ -412,8 +447,18 @@ def rotate_secret(request: Request, endpoint_id: str) -> dict[str, Any]:
         return error_response(  # type: ignore[return-value]
             "unknown endpoint", status_code=404, code="endpoint_not_found"
         )
-    secret = store.rotate_secret(endpoint_id, grace_s=settings.webhook_signing_rotation_grace_s)
-    return {"id": endpoint_id, "secret": secret}
+    grace_s = settings.webhook_signing_rotation_grace_s
+    now = time.time()
+    secret = store.rotate_secret(endpoint_id, grace_s=grace_s, now=now)
+    _audit(request, "webhook.endpoint.rotate_secret", endpoint_id, {"grace_s": grace_s})
+    # The new secret is displayed exactly once. Until the grace period ends,
+    # deliveries are signed with the previous secret too, so receivers can switch.
+    return {
+        "id": endpoint_id,
+        "secret": secret,
+        "grace_s": grace_s,
+        "previous_secret_expires_at": now + grace_s,
+    }
 
 
 @router.get("/admin/billing/webhooks/deliveries")
@@ -437,4 +482,5 @@ def replay_delivery(request: Request, delivery_id: str) -> dict[str, Any]:
         return error_response(  # type: ignore[return-value]
             "unknown delivery", status_code=404, code="delivery_not_found"
         )
+    _audit(request, "webhook.delivery.replay", delivery_id)
     return {"id": delivery_id, "status": "pending"}

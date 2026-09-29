@@ -15,7 +15,8 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
-from typing import Protocol
+from http.client import HTTPMessage
+from typing import IO, Protocol
 
 from engine.billing.webhooks import signing
 from engine.billing.webhooks.store import WebhookStore
@@ -38,15 +39,42 @@ class Transport(Protocol):
         ...
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect.
+
+    The egress allowlist is checked against the registered endpoint URL only. A
+    followed redirect would reach a host that was never checked, carrying the
+    webhook headers (including the signature). A 3xx is therefore a failed
+    attempt, retried and dead-lettered like any other non-2xx status.
+    """
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: HTTPMessage,
+        newurl: str,
+    ) -> None:
+        return None
+
+
 class UrllibTransport:
-    """Default transport using the standard library (no third-party dependency)."""
+    """Default transport using the standard library (no third-party dependency).
+
+    Redirects are not followed (see :class:`_NoRedirect`).
+    """
+
+    def __init__(self) -> None:
+        self._opener = urllib.request.build_opener(_NoRedirect)
 
     def post(self, url: str, body: str, headers: dict[str, str], timeout: float) -> int:
         req = urllib.request.Request(  # noqa: S310 - scheme is validated at registration
             url, data=body.encode("utf-8"), headers=headers, method="POST"
         )
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            with self._opener.open(req, timeout=timeout) as resp:
                 return int(resp.status)
         except urllib.error.HTTPError as exc:
             # A non-2xx response is a real HTTP status; the caller decides on retry.
@@ -187,8 +215,8 @@ class DeliveryWorker:
         it is on, records its outcome and returns, and only then does the task
         end, still cancelled. Repeated cancellation does not cut that wait
         short. The delivery timeout limits each blocking network operation, not
-        this wait: redirects and the database writes add to it, so it has no
-        fixed maximum duration.
+        this wait: the database writes add to it, so it has no fixed maximum
+        duration. (Redirects are never followed.)
         """
         loop = asyncio.get_running_loop()
         while not self._stop.is_set():
