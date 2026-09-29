@@ -115,10 +115,11 @@ class InspectionError(Exception):
 
 
 def _rel(root: Path, path: str | os.PathLike[str]) -> str:
+    """The path as it appears inside the image (always POSIX form)."""
     try:
-        return "/" + str(Path(path).relative_to(root))
+        return "/" + Path(path).relative_to(root).as_posix()
     except ValueError:
-        return str(path)
+        return Path(path).as_posix()
 
 
 def _reason(exc: OSError) -> str:
@@ -222,7 +223,7 @@ def elf_report(root: Path) -> dict[str, Any]:
                 embedded.append({"path": rel, "zlib_versions": versions})
         if not Path(rel).name.startswith(("libc.so", "libc-")) and CCS_MODE.search(data):
             ccs.append(rel)
-    gconv = sorted(str(p.relative_to(root)) for p in root.glob("usr/lib/*/gconv/*JISX0213*"))
+    gconv = sorted(_rel(root, p) for p in root.glob("usr/lib/*/gconv/*JISX0213*"))
     report: dict[str, Any] = {
         "completeness": {
             "status": "complete" if not unassessed else "incomplete",
