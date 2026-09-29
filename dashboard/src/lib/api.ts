@@ -327,6 +327,56 @@ export interface WebhookEndpointRow {
   event_types: string[] | null;
 }
 
+export interface PlanRow {
+  id: string;
+  name: string;
+  quota_5h_cu: number;
+  quota_weekly_cu: number;
+  rate_limit_per_min: number | null;
+  allowed_models: string[] | null;
+}
+
+export type PlanUpsert = PlanRow;
+
+/** A client key: its token is returned exactly once, at creation. */
+export interface CreatedClientKey {
+  id: string;
+  prefix: string;
+  label: string | null;
+  client_id: string;
+  token: string;
+}
+
+export interface Reconciliation {
+  client_id: string;
+  cu_5h: number;
+  cu_week: number;
+}
+
+export interface EndpointCreate {
+  client_id: string;
+  url: string;
+  description?: string | null;
+  event_types?: string[] | null;
+}
+
+/** An endpoint with its signing secret, returned exactly once, at creation. */
+export interface CreatedEndpoint extends WebhookEndpointRow {
+  secret: string;
+}
+
+/** A rotated signing secret (shown once) and when the previous one stops signing. */
+export interface RotatedSecret {
+  id: string;
+  secret: string;
+  grace_s: number;
+  previous_secret_expires_at: number;
+}
+
+/** Delivery states the engine sets (pending → succeeded, or dead after the last attempt). */
+export const DELIVERY_STATUSES = ["pending", "succeeded", "dead"] as const;
+export type DeliveryStatus = (typeof DELIVERY_STATUSES)[number];
+
 export interface DeliveryRow {
   id: string;
   endpoint_id: string;
@@ -493,6 +543,46 @@ export const api = {
   listWebhookEndpoints: (clientId?: string) =>
     request<{ endpoints: WebhookEndpointRow[] }>(
       `/admin/billing/webhooks/endpoints${clientId ? `?client_id=${encodeURIComponent(clientId)}` : ""}`,
+    ),
+  // Billing and webhook administration (A3b). Calls that return a one-time
+  // secret take an AbortSignal, so a view can drop a late response.
+  listPlans: () => request<{ plans: PlanRow[] }>("/admin/billing/plans"),
+  upsertPlan: (plan: PlanUpsert) =>
+    request<PlanRow>("/admin/billing/plans", { method: "POST", body: JSON.stringify(plan) }),
+  createClient: (body: { email?: string | null; external_ref?: string | null }) =>
+    request<ClientRow>("/admin/billing/clients", { method: "POST", body: JSON.stringify(body) }),
+  createClientKey: (clientId: string, label: string | null, signal?: AbortSignal) =>
+    request<CreatedClientKey>(`/admin/billing/clients/${encodeURIComponent(clientId)}/keys`, {
+      method: "POST",
+      body: JSON.stringify({ label }),
+      signal,
+    }),
+  reconcileClient: (clientId: string) =>
+    request<Reconciliation>(`/admin/billing/clients/${encodeURIComponent(clientId)}/reconcile`),
+  createWebhookEndpoint: (body: EndpointCreate, signal?: AbortSignal) =>
+    request<CreatedEndpoint>("/admin/billing/webhooks/endpoints", {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal,
+    }),
+  setEndpointDisabled: (id: string, disabled: boolean) =>
+    request<{ id: string; disabled: boolean }>(
+      `/admin/billing/webhooks/endpoints/${encodeURIComponent(id)}/disable?disabled=${disabled}`,
+      { method: "POST" },
+    ),
+  rotateEndpointSecret: (id: string, signal?: AbortSignal) =>
+    request<RotatedSecret>(`/admin/billing/webhooks/endpoints/${encodeURIComponent(id)}/rotate-secret`, {
+      method: "POST",
+      signal,
+    }),
+  deleteEndpoint: (id: string) =>
+    request<{ id: string; deleted: boolean }>(`/admin/billing/webhooks/endpoints/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+  replayDelivery: (id: string) =>
+    request<{ id: string; status: string }>(
+      `/admin/billing/webhooks/deliveries/${encodeURIComponent(id)}/replay`,
+      { method: "POST" },
     ),
   listDeliveries: (params: { endpoint_id?: string; status?: string; limit?: number } = {}) => {
     const q = new URLSearchParams();

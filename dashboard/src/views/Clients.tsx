@@ -1,11 +1,25 @@
-import { useEffect, useMemo, useState, type JSX } from "react";
+import { useEffect, useMemo, useRef, useState, type JSX } from "react";
 import { api, type KeyAttribution } from "../lib/api";
 import { useAsync } from "../hooks/useAsync";
 import { AsyncBoundary } from "../components/Panel";
 import { Badge, statusTone } from "../components/widgets";
 import { Icon } from "../components/Icon";
 import { WiredTo } from "../components/WiredTo";
-import { num, clockTime } from "../lib/format";
+import { num } from "../lib/format";
+import { PlansPanel } from "./Plans";
+import {
+  ClientKeySection,
+  CreateClientCard,
+  DeliveriesSection,
+  EndpointsSection,
+  ReconcileSection,
+} from "./ClientAdmin";
+
+type Tab = "clients" | "plans";
+const TABS: { id: Tab; label: string }[] = [
+  { id: "clients", label: "Clients" },
+  { id: "plans", label: "Plans" },
+];
 
 type NavFn = (view: string, opts?: { logQuery?: string; clientId?: string; keepFocus?: boolean }) => void;
 
@@ -25,6 +39,8 @@ export function Clients({
   const clients = useAsync(() => api.listClients(), []);
   const attribution = useAsync(() => api.usageAttribution("week"), []);
   const [selected, setSelected] = useState<string | null>(focusClientId ?? null);
+  const [tab, setTab] = useState<Tab>("clients");
+  const tabRefs = useRef<Record<Tab, HTMLButtonElement | null>>({ clients: null, plans: null });
 
   // The URL (#/clients/<id>) is the source of truth for the open client.
   useEffect(() => {
@@ -55,6 +71,21 @@ export function Clients({
   };
   const selectedClient = rows.find((c) => c.id === selected) ?? null;
 
+  // Arrow keys move between the tabs (and select), as a tablist should.
+  const onTabKey = (e: React.KeyboardEvent<HTMLButtonElement>) => {
+    const i = TABS.findIndex((t) => t.id === tab);
+    let next: number | null = null;
+    if (e.key === "ArrowRight") next = (i + 1) % TABS.length;
+    if (e.key === "ArrowLeft") next = (i - 1 + TABS.length) % TABS.length;
+    if (e.key === "Home") next = 0;
+    if (e.key === "End") next = TABS.length - 1;
+    if (next === null) return;
+    e.preventDefault();
+    const id = TABS[next].id;
+    setTab(id);
+    tabRefs.current[id]?.focus();
+  };
+
   return (
     <>
       <div className="topbar">
@@ -78,7 +109,44 @@ export function Clients({
         </div>
       </div>
 
-      <div className="grid">
+      <div className="row" style={{ marginBottom: 16 }} data-wiring="local.clients-tab">
+        <div className="segmented" role="tablist" aria-label="Clients sections">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              ref={(el) => {
+                tabRefs.current[t.id] = el;
+              }}
+              id={`clients-tab-${t.id}`}
+              role="tab"
+              type="button"
+              className="segbtn"
+              aria-selected={tab === t.id}
+              aria-controls={`clients-panel-${t.id}`}
+              tabIndex={tab === t.id ? 0 : -1}
+              onClick={() => setTab(t.id)}
+              onKeyDown={onTabKey}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <WiredTo id="local.clients-tab" />
+      </div>
+
+      {tab === "plans" ? (
+        <div role="tabpanel" id="clients-panel-plans" aria-labelledby="clients-tab-plans">
+          <PlansPanel />
+        </div>
+      ) : (
+      <div className="grid" role="tabpanel" id="clients-panel-clients" aria-labelledby="clients-tab-clients">
+        <CreateClientCard
+          onCreated={(client) => {
+            clients.reload();
+            setSelected(client.id);
+            onNavigate("clients", { clientId: client.id, keepFocus: true });
+          }}
+        />
         <div className="card col-12" data-wiring="clients.list">
           <AsyncBoundary
             status={clients.status}
@@ -161,6 +229,7 @@ export function Clients({
           />
         )}
       </div>
+      )}
     </>
   );
 }
@@ -175,24 +244,13 @@ function ClientDetail({
   onClose: () => void;
 }): JSX.Element {
   const endpoints = useAsync(() => api.listWebhookEndpoints(clientId), [clientId]);
-  const endpointIds = (endpoints.data?.endpoints ?? []).map((e) => e.id);
-  const endpointKey = endpointIds.join(",");
-  // Deliveries are requested per endpoint (filtered on the server), so a busy
-  // engine's other clients can never push this client's deliveries off the page.
-  const deliveries = useAsync(async () => {
-    const pages = await Promise.all(
-      endpointIds.map((id) => api.listDeliveries({ endpoint_id: id, limit: 100 })),
-    );
-    return pages
-      .flatMap((p) => p.deliveries)
-      .sort((a, b) => b.created_at - a.created_at);
-  }, [endpointKey]);
+  const endpointRows = endpoints.data?.endpoints ?? [];
+  const endpointKey = endpointRows.map((e) => e.id).join(",");
 
   const clientKeys = attributionKeys.filter((k) => k.client_id === clientId);
-  const clientDeliveries = deliveries.data ?? [];
 
   return (
-    <div className="card col-12" data-wiring="clients.endpoints clients.deliveries">
+    <div className="card col-12" data-wiring="clients.endpoints clients.deliveries" data-client-detail={clientId}>
       <div className="row spread" style={{ marginBottom: 12 }}>
         <h2 style={{ margin: 0 }}>
           Client <span className="mono">{clientId.slice(0, 12)}</span>
@@ -242,79 +300,10 @@ function ClientDetail({
         </table>
       )}
 
-      <div className="row panel-title" style={{ marginTop: 20 }}>
-        <h3 className="detail-h">Webhook endpoints</h3>
-        <WiredTo id="clients.endpoints" />
-      </div>
-      <AsyncBoundary
-        status={endpoints.status}
-        error={endpoints.error}
-        isEmpty={(endpoints.data?.endpoints ?? []).length === 0}
-        emptyText="No webhook endpoints."
-        onRetry={endpoints.reload}
-      >
-        <table className="table">
-          <thead>
-            <tr>
-              <th>URL</th>
-              <th>Events</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(endpoints.data?.endpoints ?? []).map((e) => (
-              <tr key={e.id}>
-                <td className="mono">{e.url}</td>
-                <td className="muted">{e.event_types ? e.event_types.join(", ") : "all"}</td>
-                <td>
-                  <Badge tone={e.disabled ? "neutral" : "ok"}>{e.disabled ? "disabled" : "enabled"}</Badge>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </AsyncBoundary>
-
-      <div className="row panel-title" style={{ marginTop: 20 }}>
-        <h3 className="detail-h">Recent deliveries</h3>
-        <WiredTo id="clients.deliveries" />
-      </div>
-      <AsyncBoundary
-        status={endpoints.status === "ready" ? deliveries.status : endpoints.status}
-        error={endpoints.status === "error" ? endpoints.error : deliveries.error}
-        isEmpty={clientDeliveries.length === 0}
-        emptyText="No deliveries."
-        onRetry={deliveries.reload}
-      >
-        <div className="scroll">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Event</th>
-                <th>Status</th>
-                <th style={{ textAlign: "right" }}>Attempts</th>
-                <th>Last result</th>
-                <th>Created</th>
-              </tr>
-            </thead>
-            <tbody>
-              {clientDeliveries.map((d) => (
-                <tr key={d.id}>
-                  <td className="mono">{d.event_type}</td>
-                  <td>
-                    <Badge tone={statusTone(d.status)}>{d.status}</Badge>
-                  </td>
-                  <td className="tabular" style={{ textAlign: "right" }}>{d.attempts}</td>
-                  <td className="muted">
-                    {d.last_status_code ?? (d.last_error ? "error" : "—")}
-                  </td>
-                  <td className="muted tabular">{clockTime(d.created_at)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </AsyncBoundary>
+      <ClientKeySection clientId={clientId} />
+      <ReconcileSection clientId={clientId} />
+      <EndpointsSection clientId={clientId} endpoints={endpoints} onChanged={endpoints.reload} />
+      {endpoints.status === "ready" && <DeliveriesSection endpoints={endpointRows} endpointKey={endpointKey} />}
     </div>
   );
 }

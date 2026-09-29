@@ -677,7 +677,8 @@ a.navbtn {
   background: var(--color-border);
   color: var(--color-fg);
 }
-.segbtn[aria-pressed="true"] {
+.segbtn[aria-pressed="true"],
+.segbtn[role="tab"][aria-selected="true"] {
   background: var(--color-accent);
   color: var(--color-accent-fg);
 }
@@ -1141,4 +1142,20 @@ a.navbtn {
   width: 18px;
   height: 18px;
   accent-color: var(--color-accent);
+}
+fieldset.field {
+  border: 0;
+  padding: 0;
+  margin-inline: 0;
+  min-width: 0;
+}
+fieldset.field legend {
+  padding: 0;
+  margin-bottom: 6px;
+  font-size: 13px;
+  color: var(--color-fg-muted);
+}
+.plan-models .check-row {
+  font-size: 14px;
+  color: var(--color-fg);
 }

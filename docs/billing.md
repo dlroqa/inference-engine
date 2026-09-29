@@ -18,8 +18,11 @@ default_plan                 = "free"         # seeded with the engine CU limits
 ## Data model (`0006_billing.sql`)
 
 - `plans` — entitlement definitions: `quota_5h_cu`, `quota_weekly_cu` (0 =
-  unlimited), optional `rate_limit_per_min` (NULL = engine default), optional
-  `allowed_models` (JSON array; NULL = all models). **Operator-controlled.**
+  unlimited), optional `rate_limit_per_min` (NULL = the engine-wide
+  `rate_limit_per_min`, not unlimited; 0 = no per-minute limit), optional
+  `allowed_models` (JSON array; NULL = all models, `[]` = no models, a list =
+  only those; a refused model is `403 model_not_entitled`).
+  **Operator-controlled.**
 - `clients` — key owners; `external_ref` is the Stripe customer id
   (`cus_...`); `status` is `active | suspended | canceled`.
 - `subscriptions` — one row per provider subscription id; its `status` + `plan_id`
@@ -69,12 +72,22 @@ Any other event type is ignored (no-op success).
 ## Operator controls (`/admin/billing/*`, behind the operator gate)
 
 - `POST /admin/billing/plans` / `GET /admin/billing/plans` — define/list plans.
+  The POST is an upsert by id: it creates the plan or replaces the plan with
+  that id, and every client on it gets the new values at once.
 - `POST /admin/billing/clients` / `GET /admin/billing/clients` — register/list
   clients (set `external_ref` to the Stripe customer id).
 - `POST /admin/billing/clients/{id}/keys` — create a key owned by the client
   (token returned **once**).
 - `GET /admin/billing/clients/{id}/reconcile` — per-window CU summed across the
   client's keys.
+
+Every write above is recorded in the tamper-evident audit log (`GET /admin/audit`):
+`billing.plan.upsert`, `billing.client.create`, and `key.create` for a client key
+(the same action as an operator key, with the owning `client_id`). Audit details
+carry ids and labels only, never a token. The dashboard's **Clients** view drives
+all of these, with a **Plans** tab; a client key's token is shown once and is
+dropped if the dashboard session or the selected client changes before it
+arrives (see [docs/dashboard.md](dashboard.md)).
 
 ## Metering reconciliation
 

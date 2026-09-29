@@ -181,6 +181,27 @@ function mockApi() {
       }],
     }),
   );
+  const plan = {
+    id: "pro", name: "Pro", quota_5h_cu: 100, quota_weekly_cu: 1000, rate_limit_per_min: 60, allowed_models: null,
+  };
+  vi.spyOn(api, "listPlans").mockImplementation(() => ok({ plans: [plan] }));
+  vi.spyOn(api, "upsertPlan").mockImplementation(() => ok(plan));
+  vi.spyOn(api, "createClient").mockImplementation(() =>
+    ok({ id: "c2", external_ref: null, email: null, status: "active" }),
+  );
+  vi.spyOn(api, "createClientKey").mockImplementation(() =>
+    ok({ id: "k9", prefix: "sk-ie-zz99", label: null, client_id: "c1", token: "sk-ie-zz99-one-time" }),
+  );
+  vi.spyOn(api, "reconcileClient").mockImplementation(() => ok({ client_id: "c1", cu_5h: 4, cu_week: 42 }));
+  vi.spyOn(api, "createWebhookEndpoint").mockImplementation(() =>
+    ok({ id: "e2", client_id: "c1", url: "https://hooks.example/y", description: null, disabled: false, event_types: null, secret: "whsec_new" }),
+  );
+  vi.spyOn(api, "setEndpointDisabled").mockImplementation(() => ok({ id: "e1", disabled: true }));
+  vi.spyOn(api, "rotateEndpointSecret").mockImplementation(() =>
+    ok({ id: "e1", secret: "whsec_rotated", grace_s: 86_400, previous_secret_expires_at: 1_700_086_400 }),
+  );
+  vi.spyOn(api, "deleteEndpoint").mockImplementation(() => ok({ id: "e1", deleted: true }));
+  vi.spyOn(api, "replayDelivery").mockImplementation(() => ok({ id: "d1", status: "pending" }));
   vi.spyOn(api, "listModels").mockImplementation(() =>
     ok({
       models: [
@@ -346,6 +367,68 @@ describe("wiring coverage of dashboard controls", () => {
     expect(rows.length).toBeGreaterThan(0);
     for (const row of rows) expect(keyboardEquivalent(row)).not.toBeNull();
     expect(r.pointerOnly).toBe(0);
+  });
+
+  it("Clients: plans tab, edit, and the update dialog", async () => {
+    await show(<Clients onNavigate={vi.fn()} />, () => screen.findByText("a@x.io"));
+    await userEvent.click(screen.getByRole("tab", { name: "Plans" }));
+    await screen.findByText("Pro");
+    audit("Clients: plans tab");
+    await userEvent.click(screen.getByRole("button", { name: "Edit plan pro" }));
+    audit("Clients: plans tab, editing");
+    await userEvent.click(screen.getByRole("button", { name: /^Update plan/ }));
+    expect(audit("Clients: plan update dialog").explained).toEqual(["local.dialog-cancel", "plans.upsert"]);
+  });
+
+  it("Clients: plan model list, the create dialog, and a failed plan list", async () => {
+    await show(<Clients onNavigate={vi.fn()} />, () => screen.findByText("a@x.io"));
+    await userEvent.click(screen.getByRole("tab", { name: "Plans" }));
+    await screen.findByText("Pro");
+    await userEvent.click(screen.getByRole("radio", { name: "Only these models" }));
+    audit("Clients: plans tab, model list");
+    await userEvent.type(screen.getByLabelText("Plan id"), "team");
+    await userEvent.type(screen.getByLabelText("Name"), "Team");
+    await userEvent.type(screen.getByLabelText("Model names"), "tiny");
+    await userEvent.click(screen.getByRole("button", { name: /^Create plan/ }));
+    expect(audit("Clients: plan create dialog").explained).toEqual(["local.dialog-cancel", "plans.upsert"]);
+  });
+
+  it("Clients: a failed plan list pauses saving and offers a retry", async () => {
+    vi.mocked(api.listPlans).mockRejectedValue(new ApiError("engine unavailable", 503, "unavailable"));
+    await show(<Clients onNavigate={vi.fn()} />, () => screen.findByText("a@x.io"));
+    await userEvent.click(screen.getByRole("tab", { name: "Plans" }));
+    await screen.findByRole("button", { name: "Retry loading plans" });
+    audit("Clients: plan list failed");
+  });
+
+  it("Clients: one-time client key, endpoint secret, and rotated secret", async () => {
+    await show(<Clients focusClientId="c1" onNavigate={vi.fn()} />, () => screen.findByText("invoice.paid"));
+    await userEvent.click(screen.getByRole("button", { name: /^Create client key/ }));
+    await screen.findByTestId("new-client-token");
+    await userEvent.click(screen.getByRole("button", { name: /^Reconcile usage/ }));
+    await screen.findByTestId("reconcile-result");
+    audit("Clients: new client key + reconcile");
+    await userEvent.type(screen.getByLabelText("URL"), "https://hooks.example/y");
+    await userEvent.click(screen.getByRole("button", { name: /^Add endpoint/ }));
+    await screen.findByTestId("new-endpoint-secret");
+    audit("Clients: new endpoint secret");
+    await userEvent.click(screen.getByRole("button", { name: "Rotate secret for endpoint https://hooks.example/x" }));
+    expect(audit("Clients: rotate dialog").explained).toEqual(["local.dialog-cancel", "webhooks.rotate-secret"]);
+    await userEvent.click(screen.getByRole("button", { name: "Rotate secret" }));
+    await screen.findByTestId("rotated-secret");
+    audit("Clients: rotated secret");
+  });
+
+  it("Clients: endpoint disable, delete, and delivery replay dialogs", async () => {
+    await show(<Clients focusClientId="c1" onNavigate={vi.fn()} />, () => screen.findByText("invoice.paid"));
+    await userEvent.click(screen.getByRole("button", { name: "Disable endpoint https://hooks.example/x" }));
+    expect(audit("Clients: disable dialog").explained).toEqual(["local.dialog-cancel", "webhooks.set-disabled"]);
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await userEvent.click(screen.getByRole("button", { name: "Delete endpoint https://hooks.example/x" }));
+    expect(audit("Clients: delete dialog").explained).toEqual(["local.dialog-cancel", "webhooks.delete"]);
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await userEvent.click(screen.getByRole("button", { name: /^Replay invoice\.paid delivery/ }));
+    expect(audit("Clients: replay dialog").explained).toEqual(["local.dialog-cancel", "webhooks.replay"]);
   });
 
   it("Clients: error with retry", async () => {

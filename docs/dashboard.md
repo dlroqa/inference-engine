@@ -171,6 +171,41 @@ environment variables on the engine, which reads them at startup.
   `required_features` (`structured_output` is the only checkable feature), so
   it never simulates prompt-prefix affinity; nothing is reserved or generated.
 
+## Clients: billing and webhook administration
+
+The Clients view has a **Plans** tab and, per client, key, reconcile, webhook
+endpoint and delivery controls. Every write is recorded in the engine's audit log.
+
+- **One-time secrets.** A client key's token and a webhook signing secret (on
+  creation or rotation) are shown once, until "I have saved it", and are never
+  stored, logged or put in the page address. A response is shown only if it
+  still belongs to the current session, the same saved key, and the same
+  client: forgetting or changing the key, losing the session, switching
+  client, or leaving the view aborts the request and drops a late response.
+  The key or secret still exists on the engine; revoke or rotate it if it was
+  not saved.
+- **Confirmations.** Saving a plan, disabling an endpoint, rotating its
+  secret, deleting it and replaying a delivery each ask first (Cancel is
+  focused). Saving a plan is an upsert, so a nominally new id is confirmed
+  too: a plan with that id may have been created since the list loaded, and
+  it would be replaced. The dialog repeats the model and rate entitlement
+  being saved. Plans cannot be saved while the plan list is loading or has
+  failed (the form says why and offers a retry). Creating a client, key or
+  endpoint, enabling an endpoint and reconciling do not ask.
+- **Plan entitlements.** Allowed models is one of three explicit choices:
+  All models (`null`), Only these models (a non-empty list) or No models
+  (`[]`, every request refused). Editing a plan starts from its stored
+  choice, so an unrelated edit never widens or narrows it; an empty "only
+  these" list is refused rather than sent as all models. An empty requests
+  per minute inherits the engine-wide default ("Engine default" in the table,
+  not unlimited); 0 is shown as "Unlimited".
+- **Rotation** shows the grace period and when the previous secret stops
+  signing. **Disabling** an endpoint dead-letters its queued deliveries; they
+  are not resent on enable (replay them). **Deleting** removes its secrets and
+  delivery history.
+- Endpoint hosts must be ASCII and in `egress_allowlist`, and redirects are
+  never followed (see [Webhooks](webhooks.md)).
+
 ## Live metrics states
 
 The Overview's stat cards and Scheduler card read the live metrics stream
@@ -286,9 +321,12 @@ _Generated from `dashboard/src/lib/wiring.ts` and `routes.generated.json`; do no
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Signed-in identity | `app.identity` | `GET /admin/identity` | Gateway → Keystore | `operator` | no | — | [Security: operator access](security.md#operator-access) |
 | System status and feature switches | `app.system` | `GET /admin/system` | Gateway → Store → Backend pool → Scheduler | `operator` | no | — | [Security: kill switches](security.md#kill-switches) |
+| Create client | `clients.create` | `POST /admin/billing/clients` | Billing → Audit log | `operator` | yes | — | [Billing](billing.md) |
+| Create client key | `clients.create-key` | `POST /admin/billing/clients/{client_id}/keys` | Keystore → Billing → Audit log | `operator` | yes | — | — |
 | Recent deliveries | `clients.deliveries` | `GET /admin/billing/webhooks/deliveries` | Webhooks | `operator` | no | — | — |
 | Webhook endpoints | `clients.endpoints` | `GET /admin/billing/webhooks/endpoints` | Webhooks | `operator` | no | — | [Webhooks](webhooks.md) |
 | Clients | `clients.list` | `GET /admin/billing/clients` | Billing | `operator` | no | — | [Billing](billing.md) |
+| Reconcile usage | `clients.reconcile` | `GET /admin/billing/clients/{client_id}/reconcile` | Billing → Quota & usage | `operator` | no | — | — |
 | Create key | `keys.create` | `POST /admin/keys` | Keystore → Audit log | `operator` | yes | — | — |
 | Delete revoked key | `keys.delete` | `DELETE /admin/keys/{key_id}` | Keystore → Audit log | `operator` | yes | — | — |
 | API keys | `keys.list` | `GET /admin/keys` | Keystore | `operator` | no | — | — |
@@ -309,23 +347,34 @@ _Generated from `dashboard/src/lib/wiring.ts` and `routes.generated.json`; do no
 | Live metrics | `overview.metrics` | `WS /ws/metrics` | Telemetry → Scheduler → Backend | `operator` | no | — | [Operability](operability.md) |
 | Metrics snapshot (polling fallback) | `overview.metrics-fallback` | `GET /metrics` | Telemetry | `operator` | no | — | — |
 | Engine version and readiness | `overview.readiness` | `GET /admin/overview` | Store → Backend | `operator` | no | — | — |
+| Plans | `plans.list` | `GET /admin/billing/plans` | Billing | `operator` | no | — | [Billing](billing.md) |
+| Create or update plan | `plans.upsert` | `POST /admin/billing/plans` | Billing → Audit log | `operator` | yes | — | — |
 | Backend pool | `routing.backends` | `GET /admin/backends` | Backend pool → Backend | `operator` | no | — | [Backends: multiple backends & routing](backends.md#multiple-backends--routing-block-10-sub-slice-3) |
 | Route plan (dry run) | `routing.plan` | `POST /admin/route/plan` | Router → Backend pool | `operator` | no | — | [Backends: virtual models & routing policies](backends.md#virtual-auto-models--routing-policies-sub-slice-5a) |
 | Per-route cost and latency | `routing.routes` | `GET /admin/routes` | Router → Telemetry | `operator` | no | — | [Backends: per-route cost & performance](backends.md#per-route-cost--performance-sub-slice-5b) |
 | Audit log and integrity check | `security.audit` | `GET /admin/audit` | Audit log | `operator` | no | — | [Security: tamper-evident audit log](security.md#tamper-evident-audit-log) |
 | Download diagnostics bundle | `system.diagnostics` | `GET /diagnostics` | Gateway → Telemetry → Log buffer | `operator` | no | The diagnostics bundle (`diagnostics_enabled`) | [Security: log redaction](security.md#log-redaction) |
+| Add endpoint | `webhooks.create` | `POST /admin/billing/webhooks/endpoints` | Webhooks → Audit log | `operator` | yes | — | [Webhooks](webhooks.md) |
+| Delete endpoint | `webhooks.delete` | `DELETE /admin/billing/webhooks/endpoints/{endpoint_id}` | Webhooks → Audit log | `operator` | yes | — | — |
+| Replay delivery | `webhooks.replay` | `POST /admin/billing/webhooks/deliveries/{delivery_id}/replay` | Webhooks → Audit log | `operator` | yes | — | — |
+| Rotate signing secret | `webhooks.rotate-secret` | `POST /admin/billing/webhooks/endpoints/{endpoint_id}/rotate-secret` | Webhooks → Audit log | `operator` | yes | — | — |
+| Enable or disable endpoint | `webhooks.set-disabled` | `POST /admin/billing/webhooks/endpoints/{endpoint_id}/disable` | Webhooks → Audit log | `operator` | yes | — | — |
 
 **Controls with no backend call** (they change only what this browser shows or stores)
 
 | Control | ID | What it does | Afterwards |
 | --- | --- | --- | --- |
 | Model source tabs | `local.add-source` | Switches which fields the form shows. Nothing is sent until you submit. | — |
+| Clients / Plans tabs | `local.clients-tab` | Switches between the client list and plan administration in this browser. | The Plans tab then loads GET /admin/billing/plans. |
 | Close detail | `local.close-detail` | Closes this panel and updates the page address. | — |
 | Close details | `local.close-drawer` | Closes the model details and returns the page address to #/models (back to the list entry you came from, when you opened them from the list). | — |
 | Copy checksum | `local.copy-checksum` | Copies the model's SHA-256 checksum text to your clipboard. Nothing is sent to the engine. | — |
+| Copy secret | `local.copy-secret` | Copies the one-time token or signing secret to your clipboard. It is not sent anywhere and cannot be shown again. | — |
 | Copy token | `local.copy-token` | Copies the new token to your clipboard. It is not sent anywhere and cannot be shown again. | — |
 | Cancel | `local.dialog-cancel` | Closes this confirmation. Nothing is sent and nothing changes. | — |
+| I have saved it | `local.dismiss-secret` | Hides the one-time token or signing secret in this browser. It cannot be shown again; rotate or revoke it if it was lost. | — |
 | Documentation link | `local.docs-link` | Opens the repository documentation on GitHub in a new tab. Nothing is sent to the engine. | — |
+| Edit a plan | `local.edit-plan` | Copies a plan's current values into the form, or clears the form. Nothing is sent until you submit. | — |
 | Text filter | `local.logs-filter` | Filters the log events already loaded in this browser. The server is not queried again. | — |
 | Navigation | `local.navigation` | Changes the page address (#/view) in this browser. | The view that opens then loads its own data from the engine. |
 | Saved operator key | `local.saved-key` | Stores the key in this browser's local storage, or removes it. | The dashboard then calls GET /admin/identity, sending the saved key (if any) as a Bearer token, to re-check who it is signed in as. |
