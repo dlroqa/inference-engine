@@ -32,6 +32,13 @@ assert _e2e_spec and _e2e_spec.loader
 e2e = importlib.util.module_from_spec(_e2e_spec)
 sys.modules["release_image_e2e"] = e2e
 _e2e_spec.loader.exec_module(e2e)
+_own_spec = importlib.util.spec_from_file_location(
+    "release_image_ownership", ROOT / "scripts" / "release_image_ownership.py"
+)
+assert _own_spec and _own_spec.loader
+ownership = importlib.util.module_from_spec(_own_spec)
+sys.modules["release_image_ownership"] = ownership
+_own_spec.loader.exec_module(ownership)
 
 DIGEST = "sha256:" + "a" * 64
 REPO = "ghcr.io/dlroqa/inference-engine"
@@ -176,6 +183,85 @@ def test_render_compose_pins_digest_in_repo_template() -> None:
         "stop_grace_period: 40s",
     ):
         assert needle in rendered
+
+
+def _compose_service(text: str) -> dict[str, Any]:
+    return dict(yaml.safe_load(text)["services"]["inference-engine"])
+
+
+def test_compose_runs_with_least_privilege() -> None:
+    template = (ROOT / "deploy" / "compose.yaml").read_text(encoding="utf-8")
+    rendered = release.render_compose(template, f"{REPO}@{DIGEST}")
+    for text in (template, rendered):
+        service = _compose_service(text)
+        assert service["security_opt"] == ["no-new-privileges:true"]
+        assert service["cap_drop"] == ["ALL"]
+        # Nothing re-grants what was dropped or overrides the non-root image user.
+        for key in ("cap_add", "privileged", "user", "userns_mode", "pid", "devices"):
+            assert key not in service
+
+
+def test_ownership_e2e_uses_the_compose_privileges() -> None:
+    service = _compose_service((ROOT / "deploy" / "compose.yaml").read_text(encoding="utf-8"))
+    flags = ownership.HARDENING
+    assert flags[flags.index("--security-opt") + 1 :: 4] == service["security_opt"]
+    assert flags[flags.index("--cap-drop") + 1 :: 4] == service["cap_drop"]
+
+
+HARDENED_HOST_CONFIG = {
+    "SecurityOpt": ["no-new-privileges:true"],
+    "CapDrop": ["ALL"],
+    "CapAdd": None,
+    "Privileged": False,
+}
+
+
+def test_e2e_accepts_the_hardened_host_config() -> None:
+    assert e2e.hardening_problems(HARDENED_HOST_CONFIG) == []
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"SecurityOpt": None},
+        {"SecurityOpt": ["no-new-privileges:false"]},
+        {"CapDrop": ["NET_RAW"]},
+        {"CapDrop": None},
+        {"CapAdd": ["CHOWN"]},
+        {"Privileged": True},
+    ],
+)
+def test_e2e_rejects_a_weakened_host_config(change: dict[str, Any]) -> None:
+    assert e2e.hardening_problems({**HARDENED_HOST_CONFIG, **change})
+
+
+PROC_STATUS = """Name:\tinference-engine
+Uid:\t10001\t10001\t10001\t10001
+NoNewPrivs:\t1
+CapInh:\t0000000000000000
+CapPrm:\t0000000000000000
+CapEff:\t0000000000000000
+CapBnd:\t0000000000000000
+CapAmb:\t0000000000000000
+"""
+
+
+def test_e2e_accepts_a_process_without_privileges() -> None:
+    assert e2e.privilege_problems(PROC_STATUS) == []
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("NoNewPrivs:\t1", "NoNewPrivs:\t0"),
+        ("CapBnd:\t0000000000000000", "CapBnd:\t00000000a80425fb"),  # Docker default set
+        ("CapEff:\t0000000000000000", "CapEff:\t0000000000000400"),
+        ("CapAmb:\t0000000000000000\n", ""),  # a missing field is not "no capability"
+    ],
+)
+def test_e2e_rejects_a_process_that_holds_or_can_gain_privileges(old: str, new: str) -> None:
+    assert old in PROC_STATUS
+    assert e2e.privilege_problems(PROC_STATUS.replace(old, new))
 
 
 def test_compose_grace_period_exceeds_drain_timeout() -> None:
