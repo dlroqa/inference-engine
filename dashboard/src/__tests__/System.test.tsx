@@ -1,10 +1,10 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { System } from "../views/System";
 import { SystemProvider } from "../hooks/useSystem";
 import { AuthScopeProvider } from "../hooks/useAuthScope";
-import { api, ApiError, type SystemInfo } from "../lib/api";
+import { api, ApiError, setApiKey, type SystemInfo } from "../lib/api";
 import { SWITCH_NAMES, envVarFor, SWITCH_DETAILS } from "../lib/switches";
 
 // The System view (A3a): read-only build, readiness and switches from the shared
@@ -174,5 +174,121 @@ describe("System view", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Download diagnostics bundle" }));
     await waitFor(() => expect(reporter).toHaveBeenCalledWith(lost));
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+// A diagnostics response that arrives after its request stopped being current
+// (the view unmounted, the session was replaced, or the saved key changed) must
+// not save a file, touch the view, or report anything.
+describe("System view: late diagnostics responses", () => {
+  function deferred<T>() {
+    let resolve!: (v: T) => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  const BUNDLE = { engine_version: "0.2.0", config: {} };
+
+  function pendingDiagnostics() {
+    const d = deferred<Record<string, unknown>>();
+    const signals: (AbortSignal | undefined)[] = [];
+    vi.spyOn(api, "diagnostics").mockImplementation((signal?: AbortSignal) => {
+      signals.push(signal);
+      return d.promise;
+    });
+    return { d, signals };
+  }
+
+  async function settle(p: Promise<unknown>) {
+    await act(async () => {
+      await p.catch(() => undefined);
+      await new Promise((r) => setTimeout(r, 0));
+    });
+  }
+
+  afterEach(() => setApiKey(null));
+
+  it("saves the file when the response arrives in the same active session", async () => {
+    vi.spyOn(api, "system").mockResolvedValue(info());
+    setApiKey("sk-ie-same");
+    const { d, signals } = pendingDiagnostics();
+    renderSystem();
+    const button = await screen.findByRole("button", { name: "Download diagnostics bundle" });
+    await userEvent.click(button);
+    expect(button).toBeDisabled(); // busy while pending
+    d.resolve(BUNDLE);
+    await settle(d.promise);
+    expect(await screen.findByText(/bundle to your downloads/)).toBeInTheDocument();
+    expect(clicked).toHaveLength(1);
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+    expect(signals[0]?.aborted).toBe(false);
+    expect(button).toBeEnabled();
+  });
+
+  it("aborts the request and saves nothing when the view unmounts first", async () => {
+    vi.spyOn(api, "system").mockResolvedValue(info());
+    const { d, signals } = pendingDiagnostics();
+    const view = renderSystem();
+    await userEvent.click(await screen.findByRole("button", { name: "Download diagnostics bundle" }));
+    view.unmount();
+    expect(signals[0]?.aborted).toBe(true);
+    d.resolve(BUNDLE);
+    await settle(d.promise);
+    expect(clicked).toHaveLength(0);
+    expect(createObjectURL).not.toHaveBeenCalled();
+  });
+
+  it("drops a late response when the session tree is replaced (new key or lost session)", async () => {
+    vi.spyOn(api, "system").mockResolvedValue(info());
+    const { d, signals } = pendingDiagnostics();
+    const reporter = vi.fn(() => false);
+    // The shell remounts the session tree under a new key for every session.
+    const tree = (session: number) => (
+      <AuthScopeProvider value={reporter}>
+        <SystemProvider key={session}>
+          <System />
+        </SystemProvider>
+      </AuthScopeProvider>
+    );
+    const view = render(tree(1));
+    await userEvent.click(await screen.findByRole("button", { name: "Download diagnostics bundle" }));
+    view.rerender(tree(2));
+    expect(signals[0]?.aborted).toBe(true);
+    d.resolve(BUNDLE);
+    await settle(d.promise);
+    expect(clicked).toHaveLength(0);
+    expect(screen.queryByText(/bundle to your downloads/)).toBeNull();
+    // The new session's button is idle.
+    expect(await screen.findByRole("button", { name: "Download diagnostics bundle" })).toBeEnabled();
+  });
+
+  it("ignores a late failure from a replaced session instead of reporting it", async () => {
+    vi.spyOn(api, "system").mockResolvedValue(info());
+    const { d } = pendingDiagnostics();
+    const reporter = vi.fn(() => true);
+    const view = renderSystem(reporter);
+    await userEvent.click(await screen.findByRole("button", { name: "Download diagnostics bundle" }));
+    view.unmount();
+    d.reject(new ApiError("invalid key", 401));
+    await settle(d.promise);
+    expect(reporter).not.toHaveBeenCalled();
+  });
+
+  it("does not save when the saved key changed while the request was pending", async () => {
+    vi.spyOn(api, "system").mockResolvedValue(info());
+    setApiKey("sk-ie-before");
+    const { d } = pendingDiagnostics();
+    renderSystem();
+    await userEvent.click(await screen.findByRole("button", { name: "Download diagnostics bundle" }));
+    setApiKey("sk-ie-after"); // e.g. changed in another tab
+    d.resolve(BUNDLE);
+    await settle(d.promise);
+    expect(await screen.findByRole("alert")).toHaveTextContent("The operator key changed");
+    expect(clicked).toHaveLength(0);
+    expect(createObjectURL).not.toHaveBeenCalled();
   });
 });
