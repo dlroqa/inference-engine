@@ -48,8 +48,9 @@ def test_recorder_counts_calls_once_a_target_module_loads() -> None:
     module.b64decode(b"y")
     assert recorder.calls == {"base64.b64decode": 2}
     # Where the calls came from (this test), not the probe's own frames.
-    (where,) = recorder.origins["base64.b64decode"]
-    assert where.split(" <- ")[0].endswith("test_recorder_counts_calls_once_a_target_module_loads")
+    origins = recorder.origins["base64.b64decode"]
+    assert len(origins) == 2  # two call sites
+    assert all(o.split(" <- ")[0].endswith("_once_a_target_module_loads") for o in origins)
 
 
 def test_recorder_notes_who_imported_a_target_module() -> None:
