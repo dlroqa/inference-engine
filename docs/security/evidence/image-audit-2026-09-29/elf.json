@@ -1,0 +1,372 @@
+{
+  "completeness": {
+    "status": "complete",
+    "regular_files_examined": 7843,
+    "elf_discovered": 814,
+    "elf_inspected": 814,
+    "elf_without_dynsym": [
+      "/usr/local/lib/python3.12/config-3.12-x86_64-linux-gnu/python.o"
+    ],
+    "unassessed": []
+  },
+  "groups": {
+    "zlib: CVE-2026-85091 gz write path": {
+      "gzwrite": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1"
+        ],
+        "imported_by": [
+          "/usr/bin/dpkg-deb",
+          "/usr/lib/x86_64-linux-gnu/libapt-pkg.so.7.0.0"
+        ]
+      },
+      "gzfwrite": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1"
+        ],
+        "imported_by": []
+      },
+      "gzprintf": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1"
+        ],
+        "imported_by": []
+      },
+      "gzvprintf": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1"
+        ],
+        "imported_by": []
+      },
+      "gzputc": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1"
+        ],
+        "imported_by": []
+      },
+      "gzputs": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1"
+        ],
+        "imported_by": []
+      },
+      "gzflush": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1"
+        ],
+        "imported_by": []
+      },
+      "gzsetparams": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1"
+        ],
+        "imported_by": []
+      },
+      "gzclose_w": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1"
+        ],
+        "imported_by": []
+      }
+    },
+    "zlib: gzFile open (any gz* use)": {
+      "gzopen": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1"
+        ],
+        "imported_by": []
+      },
+      "gzopen64": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1"
+        ],
+        "imported_by": []
+      },
+      "gzdopen": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1"
+        ],
+        "imported_by": [
+          "/usr/bin/dpkg-deb",
+          "/usr/lib/x86_64-linux-gnu/libapt-pkg.so.7.0.0"
+        ]
+      },
+      "gzopen_w": {
+        "defined_in": [],
+        "imported_by": []
+      }
+    },
+    "zlib: CVE-2026-27171 crc32 combine": {
+      "crc32_combine": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1"
+        ],
+        "imported_by": []
+      },
+      "crc32_combine64": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1"
+        ],
+        "imported_by": []
+      },
+      "crc32_combine_gen": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1"
+        ],
+        "imported_by": []
+      },
+      "crc32_combine_gen64": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1"
+        ],
+        "imported_by": []
+      },
+      "crc32_combine_op": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1"
+        ],
+        "imported_by": []
+      }
+    },
+    "glibc: CVE-2026-19499 strfmon": {
+      "strfmon": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libc.so.6"
+        ],
+        "imported_by": []
+      },
+      "strfmon_l": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libc.so.6"
+        ],
+        "imported_by": []
+      }
+    },
+    "glibc: CVE-2026-5435/6238 ns_printrr/fp_nquery": {
+      "ns_printrr": {
+        "defined_in": [],
+        "imported_by": []
+      },
+      "ns_printrrf": {
+        "defined_in": [],
+        "imported_by": []
+      },
+      "ns_sprintrr": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libresolv.so.2"
+        ],
+        "imported_by": []
+      },
+      "ns_sprintrrf": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libresolv.so.2"
+        ],
+        "imported_by": []
+      },
+      "fp_nquery": {
+        "defined_in": [],
+        "imported_by": []
+      },
+      "fp_query": {
+        "defined_in": [],
+        "imported_by": []
+      },
+      "p_query": {
+        "defined_in": [],
+        "imported_by": []
+      }
+    },
+    "glibc: CVE-2026-19542 tdelete": {
+      "tdelete": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libc.so.6"
+        ],
+        "imported_by": [
+          "/usr/lib/x86_64-linux-gnu/libncursesw.so.6.5",
+          "/usr/lib/x86_64-linux-gnu/libtinfo.so.6.5"
+        ]
+      }
+    },
+    "glibc: CVE-2026-6791/6368 wordexp": {
+      "wordexp": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libc.so.6"
+        ],
+        "imported_by": []
+      },
+      "wordfree": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libc.so.6"
+        ],
+        "imported_by": []
+      }
+    },
+    "glibc: CVE-2026-77117/80489 iconv (JISX0213)": {
+      "iconv_open": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libc.so.6"
+        ],
+        "imported_by": [
+          "/usr/bin/bash",
+          "/usr/bin/cmp",
+          "/usr/bin/diff",
+          "/usr/bin/diff3",
+          "/usr/bin/iconv",
+          "/usr/bin/printf",
+          "/usr/bin/sdiff",
+          "/usr/bin/tar",
+          "/usr/lib/x86_64-linux-gnu/libapt-pkg.so.7.0.0",
+          "/usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.33"
+        ]
+      },
+      "iconv": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libc.so.6"
+        ],
+        "imported_by": [
+          "/usr/bin/bash",
+          "/usr/bin/cmp",
+          "/usr/bin/diff",
+          "/usr/bin/diff3",
+          "/usr/bin/iconv",
+          "/usr/bin/printf",
+          "/usr/bin/sdiff",
+          "/usr/bin/tar",
+          "/usr/lib/x86_64-linux-gnu/libapt-pkg.so.7.0.0",
+          "/usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.33"
+        ]
+      }
+    },
+    "glibc: CVE-2010-4756 glob": {
+      "glob": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libc.so.6"
+        ],
+        "imported_by": [
+          "/usr/bin/tar",
+          "/usr/lib/x86_64-linux-gnu/libapt-pkg.so.7.0.0",
+          "/usr/lib/x86_64-linux-gnu/security/pam_access.so",
+          "/usr/lib/x86_64-linux-gnu/security/pam_limits.so",
+          "/usr/lib/x86_64-linux-gnu/security/pam_namespace.so"
+        ]
+      },
+      "glob64": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libc.so.6"
+        ],
+        "imported_by": []
+      }
+    },
+    "glibc: CVE-2018-20796/2019-9192 regexec": {
+      "regexec": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libc.so.6"
+        ],
+        "imported_by": [
+          "/usr/bin/bash",
+          "/usr/bin/diff",
+          "/usr/bin/du",
+          "/usr/bin/grep",
+          "/usr/bin/hardlink",
+          "/usr/bin/more",
+          "/usr/bin/run-parts",
+          "/usr/bin/tar",
+          "/usr/lib/x86_64-linux-gnu/libapt-pkg.so.7.0.0",
+          "/usr/lib/x86_64-linux-gnu/libapt-private.so.0.0.0",
+          "/usr/lib/x86_64-linux-gnu/libformw.so.6.5",
+          "/usr/lib/x86_64-linux-gnu/libsemanage.so.2",
+          "/usr/lib/x86_64-linux-gnu/libsmartcols.so.1.1.0"
+        ]
+      },
+      "regcomp": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libc.so.6"
+        ],
+        "imported_by": [
+          "/usr/bin/bash",
+          "/usr/bin/diff",
+          "/usr/bin/du",
+          "/usr/bin/grep",
+          "/usr/bin/hardlink",
+          "/usr/bin/localedef",
+          "/usr/bin/more",
+          "/usr/bin/run-parts",
+          "/usr/bin/tar",
+          "/usr/lib/x86_64-linux-gnu/libapt-pkg.so.7.0.0",
+          "/usr/lib/x86_64-linux-gnu/libapt-private.so.0.0.0",
+          "/usr/lib/x86_64-linux-gnu/libformw.so.6.5",
+          "/usr/lib/x86_64-linux-gnu/libsemanage.so.2",
+          "/usr/lib/x86_64-linux-gnu/libsmartcols.so.1.1.0"
+        ]
+      }
+    },
+    "sqlite: CVE-2026-50812/50813 session extension": {
+      "sqlite3session_create": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libsqlite3.so.0.8.6"
+        ],
+        "imported_by": []
+      },
+      "sqlite3changeset_apply": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libsqlite3.so.0.8.6"
+        ],
+        "imported_by": []
+      },
+      "sqlite3changeset_apply_v2": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libsqlite3.so.0.8.6"
+        ],
+        "imported_by": []
+      },
+      "sqlite3changeset_apply_v3": {
+        "defined_in": [],
+        "imported_by": []
+      },
+      "sqlite3changeset_concat": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libsqlite3.so.0.8.6"
+        ],
+        "imported_by": []
+      },
+      "sqlite3changegroup_new": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libsqlite3.so.0.8.6"
+        ],
+        "imported_by": []
+      },
+      "sqlite3changegroup_add": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libsqlite3.so.0.8.6"
+        ],
+        "imported_by": []
+      }
+    },
+    "sqlite: extension loading (zipfile/session at runtime)": {
+      "sqlite3_load_extension": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libsqlite3.so.0.8.6"
+        ],
+        "imported_by": [
+          "/usr/local/lib/python3.12/lib-dynload/_sqlite3.cpython-312-x86_64-linux-gnu.so"
+        ]
+      },
+      "sqlite3_enable_load_extension": {
+        "defined_in": [
+          "/usr/lib/x86_64-linux-gnu/libsqlite3.so.0.8.6"
+        ],
+        "imported_by": [
+          "/usr/local/lib/python3.12/lib-dynload/_sqlite3.cpython-312-x86_64-linux-gnu.so"
+        ]
+      }
+    }
+  },
+  "embedded_zlib_version_strings": [],
+  "ccs_fopen_mode_strings_outside_libc": [],
+  "jisx0213_gconv_modules": [
+    "usr/lib/x86_64-linux-gnu/gconv/EUC-JISX0213.so",
+    "usr/lib/x86_64-linux-gnu/gconv/SHIFT_JISX0213.so",
+    "usr/lib/x86_64-linux-gnu/gconv/libJISX0213.so"
+  ],
+  "nscd_present": []
+}

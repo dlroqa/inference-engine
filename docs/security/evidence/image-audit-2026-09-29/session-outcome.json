@@ -1,0 +1,7 @@
+{
+  "workload_exit": 0,
+  "serve_exit": 0,
+  "drain_complete_events": 1,
+  "backup_archive": "/data/backups/inference-engine-backup-20260929T045843Z.tar.gz",
+  "restore_db_path": "/data/restore/inference_engine.db"
+}

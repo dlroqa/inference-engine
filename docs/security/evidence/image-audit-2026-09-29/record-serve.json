@@ -1,0 +1,78 @@
+{
+  "argv": [
+    "serve"
+  ],
+  "loaded_before_engine": [],
+  "target_modules_loaded": [
+    "base64",
+    "diskcache",
+    "encodings.idna",
+    "http.cookies",
+    "llama_cpp.llama_cache",
+    "sqlite3",
+    "stringprep",
+    "urllib.request",
+    "zipfile"
+  ],
+  "calls": {
+    "zipfile.ZipFile.__init__": 1
+  },
+  "audit_events": {
+    "ctypes.dlopen": 2,
+    "sqlite3.connect": 41,
+    "sqlite3.connect/handle": 41,
+    "subprocess.Popen": 1
+  },
+  "audit_details": {
+    "sqlite3.connect": [
+      "/data/inference_engine.db",
+      "file:/data/inference_engine.db?mode=ro"
+    ],
+    "subprocess.Popen": [
+      "('uname', ['uname', '-p'])"
+    ],
+    "ctypes.dlopen": [
+      "/usr/local/lib/python3.12/site-packages/llama_cpp/lib/libllama.so",
+      "None"
+    ]
+  },
+  "origins": {
+    "ctypes.dlopen": [
+      "stdlib/ctypes/__init__.py:379 __init__ <- llama_cpp/_ctypes_extensions.py:102 load_shared_library <- llama_cpp/llama_cpp.py:43 <module> <- llama_cpp/__init__.py:1 <module> <- engine/inference/llamacpp.py:115 _load <- stdlib/concurrent/futures/thread.py:59 run",
+      "stdlib/ctypes/__init__.py:379 __init__ <- stdlib/ctypes/__init__.py:472 <module> <- llama_cpp/llama_cpp.py:4 <module> <- llama_cpp/__init__.py:1 <module> <- engine/inference/llamacpp.py:115 _load <- stdlib/concurrent/futures/thread.py:59 run"
+    ],
+    "import base64": [
+      "pydantic/types.py:5 <module> <- pydantic/fields.py:23 <module> <- stdlib/importlib/__init__.py:90 import_module <- pydantic/__init__.py:446 __getattr__ <- engine/config.py:20 <module> <- engine/cli.py:21 <module>"
+    ],
+    "import diskcache": [
+      "llama_cpp/llama_cache.py:10 <module> <- llama_cpp/llama.py:35 <module> <- llama_cpp/__init__.py:2 <module> <- engine/inference/llamacpp.py:115 _load <- stdlib/concurrent/futures/thread.py:59 run <- stdlib/concurrent/futures/thread.py:93 _worker"
+    ],
+    "import encodings.idna": [
+      "stdlib/encodings/__init__.py:99 search_function <- uvicorn/server.py:182 startup <- uvicorn/server.py:105 _serve <- uvicorn/server.py:90 serve <- stdlib/asyncio/runners.py:118 run <- stdlib/asyncio/runners.py:195 run"
+    ],
+    "import http.cookies": [
+      "starlette/requests.py:6 <module> <- fastapi/security/api_key.py:7 <module> <- fastapi/security/__init__.py:1 <module> <- fastapi/dependencies/models.py:9 <module> <- fastapi/routing.py:52 <module> <- fastapi/applications.py:7 <module>"
+    ],
+    "import llama_cpp.llama": [
+      "llama_cpp/__init__.py:2 <module> <- engine/inference/llamacpp.py:115 _load <- stdlib/concurrent/futures/thread.py:59 run <- stdlib/concurrent/futures/thread.py:93 _worker <- stdlib/threading.py:1012 run <- stdlib/threading.py:1075 _bootstrap_inner"
+    ],
+    "import llama_cpp.llama_cache": [
+      "llama_cpp/llama.py:35 <module> <- llama_cpp/__init__.py:2 <module> <- engine/inference/llamacpp.py:115 _load <- stdlib/concurrent/futures/thread.py:59 run <- stdlib/concurrent/futures/thread.py:93 _worker <- stdlib/threading.py:1012 run"
+    ],
+    "import stringprep": [
+      "stdlib/encodings/idna.py:3 <module> <- stdlib/encodings/__init__.py:99 search_function <- uvicorn/server.py:182 startup <- uvicorn/server.py:105 _serve <- uvicorn/server.py:90 serve <- stdlib/asyncio/runners.py:118 run"
+    ],
+    "import urllib.request": [
+      "engine/billing/webhooks/delivery.py:16 <module> <- engine/billing/webhooks/__init__.py:14 <module> <- engine/api/billing_router.py:32 <module> <- engine/main.py:32 <module> <- engine/cli.py:103 _cmd_serve <- engine/cli.py:278 main"
+    ],
+    "import zipfile": [
+      "stdlib/importlib/metadata/__init__.py:8 <module> <- pydantic/plugin/_loader.py:3 <module> <- pydantic/plugin/_schema_validator.py:38 create_schema_validator <- pydantic/_internal/_model_construction.py:690 complete_model_class <- pydantic/_internal/_model_construction.py:256 __new__ <- pydantic/root_model.py:32 <module>"
+    ],
+    "subprocess.Popen": [
+      "stdlib/subprocess.py:1823 _execute_child <- stdlib/subprocess.py:1026 __init__ <- stdlib/subprocess.py:548 run <- stdlib/subprocess.py:466 check_output <- stdlib/platform.py:828 from_subprocess <- stdlib/platform.py:800 get"
+    ],
+    "zipfile.ZipFile.__init__": [
+      "stdlib/zipfile/_path/__init__.py:90 __init__ <- stdlib/zipfile/_path/__init__.py:155 make <- stdlib/zipfile/_path/__init__.py:282 __init__ <- stdlib/importlib/metadata/__init__.py:686 zip_children <- stdlib/importlib/metadata/__init__.py:682 children <- stdlib/importlib/metadata/__init__.py:713 __init__"
+    ]
+  }
+}

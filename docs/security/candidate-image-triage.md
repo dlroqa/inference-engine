@@ -1,8 +1,17 @@
 # Candidate image vulnerability triage (initial)
 
-Status: **initial triage, 2026-09-27; revised 2026-09-28 after review** (see §6). This is not a vulnerability-free
-claim and not production-release approval. It decides whether any finding must
-be fixed before A3a feature work, and it lists what is still unassessed.
+Status: **initial triage, 2026-09-27; revised 2026-09-28 after review;
+reachability evidence added and corrected 2026-09-29** (see §3a, §3b, §4a, §6).
+This is not a vulnerability-free claim and not production-release approval.
+
+**Current state (2026-09-29):** no urgent blocker has been identified in the
+assessed findings; unresolved investigations may change that decision (§4a).
+Current dispositions are in §3a, and which of them the user has accepted is in
+§3b (none yet). The §3 table and §4 are the dated 2026-09-28 record, and §3a
+supersedes them where they differ. Follow-ups (§5): F1 is **integrated** (#45,
+merged as `199c4da`; not deployed); F6 is **integrated** (#46, merged as
+`84b6817`; main CI 36612186495 green; retention after a failing Critical gate
+not yet exercised); F3/F4a are partially investigated; F2, F4b and F5 are open.
 
 The release gate is unchanged. It fails only on unexcepted **Critical** findings
 (`docs/releasing.md`, "Vulnerability gate"). No exceptions were added, no
@@ -51,9 +60,13 @@ The runtime stage is the pinned `python:3.12-slim` base plus the hash-locked
 stage and the wheel-build stage are discarded, so no build-only tools are
 scanned, apart from `pip`, which the base image ships (see G2). The container
 runs as uid 10001 (`engine`) and executes `inference-engine serve` plus a
-`python -c urllib` health check. The engine does not use `subprocess`
-(verified by source search), so the Debian command-line tools are present but
-not invoked by the product.
+`python -c urllib` health check. ~~The engine does not use `subprocess`
+(verified by source search)~~ **Corrected 2026-09-29:** the engine's source
+never imports `subprocess`, but a recorded serve session (§3a) shows one
+indirect spawn: `platform.processor()` in `engine/telemetry/hardware.py` runs
+`uname -p` (fixed argv, no shell, no user input). No other process was observed in
+the recorded serve, backup and restore sessions. The remaining Debian command-line tools are
+present but were not invoked.
 
 ## 2. Exploitation evidence
 
@@ -64,7 +77,7 @@ not invoked by the product.
   Every High is below 0.0065.
 - Neither fact is treated as proof of safety. They only affect priority.
 
-## 3. Findings by group
+## 3. Findings by group (2026-09-28 record; see §3a for current dispositions)
 
 "Reachability" separates **verified** facts (source search of `engine/`, image
 inventories, upstream or Debian tracker text) from **assumptions**, which are
@@ -81,7 +94,7 @@ nothing here records the user accepting residual risk.
 | **G3** diskcache 5.6.3 (GHSA-w8v5-vhqr-4h9v, pickle deserialization) | 0/1/0/0 | 1 | No fixed version (grype: not-fixed) | Locked dependency of `llama-cpp-python`. `engine/` never uses diskcache or llama cache APIs (verified). Exploitation needs write access to a cache directory. **Assumption:** llama-cpp-python does not create a disk cache unless asked | **Investigate** (F3, low): confirm there is no default disk-cache use; otherwise justified non-applicability |
 | **G4** zlib1g | 1/1/0/0 | 2 | CVE-2026-85091 (High, `gz_vacate` heap overflow in non-blocking `gzwrite`): an **upstream fix exists** ([madler/zlib@df84af2](https://github.com/madler/zlib/commit/df84af25dc1942490e1d1c899a07619152a46148), [issue #1310](https://github.com/madler/zlib/issues/1310)), but **no fixed Debian package** exists: bookworm, trixie, forky and sid all vulnerable/unfixed, rechecked 2026-09-28 ([tracker](https://security-tracker.debian.org/tracker/CVE-2026-85091), bug #1146895). CVE-2026-27171 (CPU use in `crc32_combine64`): Debian wont-fix | Library present and used by CPython's `zlib`/`gzip` (backups use `tarfile` `w:gz`). **Assumption:** CPython's zlib module uses the deflate/inflate stream API, not the `gzFile` API where `gz_vacate` lives; native wheels (llama.cpp etc.) are unaudited for `gzwrite` use | **Investigate now** (F4a native/CPython reachability audit, which does not wait for a package) and **monitor** (F4b) for a fixed Debian package. No Debian base image fixes it today. Highest-priority open item; exposure neither demonstrated nor excluded |
 | **G5** glibc (libc6, libc-bin) | 2/9/2/7 | 40 | CVE-2026-19499 (strfmon): Debian "minor issue, no DSA", fixed only in 2.43-5 (sid/forky) ([tracker](https://security-tracker.debian.org/tracker/CVE-2026-19499)). The others are wont-fix or not-fixed per grype's Debian data | Present in every process. The affected functions (`strfmon`, deprecated `ns_printrr`/`fp_nquery`, `fopen ,ccs=`, `tdelete`, `wordexp`/tilde, `iconv` JISX0213, `nscd`, `ld.so` TOCTOU) are not called by the engine's Python code. **Assumption:** CPython and native wheels do not call them on network input. The resolver search-list issue (8674) needs control of `resolv.conf`/`LOCALDOMAIN`, which the operator or runtime owns | **Provisional low priority** pending F4a (CPython/native reachability is unassessed); fixes arrive through base refreshes |
-| **G6** util-linux family (bsdutils, libblkid1, libmount1, libsmartcols1, libuuid1, liblastlog2-2, login, mount, util-linux) | 4/1/0/1 | 54 | CVE-2026-76642: Debian trixie vulnerable, **no-dsa, minor issue**; fixed in forky 2.42.3-1 ([tracker](https://security-tracker.debian.org/tracker/CVE-2026-76642)). 78408/78409/78410/3184: wont-fix per grype | Tools not invoked by the engine. **Relevant as post-compromise escalation:** `mount` (and `su`) are normally setuid in Debian (**assumption**: not yet listed from this image, part of F1), and `deploy/compose.yaml` sets neither `no-new-privileges` nor `cap_drop`. Code execution as uid 10001 could attempt local escalation inside the container. Needs a prior compromise | **Schedule hardening** (F1): add `security_opt: [no-new-privileges:true]` and `cap_drop: [ALL]` to Compose (and the docs), validated by the image E2E. Not an A3a blocker |
+| **G6** util-linux family (bsdutils, libblkid1, libmount1, libsmartcols1, libuuid1, liblastlog2-2, login, mount, util-linux) | 4/1/0/1 | 54 | CVE-2026-76642: Debian trixie vulnerable, **no-dsa, minor issue**; fixed in forky 2.42.3-1 ([tracker](https://security-tracker.debian.org/tracker/CVE-2026-76642)). 78408/78409/78410/3184: wont-fix per grype | Tools not invoked by the engine. **Relevant as post-compromise escalation:** `mount` (and `su`) are normally setuid in Debian (**assumption**: not yet listed from this image, part of F1), and `deploy/compose.yaml` sets neither `no-new-privileges` nor `cap_drop`. Code execution as uid 10001 could attempt local escalation inside the container. Needs a prior compromise | **Schedule hardening** (F1): add `security_opt: [no-new-privileges:true]` and `cap_drop: [ALL]` to Compose (and the docs), validated by the image E2E. No urgent blocker has been identified in the assessed findings; unresolved investigations may change that decision. **2026-09-29:** integrated by #45 (merged as `199c4da`, §3a); deployments gain it only when their Compose file is updated |
 | **G7** ncurses (libncursesw6, libtinfo6, ncurses-base, ncurses-bin) | 1/1/0/0 | 8 | wont-fix (grype/Debian) | `infocmp`/form library, not used by the engine | Justified non-applicability (no terminal UI in the product); re-check at base refresh |
 | **G8** perl-base | 2/2/0/1 | 5 | CVE-2026-82560 (Pod::Text): trixie vulnerable, no-dsa, unfixed in sid ([tracker](https://security-tracker.debian.org/tracker/CVE-2026-82560)). CVE-2026-9538 (Archive::Tar) and others: wont-fix | Essential Debian package (dpkg scripts). The engine never runs perl | Justified non-applicability; re-check at base refresh |
 | **G9** acl/attr (libacl1, libattr1) | 2/1/0/0 | 3 | wont-fix (grype/Debian) | Local symlink/TOCTOU issues in path-based ACL functions and `getfattr`/`setfattr`. Not used by the engine | Justified non-applicability for the product; covered by F1 hardening |
@@ -97,7 +110,218 @@ nothing here records the user accepting residual risk.
 built and run. It is not "resolved": the packages remain installed and
 re-appear in every scan.
 
-## 4. Decision for A3a
+## 3a. Reachability evidence (F1, F3, F4a; 2026-09-29)
+
+The §3 table is the dated 2026-09-28 record; this section supersedes its
+dispositions where they differ. Nothing here changes a gate, exception,
+dependency or finding. Proposed dispositions are **proposals**; §3b records which
+ones the user has accepted (none so far). User acceptance does not strengthen
+the technical evidence.
+
+### Evidence identity
+
+| Source | Run | What it is |
+| --- | --- | --- |
+| Image reachability audit (F3/F4a), draft PR #47 | [36523922216](https://github.com/dlroqa/inference-engine/actions/runs/36523922216) attempt 1: checkout `c6d9544` (synthetic merge of PR head `6f042d6` into `f121e91`) | `.github/workflows/image-audit.yml` + `scripts/image_reachability.py`, with completeness checks, the enforced workload and the source trust chain. **Raw evidence retained in `docs/security/evidence/image-audit-2026-09-29/`** (checksums verified) |
+| Earlier audit runs (same PR) | [36514927554](https://github.com/dlroqa/inference-engine/actions/runs/36514927554), [36515304639](https://github.com/dlroqa/inference-engine/actions/runs/36515304639), [36515849536](https://github.com/dlroqa/inference-engine/actions/runs/36515849536) | Same ELF, static and zlib-source findings, but these runs **did not enforce** inspection completeness or workload outcomes. They recorded HTTP 200 and serve exit 0 without asserting them. They are kept as observations only |
+| Release dry run of F1, PR #45 (merged 2026-09-29 as `199c4da`; main CI [36565420928](https://github.com/dlroqa/inference-engine/actions/runs/36565420928) green) | [36514494606](https://github.com/dlroqa/inference-engine/actions/runs/36514494606) | Privilege inventory + image E2E + ownership E2E under the hardened Compose settings |
+
+The audit image is a **rebuild**: manifest `sha256:4c53eef1…`, config
+`sha256:f3b3c78e…`, with the same Dockerfile, base digests and lock files as §1.
+It is not byte-identical to the scanned image of §1 or to any published image.
+Package versions match §1 (`dpkg.tsv`: `zlib1g 1:1.3.dfsg+really1.3.1-1+b1`,
+SQLite 3.46.1, CPython 3.12.14).
+
+### Method, completeness and limits
+
+- **ELF:** `readelf --dyn-syms` on every ELF file in the exported root
+  filesystem. Completeness **complete**: 7,843 regular files examined, 814 ELF
+  discovered, 814 inspected, 0 unassessed. One ELF has no dynamic symbol table
+  (`python.o`), so its references are not visible. A failed inspection would
+  have been listed and would have failed the job (exit 3).
+  This shows **direct dynamic-symbol imports only**. It does not see calls
+  resolved at runtime (`dlsym`), calls inside one library, or stripped or
+  statically linked copies. String searches (zlib version strings, `,ccs=`
+  modes) found nothing, which is a bounded observation, not proof of absence.
+- **Static:** AST scan of all 1,432 `.py` files of every installed distribution
+  (complete: 0 unparsed, none without RECORD). Compiled extension modules
+  (40 files, for example numpy, llama_cpp, websockets, uvloop, httptools) are
+  **not** scanned.
+- **Recorded:** `inference-engine serve`, `backup` and `restore` ran under an
+  audit hook with post-import call counters and calling stacks. The serve
+  session was driven and **checked** step by step: health; GGUF import (status
+  ready, sha256); load and `/readyz` 200; OpenAI chat (non-empty content,
+  `finish_reason`); OpenAI stream (content, finishing chunk, then `[DONE]`);
+  Anthropic `/v1/messages` (text content, `stop_reason`); and 200 from
+  `/admin/{overview,system,models,keys}`, `/metrics`, `/logs`, `/dashboard/`,
+  `/version` and `/readyz`. Serve exit code 0 with a `drain_complete` event,
+  backup archive created and restore succeeded were all asserted. All 15 steps
+  passed. The summaries keep statuses and counts only.
+  A recording shows what this session did. **Not exercised:** remote backends,
+  webhook delivery, model downloads, WebSocket traffic, billing, other request
+  shapes and settings.
+
+### G4 zlib: CVE-2026-85091 (High)
+
+- **Source evidence.** The advisory text gives zlib 1.3.1.2 through 1.3.2, and
+  the non-blocking `gz*` support that contains `gz_vacate` first appeared
+  upstream in 1.3.1.2. The audit fetched the image's Debian source through a
+  checked chain:
+  - The trust anchor is the Debian archive keyring in the digest-pinned base
+    image.
+  - trixie `InRelease` verified with three valid signatures (`gpgv-status.txt`).
+  - `Sources.xz` checksum → zlib paragraph at version `1:1.3.dfsg+really1.3.1-1`
+    → `.dsc`, orig and Debian tarball checksums.
+  - After applying the Debian patch series (empty), `zlib.h` says `1.3.1` and
+    `gzwrite.c` contains `gz_vacate` 0 times and the non-blocking state
+    (`state->again`) 0 times.
+  - Positive control: upstream commit `570720b` (tag v1.3.1.2) `gzwrite.c`,
+    checksum-pinned, shows 5 and 20. The job fails if the control does not
+    detect the code.
+- **Linkage.** Direct dynamic-symbol imports of `gzwrite`/`gzdopen` were found
+  only in `dpkg-deb` and `libapt-pkg`. No inspected file imports `gzprintf`,
+  `gzvprintf`, `gzputs`, `gzputc`, `gzfwrite` or `gzopen`. The recorded backup
+  and restore used Python's `gzip` over `zlib` streams.
+- **Assumptions and disagreement.**
+  - The installed binary (`+b1` binNMU) is assumed to be built from that
+    source. It was not rebuilt and compared.
+  - No zlib version strings were found outside `libz`, but that does not exclude
+    stripped or static copies.
+  - The Debian tracker, rechecked 2026-09-29 04:58 UTC, still lists bookworm
+    (1.2.13), trixie (1.3.1) and forky/sid (1.3.2) as *vulnerable*, and the
+    scanner will keep matching. This report does not claim the tracker is wrong.
+    It records a disagreement between the advisory's version range plus the
+    inspected source, and the tracker's package status.
+- **Proposed disposition (candidate-specific):** *not affected: vulnerable code
+  absent from the inspected source.* It does not suppress the finding, add an
+  exception or close F4b. Revisit on a base or zlib package change, a new
+  code path using `gz*` write APIs, or an advisory or tracker change.
+  Contacting Debian is external communication and has **not** been authorized
+  or done.
+
+### G4 zlib: CVE-2026-27171 (Medium, `crc32_combine64` CPU loop)
+
+No direct dynamic-symbol import of any `crc32_combine*` function was found in the
+814 inspected files. Runtime-resolved and intra-library calls are not excluded.
+The recorded `ctypes.dlopen` calls were `libllama.so` and the process itself,
+both from the llama.cpp bindings. Proposed: provisional low priority, unchanged
+from §3.
+
+### G5 glibc
+
+| Advisories | Entry points | Direct dynamic-symbol importers (inspected files) | Proposed status |
+| --- | --- | --- | --- |
+| CVE-2026-19499 (High) | `strfmon`, `strfmon_l` | none found | no direct import found; runtime-resolved use not excluded |
+| CVE-2026-5435 (High), CVE-2026-6238 | `ns_printrr`/`fp_nquery` family | none found (`ns_sprintrr*` exported by `libresolv`, not imported) | no direct import found; runtime-resolved use not excluded |
+| CVE-2026-6791, CVE-2026-6368 | `wordexp`, `wordfree` | none found | no direct import found; runtime-resolved use not excluded |
+| CVE-2026-18374 | `fopen` with a `,ccs=` mode | `fopen` is universal; no `,ccs=` string outside libc (string search) | no caller passing the mode found; not excluded |
+| CVE-2026-19542 | `tdelete` | `libncursesw`, `libtinfo` | ncurses not loaded by the recorded processes (not proven for all paths) |
+| CVE-2026-77117, CVE-2026-80489 | `iconv` with EUC/SHIFT_JISX0213 | `bash`, `tar`, diffutils, `iconv`, `libapt-pkg`, **`libstdc++`** (loaded with llama.cpp); JISX0213 gconv modules present | **open**: needs a conversion from a JISX0213 charset. CPython's codecs are its own, but `libstdc++`/llama.cpp conversions are unassessed |
+| CVE-2026-89092 | `nscd` | `nscd` not installed | not applicable to this image |
+| CVE-2026-86805, CVE-2026-95818 | `ld.so` handling for setuid/setgid (AT_SECURE) programs | 11 setuid/setgid programs present (F1 inventory) | F1's `no-new-privileges` **reduces** this: executing a setuid program no longer changes privileges, so the privileged loader path is not available to the engine user under that configuration (reasoning, not a test of these CVEs). Not a claim about other escalation paths or kernel flaws |
+| CVE-2026-8674 | resolver search list | needs control of `resolv.conf`/`LOCALDOMAIN` | unchanged (operator/runtime owned) |
+| CVE-2010-4756, CVE-2018-20796, CVE-2019-9192 (Negligible) | `glob`, `regexec`/`regcomp` | shell, tar, grep, apt, PAM modules | tools not run in the recorded sessions (the only spawn observed was `uname -p`) |
+
+### G1 CPython 3.12.14, per module
+
+| Advisory (severity) | Module/function | Static (parsed installed code) | Recorded sessions | Proposed status |
+| --- | --- | --- | --- | --- |
+| CVE-2026-82049 (High), 19672, 87910 | `tarfile` extraction | engine `backup.py`; pip | `extractall` only in `restore` (operator-run CLI, operator-supplied archive, `_safe_members` + `filter="data"` as §3) | unchanged: operator CLI path; not network-reachable in the engine |
+| CVE-2025-15366, CVE-2025-15367 | `imaplib`, `poplib` | no import found in the 1,432 parsed files | not loaded | not used by the parsed installed code; compiled extensions not scanned |
+| CVE-2026-15806 | `urllib.request.HTTPPasswordMgr` | referenced only in `pip/_vendor/distlib/index.py` | never constructed | not used by the engine's code paths found |
+| CVE-2026-6019 | `http.cookies.Morsel.js_output` | `http.cookies` imported by starlette (and pip); no `set_cookie`/`SimpleCookie`/`js_output` in `engine/` | loaded by starlette; `js_output`, `BaseCookie.load`: 0 calls | not observed; other starlette paths unassessed |
+| CVE-2026-15310 (Low) | `zipfile` decompression | Jinja2, numpy, pip | one `ZipFile()` per process from `importlib.metadata` probing a `sys.path` zip entry; `ZipFile.open`: 0 calls | no decompression observed |
+| CVE-2026-17084 | `stringprep` via the `idna` codec | pip only | loaded when uvicorn creates its listener; `ToASCII`, `in_table_b2`: 0 calls | **open**: non-ASCII hostnames in operator-supplied model-download or webhook URLs would use IDNA 2003. Not exercised |
+| CVE-2025-12781, CVE-2026-3446 | `base64` decoding laxity | engine webhook signing; websockets handshake, fastapi HTTP basic, starlette sessions, pydantic types, llama_cpp chat format, psutil, PyYAML | 0 decode calls | **open**: the engine uses neither starlette `SessionMiddleware` nor fastapi `HTTPBasic` (source search), which leaves the WebSocket handshake key and other unexercised paths. The consequence (lenient decoding) was not assessed for those paths |
+| CVE-2026-3479 (Negligible, disputed) | `pkgutil.get_data` | not assessed | 0 calls | unchanged |
+
+### G3 diskcache (GHSA-w8v5-vhqr-4h9v)
+
+- `diskcache` **is imported** whenever `llama_cpp` loads
+  (`llama_cpp/llama.py` → `llama_cpp/llama_cache.py`).
+- The identified cache-construction paths (`LlamaDiskCache`, `set_cache`)
+  appear only in `llama_cpp/server/model.py`, the optional llama-cpp server,
+  which the engine does not use.
+- In the exercised session there was no tracked construction or use of
+  `diskcache.Cache`, `FanoutCache`, `LlamaDiskCache` or `Llama.set_cache`.
+
+Proposed: scoped non-applicability for the inspected engine configuration and
+serving path. Reassess if cache configuration, dependencies or serving paths
+change. The package stays installed.
+
+### G12 SQLite 3.46.1 (provisional)
+
+Session support **is** compiled in (`ENABLE_SESSION`, `ENABLE_PREUPDATE_HOOK`;
+`libsqlite3` exports `sqlite3session_*`, `sqlite3changeset_*` and
+`sqlite3changegroup_*`), which corrects the §3 assumption. Extension loading is
+also compiled in, and Python exposes `enable_load_extension`/`load_extension`.
+No inspected file imports a session, changeset or changegroup function directly
+(CPython's `_sqlite3` included), and Python 3.12's `sqlite3.Connection` has no
+session API. No parsed installed code calls `load_extension`, and no
+`sqlite3.enable_load_extension`/`load_extension` audit event occurred. These
+facts narrow exposure. They do not prove that no path to these functions exists,
+because runtime-resolved or intra-library use is not excluded.
+
+| Advisory | Prerequisite | Evidence | Proposed status |
+| --- | --- | --- | --- |
+| CVE-2026-50812 | a malformed changeset applied via `sqlite3changeset_apply_v3` | `apply_v3` is not defined in this library; other apply entry points are exported but not directly imported | provisional: named entry point absent |
+| CVE-2026-50813 | changeset concat/changegroup merge on attacker data | exported, no direct importer, no Python API | provisional: no exposure found in inspected code |
+| CVE-2025-70873 | the `zipfile` extension processing a crafted ZIP | no load_extension use found; whether the extension is built into this library was not checked | provisional |
+| CVE-2021-45346 (Negligible, disputed upstream) | a crafted (modified) database file, then a query against it | the database sits on the engine's volume; modifying it needs write access to that volume. The advisory's consequence is reading memory beyond a record (information disclosure) in the process that queries it | provisional; not dismissed on the write-access prerequisite alone |
+
+### G6 and privileges (F1)
+
+- **Inventory:** the tested image has 11 setuid/setgid files (setuid root:
+  `chfn`, `chsh`, `gpasswd`, `mount`, `newgrp`, `passwd`, `su`, `umount`;
+  setgid shadow: `chage`, `expiry`, `unix_chkpwd`) and none with file
+  capabilities.
+- **Docker defaults:** the engine user has no effective capabilities, but
+  `CapBnd` is the default set and `NoNewPrivs: 0`.
+- **#45's Compose settings** (merged as `199c4da`): every capability set is `0` and `NoNewPrivs: 1`,
+  and the full image E2E (including backup, isolated database deletion and
+  restore) and the ownership/recovery E2E pass under them.
+
+This reduces the escalation opportunities discussed in G6, G9 and the G5 `ld.so`
+items for that configuration. It does not remove the packages or address
+every escalation path or kernel vulnerability. #45 is merged, so the settings
+are in the repository's release Compose file. A deployment gains them only when
+its configuration is updated, which is separate deployment work that has not
+been done.
+
+### New since the triage scan: CVE-2026-97399 (Low, glibc)
+
+The #46 dry run on 2026-09-29 (grype DB built 2026-09-29T06:32Z) matched a new
+advisory to `libc6` and `libc-bin`, whose versions are unchanged. It moved the Low
+count from 10 to 12. Per its description, the affected code is glibc's
+`strncasecmp` **optimized for Power8**. This image is linux/amd64, so that
+implementation is not selected on it. Proposed: not applicable by architecture
+(from the advisory text; the image was not inspected for this item). The fix
+state is not-fixed. Not accepted by the user yet.
+
+### Still open
+
+- Runtime-resolved (`dlsym`), intra-library, and stripped or static uses of the
+  affected native functions (G4, G5). `libstdc++`/llama.cpp `iconv` with
+  JISX0213 charsets (G5).
+- Unexercised request paths and settings: WebSocket handshake base64, non-ASCII
+  hostnames (IDNA) in model-download or webhook URLs, remote backends, webhook
+  delivery, model downloads, and compiled extension modules (G1, G3, G12).
+- Whether the installed `zlib1g` binary matches the inspected source, and the
+  tracker disagreement (G4, F4b).
+- SQLite per-advisory items above (G12).
+
+## 3b. Proposed versus accepted dispositions
+
+| Item | Proposed (this report) | User-accepted |
+| --- | --- | --- |
+| G4 CVE-2026-85091 | not affected: vulnerable code absent from the inspected source (candidate-specific) | not yet |
+| G3 diskcache | scoped non-applicability for the inspected configuration | not yet |
+| G12 SQLite | provisional per advisory (see table) | not yet |
+| G1 imaplib/poplib/HTTPPasswordMgr | not used by the parsed installed code | not yet |
+| CVE-2026-97399 (new Low) | not applicable by architecture (Power8-only code; image is amd64) | not yet |
+| Everything else in §3a | status as listed; open items stay open | not yet |
+
+## 4. Decision for A3a (2026-09-28, historical)
 
 **No urgent blocker identified in the assessed findings, with explicit
 unresolved work.** This is an input to the A3a entry decision, not the decision
@@ -122,17 +346,41 @@ conclusion (G12); the setuid state of this image (G6). A lack of any known fix
 does not by itself make an item low risk. Production assurances need F1–F6
 assessed and an explicit risk decision by the user.
 
+## 4a. Reassessment before A3b (2026-09-29)
+
+**No urgent blocker has been identified in the assessed findings; unresolved
+investigations may change that decision.** This is an input to the A3b entry
+decision. The decision and any risk acceptance are the user's.
+
+- The High with a plausible network-reachable library path (G4 CVE-2026-85091)
+  is absent from the inspected zlib source. That rests on the source-to-binary
+  assumption and disagrees with the Debian tracker.
+- The other High in a used module (G1 CVE-2026-82049) stays on the operator-run
+  `restore` CLI path.
+- No direct dynamic-symbol imports of the glibc High entry points (`strfmon`,
+  `ns_printrr`/`fp_nquery`) were found in the inspected files. The
+  util-linux/perl/acl/ncurses Highs are in tools not run in the recorded
+  sessions, and #45 (merged) reduces their escalation value for deployments that
+  adopt the updated Compose file.
+- The items under "Still open" are **not** all low impact or operator-only.
+  Several are simply unassessed. None of the assessed evidence points to an
+  exposure that should take priority over A3b. A3b is expected to exercise some
+  of these paths (webhook delivery, URL handling), which will be revisited then.
+- This is not a vulnerability-free claim, a production approval or a statement
+  that the follow-ups are complete. The passing gate is a policy result (no
+  unexcepted Critical), not an exploitability assessment.
+
 ## 5. Follow-ups
 
 | ID | Next bounded work | Proposed owner (not yet accepted) | Status | Depends on | Required evidence / review point |
 | --- | --- | --- | --- | --- | --- |
-| F1 | List the image's setuid/setgid files and effective capabilities; propose Compose `security_opt: [no-new-privileges:true]` + `cap_drop: [ALL]` with matching docs (read-only rootfs/tmpfs is optional extra scope) | Claude implements after user authorization; user decides | not started | user authorization | Separate PR; image E2E under the hardened configuration incl. volume ownership/persistence; before v0.2.0 release |
+| F1 | List the image's setuid/setgid files and effective capabilities; propose Compose `security_opt: [no-new-privileges:true]` + `cap_drop: [ALL]` with matching docs (read-only rootfs/tmpfs is optional extra scope) | Claude implements after user authorization; user decides | **integrated**: #45 merged 2026-09-29 as `199c4da`; main CI 36565420928 green (attempt 1). PR qualification: CI 36514494237, Release 36514494606. **Not deployed**: existing deployments need a separately authorized configuration update. Read-only rootfs and the development compose file are not in scope | user authorization | Separate PR; image E2E under the hardened configuration incl. volume ownership/persistence; before v0.2.0 release |
 | F2 | Evaluate removing pip from the runtime layer after `pip check`, or hash-locking a patched pip | Claude after authorization; user decides | not started | user authorization | Separate image change; package inventory, re-scan, Release E2E; next base refresh |
-| F3 | Bounded Actions investigation: third-party use of `imaplib`/`poplib`/`http.cookies`/`zipfile`/`stringprep`; llama-cpp-python disk-cache defaults; SQLite Session exposure (G12) and the two SQLite Negligibles | Claude after authorization; user reviews | not started | none | Explicit reachability evidence plus remaining unknowns; before release review |
-| F4a | Native/CPython reachability audit of the affected zlib (`gzwrite`/`gz_vacate`, `crc32_combine64`) and glibc functions in the image's shared objects | Claude after authorization; user reviews | not started | none (does not wait for a package fix) | Source/package-specific evidence; before release review |
-| F4b | Monitor for a fixed Debian zlib package (bug #1146895) and the glibc/util-linux items | user/operator (proposed) | monitoring not set up | Debian | Weekly while the zlib High is unfixed |
+| F3 | Bounded Actions investigation: third-party use of `imaplib`/`poplib`/`http.cookies`/`zipfile`/`stringprep`; llama-cpp-python disk-cache defaults; SQLite Session exposure (G12) and the two SQLite Negligibles | Claude after authorization; user reviews | **partially investigated** (§3a, draft PR #47, audit 36523922216). Open: base64/WebSocket, IDNA, compiled extensions, unexercised request paths; G3/G12 proposals await the user | none | Explicit reachability evidence plus remaining unknowns; before release review |
+| F4a | Native/CPython reachability audit of the affected zlib (`gzwrite`/`gz_vacate`, `crc32_combine64`) and glibc functions in the image's shared objects | Claude after authorization; user reviews | **partially investigated** (§3a, draft PR #47, audit 36523922216). Open: runtime-resolved/intra-library calls, stripped or static copies, `libstdc++` iconv, binary-to-source identity; G4 proposal awaits the user | none (does not wait for a package fix) | Source/package-specific evidence; before release review |
+| F4b | Monitor for a fixed Debian zlib package (bug #1146895) and the glibc/util-linux items | user/operator (proposed) | **open; monitoring not scheduled**. Proposed cadence: weekly tracker check (rechecked 2026-09-29: trixie still *vulnerable*), plus a re-dispatch of the image audit at each base refresh. It is not closed by an internal disposition. Contacting Debian needs explicit authorization | Debian | Weekly while the zlib High is unfixed |
 | F5 | When a newer CPython 3.12 or `python:3.12-slim` digest exists, verify each G1 advisory against its release notes, re-scan and compare | user/operator (proposed); Claude can prepare | waiting on upstream | a new release/digest | Advisory-by-advisory fix list, scan diff, compatibility + Release gates |
-| F6 | Retain SBOM + full grype JSON as a bounded-retention artifact on non-publishing Release runs | Claude after authorization; user decides | proposed | user authorization | Scoped workflow PR (minimal permissions, publication guard unchanged) + a dry run proving retention |
+| F6 | Retain SBOM + full grype JSON as a bounded-retention artifact on non-publishing Release runs | Claude after authorization; user decides | **integrated**: #46 merged 2026-09-29 as `84b6817` (merge commit; parent `6c183e9`); main CI [36612186495](https://github.com/dlroqa/inference-engine/actions/runs/36612186495) green (push, attempt 1, 11/11 jobs). PR qualification on `main`: CI 36567830306 and Release 36567830756 (checkout `3dc8a8a`; publish skipped; 53 PASS/0 FAIL; artifact 11032663606 checksums verified). Earlier: dry run 36514562548; combined F1+F6 stack 36523517754. **Limitation:** retention after a *failing* Critical gate is configured and structurally tested but has not been exercised by an actual failing-gate run. Nothing is deployed by this | user authorization | Scoped workflow PR (minimal permissions, publication guard unchanged) + a dry run proving retention |
 
 ## 6. Revision log
 
@@ -144,6 +392,41 @@ assessed and an explicit risk decision by the user.
   a future 3.12 release fixes all G1 items (python.org rechecked 2026-09-28: 3.12.14
   still newest); owners marked proposed, not accepted. Inventory, evidence
   identity, grouping and the Critical-only gate policy unchanged.
+- 2026-09-29 (F1/F3/F4a/F6 evidence): added §3a (image reachability audit, F1
+  privilege inventory) and §4a (reassessment before A3b). Corrected §1: the
+  engine reaches `subprocess` indirectly (`platform.processor()` → `uname -p`).
+  G6 wording changed from "Not an A3a blocker" to "No urgent blocker has been
+  identified in the assessed findings; unresolved investigations may change that
+  decision." Corrected the G12 assumption: Session support is compiled into
+  `libsqlite3`, but nothing imports it. Proposed, not accepted: G4 85091 not
+  affected (code absent), G3 and G12 justified non-applicability. F1/F6 linked to
+  draft PRs #45/#46. §3 table, the appendix, the gate policy and the exceptions
+  are otherwise unchanged. F2–F6 remain open.
+- 2026-09-29 (review corrections, second pass): the audit now fails on
+  incomplete inspection and checks the recorded workload and its outcomes; the
+  Debian source check has a signed trust chain and a pinned positive control
+  (run 36523922216; raw evidence retained under `docs/security/evidence/`).
+  Earlier audit runs are labelled as unenforced observations. Wording: "no
+  direct dynamic-symbol imports found in the inspected files" replaces "not
+  reachable by dynamic linkage". The G4 disposition is scoped as candidate-specific,
+  with the tracker disagreement (rechecked 2026-09-29) and the binary assumption
+  kept. G3 is bounded to the inspected configuration and session. G12 is back to
+  provisional per advisory; the "extension loading is the only path" claim and
+  the write-access dismissal are removed. F1 "reduces", it does not "address".
+  Residual items are no longer called low impact. Added §3b (proposed versus
+  accepted) and a current-state summary. The §3 table and §4 are marked as the
+  2026-09-28 record.
+- 2026-09-29 (integration status): #45 merged as `199c4da` (main CI
+  36565420928 green), so F1 is recorded as integrated, not deployed. #46 was
+  retargeted to `main`. F-statuses are reported individually instead of
+  "F1–F6 open". #46 was requalified on `main` (Release 36567830756). Added
+  CVE-2026-97399, a new Low matched by the 2026-09-29 grype database, with a
+  proposed architecture-based non-applicability. Other evidence, findings and
+  dispositions are unchanged.
+- 2026-09-29 (integration status): #46 merged as `84b6817` (main CI
+  36612186495 green), so F6 is recorded as integrated, with the failing-gate
+  limitation kept. Findings and dispositions are unchanged; no disposition has
+  been accepted by the user.
 
 ## Appendix: every advisory in the fresh scan
 

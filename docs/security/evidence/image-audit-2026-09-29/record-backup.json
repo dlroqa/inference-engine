@@ -1,0 +1,58 @@
+{
+  "argv": [
+    "backup",
+    "--out",
+    "/data/backups"
+  ],
+  "loaded_before_engine": [],
+  "target_modules_loaded": [
+    "base64",
+    "gzip",
+    "sqlite3",
+    "tarfile",
+    "zipfile"
+  ],
+  "calls": {
+    "gzip.GzipFile.__init__": 1,
+    "tarfile.TarFile.addfile": 2,
+    "tarfile.open": 1,
+    "zipfile.ZipFile.__init__": 1
+  },
+  "audit_events": {
+    "sqlite3.connect": 2,
+    "sqlite3.connect/handle": 2
+  },
+  "audit_details": {
+    "sqlite3.connect": [
+      "/data/inference_engine.db",
+      "/tmp/tmpw43c9njr/inference_engine.db"
+    ]
+  },
+  "origins": {
+    "gzip.GzipFile.__init__": [
+      "stdlib/tarfile.py:1952 gzopen <- stdlib/tarfile.py:1904 open <- engine/backup.py:93 create_backup <- engine/cli.py:132 _cmd_backup <- engine/cli.py:284 main"
+    ],
+    "import base64": [
+      "pydantic/types.py:5 <module> <- pydantic/fields.py:23 <module> <- stdlib/importlib/__init__.py:90 import_module <- pydantic/__init__.py:446 __getattr__ <- engine/config.py:20 <module> <- engine/cli.py:21 <module>"
+    ],
+    "import gzip": [
+      "stdlib/tarfile.py:1947 gzopen <- stdlib/tarfile.py:1904 open <- engine/backup.py:93 create_backup <- engine/cli.py:132 _cmd_backup <- engine/cli.py:284 main"
+    ],
+    "import tarfile": [
+      "engine/backup.py:15 <module> <- engine/cli.py:129 _cmd_backup <- engine/cli.py:284 main"
+    ],
+    "import zipfile": [
+      "stdlib/importlib/metadata/__init__.py:8 <module> <- pydantic/plugin/_loader.py:3 <module> <- pydantic/plugin/_schema_validator.py:38 create_schema_validator <- pydantic/_internal/_model_construction.py:690 complete_model_class <- pydantic/_internal/_model_construction.py:256 __new__ <- pydantic/root_model.py:32 <module>"
+    ],
+    "tarfile.TarFile.addfile": [
+      "stdlib/tarfile.py:2262 add <- engine/backup.py:94 create_backup <- engine/cli.py:132 _cmd_backup <- engine/cli.py:284 main",
+      "stdlib/tarfile.py:2262 add <- engine/backup.py:95 create_backup <- engine/cli.py:132 _cmd_backup <- engine/cli.py:284 main"
+    ],
+    "tarfile.open": [
+      "engine/backup.py:93 create_backup <- engine/cli.py:132 _cmd_backup <- engine/cli.py:284 main"
+    ],
+    "zipfile.ZipFile.__init__": [
+      "stdlib/zipfile/_path/__init__.py:90 __init__ <- stdlib/zipfile/_path/__init__.py:155 make <- stdlib/zipfile/_path/__init__.py:282 __init__ <- stdlib/importlib/metadata/__init__.py:686 zip_children <- stdlib/importlib/metadata/__init__.py:682 children <- stdlib/importlib/metadata/__init__.py:713 __init__"
+    ]
+  }
+}

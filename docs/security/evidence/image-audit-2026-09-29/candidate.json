@@ -1,0 +1,17 @@
+{
+  "checkout_commit": "c6d9544751eb6767129f58bf7c461593ebf578d2",
+  "tree": "0650b5744e7b78d24fc0ec886942d48253a9ca37",
+  "pr_head": "6f042d6399c50d4de5afd359e9d14f5d3401dca3",
+  "event": "pull_request",
+  "version": "0.1.1",
+  "built_at": "2026-09-29T04:57:36Z",
+  "manifest_digest": "sha256:4c53eef1b2aab7d8f35c977322fb157d094b28cf24a66466f1300170f0526925",
+  "config_digest": "sha256:f3b3c78e35f3575adb31c0ae654ec8df759d0ebf9361176f125bcb280dde36bf",
+  "docker_image_id": "sha256:f3b3c78e35f3575adb31c0ae654ec8df759d0ebf9361176f125bcb280dde36bf",
+  "probe_sha256": "55cfe04ac9147498f5368ba080450a1b2b6981fd7e89806ce6b1ec9b1138e7cd",
+  "dockerfile_sha256": "fb8e48a16416c3caac2eee42c0694bf7ebe106e2116b4e8b686c33114a3d00ce",
+  "release_cpu_lock_sha256": "0fbee4dc54b241e13da07f2fdcd959486443ad8d9bff163041f7f89a53426323",
+  "run": "https://github.com/dlroqa/inference-engine/actions/runs/36523922216/attempts/1",
+  "tools": "docker 28.0.4; GNU readelf (GNU Binutils for Ubuntu) 2.42; Python 3.12.3",
+  "note": "rebuild; not byte-identical to any scanned or published image"
+}
