@@ -1,5 +1,5 @@
-import { useState, type JSX, type ReactNode } from "react";
-import { api, ApiError } from "../lib/api";
+import { useEffect, useRef, useState, type JSX, type ReactNode } from "react";
+import { api, ApiError, getApiKey } from "../lib/api";
 import { useSystem } from "../hooks/useSystem";
 import { useAuthFailure } from "../hooks/useAuthScope";
 import { AsyncBoundary } from "../components/Panel";
@@ -58,16 +58,48 @@ function Diagnostics(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const off = sys.offSwitches(["diagnostics_enabled"]);
 
+  // The request in flight, if any, and the key it was sent with. A response
+  // may only save a file while that request is still this view's current one
+  // and the saved key is unchanged. Unmounting aborts and invalidates it: the
+  // shell remounts the whole session tree when the key is changed or
+  // forgotten and when the session ends, so a late response from the earlier
+  // session can never trigger a download or update this view.
+  const current = useRef<{ controller: AbortController; key: string | null } | null>(null);
+  useEffect(
+    () => () => {
+      current.current?.controller.abort();
+      current.current = null;
+    },
+    [],
+  );
+
   const download = async () => {
+    current.current?.controller.abort();
+    const mine = { controller: new AbortController(), key: getApiKey() };
+    current.current = mine;
+    // Superseded, aborted or unmounted: drop the outcome without touching state.
+    const stale = () => current.current !== mine || mine.controller.signal.aborted;
+    const keyChanged = () => getApiKey() !== mine.key;
+    const KEY_CHANGED = "The operator key changed while the bundle was loading, so it was not saved.";
     setBusy(true);
     setDone(null);
     setError(null);
     try {
-      const bundle = await api.diagnostics();
+      const bundle = await api.diagnostics(mine.controller.signal);
+      if (stale()) return;
+      if (keyChanged()) {
+        setError(KEY_CHANGED);
+        return;
+      }
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
       const size = saveJson(bundle, `inference-engine-diagnostics-${stamp}.json`);
       setDone(`Saved a ${bytes(size)} bundle to your downloads. Its contents are not shown here.`);
     } catch (e) {
+      if (stale()) return;
+      if (keyChanged()) {
+        setError(KEY_CHANGED);
+        return;
+      }
       if (reportAuthFailure(e)) return;
       const sw = featureSwitchFor(e);
       if (sw) {
@@ -80,7 +112,10 @@ function Diagnostics(): JSX.Element {
         setError(`The bundle could not be downloaded: ${describeActionError(e)}`);
       }
     } finally {
-      setBusy(false);
+      if (current.current === mine) {
+        current.current = null;
+        setBusy(false);
+      }
     }
   };
 

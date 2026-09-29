@@ -504,7 +504,7 @@ export const api = {
   },
   // System and routing (A3a)
   /** The redacted diagnostics bundle, for download only (never rendered). */
-  diagnostics: () => request<Record<string, unknown>>("/diagnostics"),
+  diagnostics: (signal?: AbortSignal) => request<Record<string, unknown>>("/diagnostics", { signal }),
   backends: () => request<BackendsPage>("/admin/backends"),
   routes: () => request<RoutesPage>("/admin/routes"),
   // Only the model name and required features are sent: never a prompt, so the
