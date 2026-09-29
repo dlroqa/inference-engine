@@ -9,9 +9,9 @@ assessed findings; unresolved investigations may change that decision (§4a).
 Current dispositions are in §3a, and which of them the user has accepted is in
 §3b (none yet). The §3 table and §4 are the dated 2026-09-28 record, and §3a
 supersedes them where they differ. Follow-ups (§5): F1 is **integrated** (#45,
-merged as `199c4da`; not deployed); F6 is pending (#46, requalified on `main`,
-awaiting the user's merge); F3/F4a are partially investigated; F2, F4b and F5
-are open.
+merged as `199c4da`; not deployed); F6 is **integrated** (#46, merged as
+`84b6817`; main CI 36612186495 green; retention after a failing Critical gate
+not yet exercised); F3/F4a are partially investigated; F2, F4b and F5 are open.
 
 The release gate is unchanged. It fails only on unexcepted **Critical** findings
 (`docs/releasing.md`, "Vulnerability gate"). No exceptions were added, no
@@ -380,7 +380,7 @@ decision. The decision and any risk acceptance are the user's.
 | F4a | Native/CPython reachability audit of the affected zlib (`gzwrite`/`gz_vacate`, `crc32_combine64`) and glibc functions in the image's shared objects | Claude after authorization; user reviews | **partially investigated** (§3a, draft PR #47, audit 36523922216). Open: runtime-resolved/intra-library calls, stripped or static copies, `libstdc++` iconv, binary-to-source identity; G4 proposal awaits the user | none (does not wait for a package fix) | Source/package-specific evidence; before release review |
 | F4b | Monitor for a fixed Debian zlib package (bug #1146895) and the glibc/util-linux items | user/operator (proposed) | **open; monitoring not scheduled**. Proposed cadence: weekly tracker check (rechecked 2026-09-29: trixie still *vulnerable*), plus a re-dispatch of the image audit at each base refresh. It is not closed by an internal disposition. Contacting Debian needs explicit authorization | Debian | Weekly while the zlib High is unfixed |
 | F5 | When a newer CPython 3.12 or `python:3.12-slim` digest exists, verify each G1 advisory against its release notes, re-scan and compare | user/operator (proposed); Claude can prepare | waiting on upstream | a new release/digest | Advisory-by-advisory fix list, scan diff, compatibility + Release gates |
-| F6 | Retain SBOM + full grype JSON as a bounded-retention artifact on non-publishing Release runs | Claude after authorization; user decides | **pending the user's merge**: #46 was retargeted to `main` after #45 merged and reconciled with `199c4da` (merge commit `6c183e9`; F6-only diff, +95/−0). Requalified on `main`: CI 36567830306 and Release 36567830756 (checkout `3dc8a8a`; publish skipped; 53 PASS/0 FAIL; artifact 11032663606 checksums verified). Earlier: dry run 36514562548; combined F1+F6 stack 36523517754. **A failing-gate run has not been exercised.** Integrated only after the user merges | user authorization | Scoped workflow PR (minimal permissions, publication guard unchanged) + a dry run proving retention |
+| F6 | Retain SBOM + full grype JSON as a bounded-retention artifact on non-publishing Release runs | Claude after authorization; user decides | **integrated**: #46 merged 2026-09-29 as `84b6817` (merge commit; parent `6c183e9`); main CI [36612186495](https://github.com/dlroqa/inference-engine/actions/runs/36612186495) green (push, attempt 1, 11/11 jobs). PR qualification on `main`: CI 36567830306 and Release 36567830756 (checkout `3dc8a8a`; publish skipped; 53 PASS/0 FAIL; artifact 11032663606 checksums verified). Earlier: dry run 36514562548; combined F1+F6 stack 36523517754. **Limitation:** retention after a *failing* Critical gate is configured and structurally tested but has not been exercised by an actual failing-gate run. Nothing is deployed by this | user authorization | Scoped workflow PR (minimal permissions, publication guard unchanged) + a dry run proving retention |
 
 ## 6. Revision log
 
@@ -423,6 +423,10 @@ decision. The decision and any risk acceptance are the user's.
   CVE-2026-97399, a new Low matched by the 2026-09-29 grype database, with a
   proposed architecture-based non-applicability. Other evidence, findings and
   dispositions are unchanged.
+- 2026-09-29 (integration status): #46 merged as `84b6817` (main CI
+  36612186495 green), so F6 is recorded as integrated, with the failing-gate
+  limitation kept. Findings and dispositions are unchanged; no disposition has
+  been accepted by the user.
 
 ## Appendix: every advisory in the fresh scan
 
