@@ -104,10 +104,10 @@ describe("diagnostics download across session changes", () => {
     await userEvent.click(screen.getByRole("button", { name: "Forget key" }));
     expect(getApiKey()).toBeNull();
     await screen.findByText("Local development");
-    expect(signals[0]?.aborted).toBe(true);
     await deliverLateBundle();
     expect(clicked).toHaveLength(0);
     expect(screen.queryByText(/bundle to your downloads/)).toBeNull();
+    expect(signals[0]?.aborted).toBe(true);
     // The new session's control is idle, not stuck busy.
     expect(await screen.findByRole("button", { name: "Download diagnostics bundle" })).toBeEnabled();
   });
@@ -119,11 +119,11 @@ describe("diagnostics download across session changes", () => {
     await userEvent.type(within(dialog).getByLabelText("Operator API key"), "sk-ie-replacement");
     await userEvent.click(within(dialog).getByRole("button", { name: "Continue" }));
     await waitFor(() => expect(getApiKey()).toBe("sk-ie-replacement"));
-    await waitFor(() => expect(signals[0]?.aborted).toBe(true));
     await screen.findByRole("button", { name: "Download diagnostics bundle" });
     await deliverLateBundle();
     expect(clicked).toHaveLength(0);
     expect(screen.queryByText(/bundle to your downloads/)).toBeNull();
+    expect(signals[0]?.aborted).toBe(true);
   });
 
   it("does not download after the session is lost", async () => {
@@ -132,8 +132,8 @@ describe("diagnostics download across session changes", () => {
     vi.mocked(api.system).mockRejectedValue(new ApiError("invalid or revoked key", 401));
     await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
     expect(await screen.findByRole("heading", { name: "Operator access" })).toBeInTheDocument();
-    expect(signals[0]?.aborted).toBe(true);
     await deliverLateBundle();
     expect(clicked).toHaveLength(0);
+    expect(signals[0]?.aborted).toBe(true);
   });
 });

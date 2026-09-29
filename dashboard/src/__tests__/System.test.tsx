@@ -235,11 +235,11 @@ describe("System view: late diagnostics responses", () => {
     const view = renderSystem();
     await userEvent.click(await screen.findByRole("button", { name: "Download diagnostics bundle" }));
     view.unmount();
-    expect(signals[0]?.aborted).toBe(true);
     d.resolve(BUNDLE);
     await settle(d.promise);
     expect(clicked).toHaveLength(0);
     expect(createObjectURL).not.toHaveBeenCalled();
+    expect(signals[0]?.aborted).toBe(true);
   });
 
   it("drops a late response when the session tree is replaced (new key or lost session)", async () => {
@@ -257,11 +257,11 @@ describe("System view: late diagnostics responses", () => {
     const view = render(tree(1));
     await userEvent.click(await screen.findByRole("button", { name: "Download diagnostics bundle" }));
     view.rerender(tree(2));
-    expect(signals[0]?.aborted).toBe(true);
     d.resolve(BUNDLE);
     await settle(d.promise);
     expect(clicked).toHaveLength(0);
     expect(screen.queryByText(/bundle to your downloads/)).toBeNull();
+    expect(signals[0]?.aborted).toBe(true);
     // The new session's button is idle.
     expect(await screen.findByRole("button", { name: "Download diagnostics bundle" })).toBeEnabled();
   });
