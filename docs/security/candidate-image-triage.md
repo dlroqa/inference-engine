@@ -8,7 +8,10 @@ This is not a vulnerability-free claim and not production-release approval.
 assessed findings; unresolved investigations may change that decision (§4a).
 Current dispositions are in §3a, and which of them the user has accepted is in
 §3b (none yet). The §3 table and §4 are the dated 2026-09-28 record, and §3a
-supersedes them where they differ. F1–F6 remain open (§5).
+supersedes them where they differ. Follow-ups (§5): F1 is **integrated** (#45,
+merged as `199c4da`; not deployed); F6 is pending (#46, requalified on `main`,
+awaiting the user's merge); F3/F4a are partially investigated; F2, F4b and F5
+are open.
 
 The release gate is unchanged. It fails only on unexcepted **Critical** findings
 (`docs/releasing.md`, "Vulnerability gate"). No exceptions were added, no
@@ -91,7 +94,7 @@ nothing here records the user accepting residual risk.
 | **G3** diskcache 5.6.3 (GHSA-w8v5-vhqr-4h9v, pickle deserialization) | 0/1/0/0 | 1 | No fixed version (grype: not-fixed) | Locked dependency of `llama-cpp-python`. `engine/` never uses diskcache or llama cache APIs (verified). Exploitation needs write access to a cache directory. **Assumption:** llama-cpp-python does not create a disk cache unless asked | **Investigate** (F3, low): confirm there is no default disk-cache use; otherwise justified non-applicability |
 | **G4** zlib1g | 1/1/0/0 | 2 | CVE-2026-85091 (High, `gz_vacate` heap overflow in non-blocking `gzwrite`): an **upstream fix exists** ([madler/zlib@df84af2](https://github.com/madler/zlib/commit/df84af25dc1942490e1d1c899a07619152a46148), [issue #1310](https://github.com/madler/zlib/issues/1310)), but **no fixed Debian package** exists: bookworm, trixie, forky and sid all vulnerable/unfixed, rechecked 2026-09-28 ([tracker](https://security-tracker.debian.org/tracker/CVE-2026-85091), bug #1146895). CVE-2026-27171 (CPU use in `crc32_combine64`): Debian wont-fix | Library present and used by CPython's `zlib`/`gzip` (backups use `tarfile` `w:gz`). **Assumption:** CPython's zlib module uses the deflate/inflate stream API, not the `gzFile` API where `gz_vacate` lives; native wheels (llama.cpp etc.) are unaudited for `gzwrite` use | **Investigate now** (F4a native/CPython reachability audit, which does not wait for a package) and **monitor** (F4b) for a fixed Debian package. No Debian base image fixes it today. Highest-priority open item; exposure neither demonstrated nor excluded |
 | **G5** glibc (libc6, libc-bin) | 2/9/2/7 | 40 | CVE-2026-19499 (strfmon): Debian "minor issue, no DSA", fixed only in 2.43-5 (sid/forky) ([tracker](https://security-tracker.debian.org/tracker/CVE-2026-19499)). The others are wont-fix or not-fixed per grype's Debian data | Present in every process. The affected functions (`strfmon`, deprecated `ns_printrr`/`fp_nquery`, `fopen ,ccs=`, `tdelete`, `wordexp`/tilde, `iconv` JISX0213, `nscd`, `ld.so` TOCTOU) are not called by the engine's Python code. **Assumption:** CPython and native wheels do not call them on network input. The resolver search-list issue (8674) needs control of `resolv.conf`/`LOCALDOMAIN`, which the operator or runtime owns | **Provisional low priority** pending F4a (CPython/native reachability is unassessed); fixes arrive through base refreshes |
-| **G6** util-linux family (bsdutils, libblkid1, libmount1, libsmartcols1, libuuid1, liblastlog2-2, login, mount, util-linux) | 4/1/0/1 | 54 | CVE-2026-76642: Debian trixie vulnerable, **no-dsa, minor issue**; fixed in forky 2.42.3-1 ([tracker](https://security-tracker.debian.org/tracker/CVE-2026-76642)). 78408/78409/78410/3184: wont-fix per grype | Tools not invoked by the engine. **Relevant as post-compromise escalation:** `mount` (and `su`) are normally setuid in Debian (**assumption**: not yet listed from this image, part of F1), and `deploy/compose.yaml` sets neither `no-new-privileges` nor `cap_drop`. Code execution as uid 10001 could attempt local escalation inside the container. Needs a prior compromise | **Schedule hardening** (F1): add `security_opt: [no-new-privileges:true]` and `cap_drop: [ALL]` to Compose (and the docs), validated by the image E2E. No urgent blocker has been identified in the assessed findings; unresolved investigations may change that decision. **2026-09-29:** implemented in draft PR #45 (§3a) |
+| **G6** util-linux family (bsdutils, libblkid1, libmount1, libsmartcols1, libuuid1, liblastlog2-2, login, mount, util-linux) | 4/1/0/1 | 54 | CVE-2026-76642: Debian trixie vulnerable, **no-dsa, minor issue**; fixed in forky 2.42.3-1 ([tracker](https://security-tracker.debian.org/tracker/CVE-2026-76642)). 78408/78409/78410/3184: wont-fix per grype | Tools not invoked by the engine. **Relevant as post-compromise escalation:** `mount` (and `su`) are normally setuid in Debian (**assumption**: not yet listed from this image, part of F1), and `deploy/compose.yaml` sets neither `no-new-privileges` nor `cap_drop`. Code execution as uid 10001 could attempt local escalation inside the container. Needs a prior compromise | **Schedule hardening** (F1): add `security_opt: [no-new-privileges:true]` and `cap_drop: [ALL]` to Compose (and the docs), validated by the image E2E. No urgent blocker has been identified in the assessed findings; unresolved investigations may change that decision. **2026-09-29:** integrated by #45 (merged as `199c4da`, §3a); deployments gain it only when their Compose file is updated |
 | **G7** ncurses (libncursesw6, libtinfo6, ncurses-base, ncurses-bin) | 1/1/0/0 | 8 | wont-fix (grype/Debian) | `infocmp`/form library, not used by the engine | Justified non-applicability (no terminal UI in the product); re-check at base refresh |
 | **G8** perl-base | 2/2/0/1 | 5 | CVE-2026-82560 (Pod::Text): trixie vulnerable, no-dsa, unfixed in sid ([tracker](https://security-tracker.debian.org/tracker/CVE-2026-82560)). CVE-2026-9538 (Archive::Tar) and others: wont-fix | Essential Debian package (dpkg scripts). The engine never runs perl | Justified non-applicability; re-check at base refresh |
 | **G9** acl/attr (libacl1, libattr1) | 2/1/0/0 | 3 | wont-fix (grype/Debian) | Local symlink/TOCTOU issues in path-based ACL functions and `getfattr`/`setfattr`. Not used by the engine | Justified non-applicability for the product; covered by F1 hardening |
@@ -121,7 +124,7 @@ the technical evidence.
 | --- | --- | --- |
 | Image reachability audit (F3/F4a), draft PR #47 | [36523922216](https://github.com/dlroqa/inference-engine/actions/runs/36523922216) attempt 1: checkout `c6d9544` (synthetic merge of PR head `6f042d6` into `f121e91`) | `.github/workflows/image-audit.yml` + `scripts/image_reachability.py`, with completeness checks, the enforced workload and the source trust chain. **Raw evidence retained in `docs/security/evidence/image-audit-2026-09-29/`** (checksums verified) |
 | Earlier audit runs (same PR) | [36514927554](https://github.com/dlroqa/inference-engine/actions/runs/36514927554), [36515304639](https://github.com/dlroqa/inference-engine/actions/runs/36515304639), [36515849536](https://github.com/dlroqa/inference-engine/actions/runs/36515849536) | Same ELF, static and zlib-source findings, but these runs **did not enforce** inspection completeness or workload outcomes. They recorded HTTP 200 and serve exit 0 without asserting them. They are kept as observations only |
-| Release dry run of F1, draft PR #45 | [36514494606](https://github.com/dlroqa/inference-engine/actions/runs/36514494606) | Privilege inventory + image E2E + ownership E2E under the hardened Compose settings |
+| Release dry run of F1, PR #45 (merged 2026-09-29 as `199c4da`; main CI [36565420928](https://github.com/dlroqa/inference-engine/actions/runs/36565420928) green) | [36514494606](https://github.com/dlroqa/inference-engine/actions/runs/36514494606) | Privilege inventory + image E2E + ownership E2E under the hardened Compose settings |
 
 The audit image is a **rebuild**: manifest `sha256:4c53eef1…`, config
 `sha256:f3b3c78e…`, with the same Dockerfile, base digests and lock files as §1.
@@ -274,14 +277,16 @@ because runtime-resolved or intra-library use is not excluded.
   capabilities.
 - **Docker defaults:** the engine user has no effective capabilities, but
   `CapBnd` is the default set and `NoNewPrivs: 0`.
-- **#45's Compose settings:** every capability set is `0` and `NoNewPrivs: 1`,
+- **#45's Compose settings** (merged as `199c4da`): every capability set is `0` and `NoNewPrivs: 1`,
   and the full image E2E (including backup, isolated database deletion and
   restore) and the ownership/recovery E2E pass under them.
 
 This reduces the escalation opportunities discussed in G6, G9 and the G5 `ld.so`
 items for that configuration. It does not remove the packages or address
-every escalation path or kernel vulnerability. It protects a deployment only
-after #45 is merged **and** the deployment's configuration is updated.
+every escalation path or kernel vulnerability. #45 is merged, so the settings
+are in the repository's release Compose file. A deployment gains them only when
+its configuration is updated, which is separate deployment work that has not
+been done.
 
 ### Still open
 
@@ -344,7 +349,8 @@ decision. The decision and any risk acceptance are the user's.
 - No direct dynamic-symbol imports of the glibc High entry points (`strfmon`,
   `ns_printrr`/`fp_nquery`) were found in the inspected files. The
   util-linux/perl/acl/ncurses Highs are in tools not run in the recorded
-  sessions, and #45 reduces their escalation value once merged and deployed.
+  sessions, and #45 (merged) reduces their escalation value for deployments that
+  adopt the updated Compose file.
 - The items under "Still open" are **not** all low impact or operator-only.
   Several are simply unassessed. None of the assessed evidence points to an
   exposure that should take priority over A3b. A3b is expected to exercise some
@@ -357,13 +363,13 @@ decision. The decision and any risk acceptance are the user's.
 
 | ID | Next bounded work | Proposed owner (not yet accepted) | Status | Depends on | Required evidence / review point |
 | --- | --- | --- | --- | --- | --- |
-| F1 | List the image's setuid/setgid files and effective capabilities; propose Compose `security_opt: [no-new-privileges:true]` + `cap_drop: [ALL]` with matching docs (read-only rootfs/tmpfs is optional extra scope) | Claude implements after user authorization; user decides | **implemented and qualified in draft PR #45** (CI 36514494237, Release 36514494606). Combined with F6 via #46 stacked on #45. Integrated only after the user merges; deployment is a separate, separately authorized step. Read-only rootfs and the development compose file are not in scope | user authorization | Separate PR; image E2E under the hardened configuration incl. volume ownership/persistence; before v0.2.0 release |
+| F1 | List the image's setuid/setgid files and effective capabilities; propose Compose `security_opt: [no-new-privileges:true]` + `cap_drop: [ALL]` with matching docs (read-only rootfs/tmpfs is optional extra scope) | Claude implements after user authorization; user decides | **integrated**: #45 merged 2026-09-29 as `199c4da`; main CI 36565420928 green (attempt 1). PR qualification: CI 36514494237, Release 36514494606. **Not deployed**: existing deployments need a separately authorized configuration update. Read-only rootfs and the development compose file are not in scope | user authorization | Separate PR; image E2E under the hardened configuration incl. volume ownership/persistence; before v0.2.0 release |
 | F2 | Evaluate removing pip from the runtime layer after `pip check`, or hash-locking a patched pip | Claude after authorization; user decides | not started | user authorization | Separate image change; package inventory, re-scan, Release E2E; next base refresh |
 | F3 | Bounded Actions investigation: third-party use of `imaplib`/`poplib`/`http.cookies`/`zipfile`/`stringprep`; llama-cpp-python disk-cache defaults; SQLite Session exposure (G12) and the two SQLite Negligibles | Claude after authorization; user reviews | **partially investigated** (§3a, draft PR #47, audit 36523922216). Open: base64/WebSocket, IDNA, compiled extensions, unexercised request paths; G3/G12 proposals await the user | none | Explicit reachability evidence plus remaining unknowns; before release review |
 | F4a | Native/CPython reachability audit of the affected zlib (`gzwrite`/`gz_vacate`, `crc32_combine64`) and glibc functions in the image's shared objects | Claude after authorization; user reviews | **partially investigated** (§3a, draft PR #47, audit 36523922216). Open: runtime-resolved/intra-library calls, stripped or static copies, `libstdc++` iconv, binary-to-source identity; G4 proposal awaits the user | none (does not wait for a package fix) | Source/package-specific evidence; before release review |
 | F4b | Monitor for a fixed Debian zlib package (bug #1146895) and the glibc/util-linux items | user/operator (proposed) | **open; monitoring not scheduled**. Proposed cadence: weekly tracker check (rechecked 2026-09-29: trixie still *vulnerable*), plus a re-dispatch of the image audit at each base refresh. It is not closed by an internal disposition. Contacting Debian needs explicit authorization | Debian | Weekly while the zlib High is unfixed |
 | F5 | When a newer CPython 3.12 or `python:3.12-slim` digest exists, verify each G1 advisory against its release notes, re-scan and compare | user/operator (proposed); Claude can prepare | waiting on upstream | a new release/digest | Advisory-by-advisory fix list, scan diff, compatibility + Release gates |
-| F6 | Retain SBOM + full grype JSON as a bounded-retention artifact on non-publishing Release runs | Claude after authorization; user decides | **implemented and qualified in draft PR #46** (dry run 36514562548 kept `candidate-scan-evidence`, 14 days, checksums verified). Now stacked on #45 for combined validation. **A failing-gate run has not been exercised.** Integrated only after the user merges | user authorization | Scoped workflow PR (minimal permissions, publication guard unchanged) + a dry run proving retention |
+| F6 | Retain SBOM + full grype JSON as a bounded-retention artifact on non-publishing Release runs | Claude after authorization; user decides | **pending**: #46 retargeted to `main` after #45 merged and reconciled with `199c4da` (merge commit, F6-only diff); requalification on `main` in progress (see the #46 description). Earlier: dry run 36514562548; combined F1+F6 stack 36523517754. **A failing-gate run has not been exercised.** Integrated only after the user merges | user authorization | Scoped workflow PR (minimal permissions, publication guard unchanged) + a dry run proving retention |
 
 ## 6. Revision log
 
@@ -399,6 +405,10 @@ decision. The decision and any risk acceptance are the user's.
   Residual items are no longer called low impact. Added §3b (proposed versus
   accepted) and a current-state summary. The §3 table and §4 are marked as the
   2026-09-28 record.
+- 2026-09-29 (integration status): #45 merged as `199c4da` (main CI
+  36565420928 green), so F1 is recorded as integrated, not deployed. #46 was
+  retargeted to `main`. F-statuses are reported individually instead of
+  "F1–F6 open". Evidence, findings and dispositions are unchanged.
 
 ## Appendix: every advisory in the fresh scan
 
