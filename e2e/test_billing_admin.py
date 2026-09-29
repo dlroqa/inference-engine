@@ -26,12 +26,13 @@ import threading
 import time
 import uuid
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 import pytest
 from playwright.sync_api import Locator, Page, expect
 
-from e2e.conftest import Engine, login, mask, purge_key, safe_screenshot
+from e2e.conftest import Engine, import_ready_copy, login, mask, purge_key, safe_screenshot
 
 
 class Receiver:
@@ -229,11 +230,22 @@ def test_plans_client_and_one_time_client_key(page: Page, engine: Engine) -> Non
             purge_key(engine, key_id)
 
 
-def test_a_deny_all_plan_stays_deny_all_after_an_unrelated_edit(page: Page, engine: Engine) -> None:
+def test_a_deny_all_plan_stays_deny_all_after_an_unrelated_edit(
+    page: Page, engine: Engine, tmp_path: Path
+) -> None:
     """allowed_models [] (no model) is enforced by the real engine, and editing the
     plan's name in the dashboard keeps it: the request that was refused by the
-    entitlement is still refused by the entitlement, not by auth or the model."""
+    entitlement is still refused by the entitlement, not by auth or the model.
+
+    The engine checks that the model exists before the entitlement (an unknown
+    name is 404 model_not_found), so the test loads its own copy of the fixture
+    and unloads and deletes it afterwards.
+    """
     plan_id = f"e2e-deny-{uuid.uuid4().hex[:6]}"
+    model = import_ready_copy(engine, tmp_path, "e2e-deny")
+    with engine.api(engine.operator_key) as c:
+        resp = c.post(f"/admin/models/{model['id']}/load")
+        assert resp.status_code == 200, resp.status_code
     customer = f"cus_deny_{uuid.uuid4().hex[:8]}"
     with engine.api(engine.operator_key) as c:
         resp = c.post(
@@ -263,7 +275,7 @@ def test_a_deny_all_plan_stays_deny_all_after_an_unrelated_edit(page: Page, engi
             resp = c.post(
                 "/v1/chat/completions",
                 json={
-                    "model": "tiny",
+                    "model": model["name"],
                     "messages": [{"role": "user", "content": "hi"}],
                     "max_tokens": 1,
                 },
@@ -291,18 +303,19 @@ def test_a_deny_all_plan_stays_deny_all_after_an_unrelated_edit(page: Page, engi
         assert stored_models() == []
         assert attempt() == (403, "model_not_entitled")
 
-        # Deliberate changes do take effect: only "tiny" lifts the entitlement
-        # refusal (the request may still fail for other reasons, e.g. no model
-        # loaded yet, but not with model_not_entitled), and "No models" restores it.
-        save_models(page, plan_id, "Only these models", "tiny")
-        assert stored_models() == ["tiny"]
-        status, code = attempt()
-        assert code != "model_not_entitled" and status not in (401, 403), (status, code)
+        # Deliberate changes do take effect: listing the model serves it, and
+        # "No models" refuses it again.
+        save_models(page, plan_id, "Only these models", model["name"])
+        assert stored_models() == [model["name"]]
+        assert attempt() == (200, None)
         save_models(page, plan_id, "No models")
         assert stored_models() == []
         assert attempt() == (403, "model_not_entitled")
     finally:
         purge_key(engine, key_id)
+        with engine.api(engine.operator_key) as c:
+            c.post(f"/admin/models/{model['id']}/unload")
+            c.delete(f"/admin/models/{model['id']}")
 
 
 def save_models(page: Page, plan_id: str, mode: str, names: str | None = None) -> None:

@@ -232,7 +232,7 @@ describe("plan contract", () => {
     await userEvent.keyboard("{Enter}");
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus();
-    expect(within(dialog).getByRole("button", { name: "How this works: Create or update plan" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "How this works: Update plan" })).toBeInTheDocument();
     await userEvent.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(submit).toHaveFocus();
