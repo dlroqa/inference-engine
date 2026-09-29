@@ -34,10 +34,9 @@ from playwright.sync_api import Page, expect
 from e2e.conftest import Engine, login, mask, purge_key, safe_screenshot
 
 
-# --- a loopback webhook receiver ----------------------------------------------------
-
-
 class Receiver:
+    """A loopback webhook receiver: records each delivery, answers with ``status``."""
+
     def __init__(self) -> None:
         self.requests: list[dict[str, Any]] = []
         self.status = 200
