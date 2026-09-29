@@ -47,6 +47,15 @@ def test_recorder_counts_calls_once_a_target_module_loads() -> None:
     module.b64decode(b"x")
     module.b64decode(b"y")
     assert recorder.calls == {"base64.b64decode": 2}
+    # Where the calls came from (this test), not the probe's own frames.
+    (where,) = recorder.origins["base64.b64decode"]
+    assert where.split(" <- ")[0].endswith("test_recorder_counts_calls_once_a_target_module_loads")
+
+
+def test_recorder_notes_who_imported_a_target_module() -> None:
+    recorder = probe.Recorder()
+    recorder.loaded(types.ModuleType("stringprep"))
+    assert "test_recorder_notes_who_imported" in next(iter(recorder.origins["import stringprep"]))
 
 
 def test_recorder_keeps_only_listed_audit_events() -> None:

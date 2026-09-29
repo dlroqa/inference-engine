@@ -32,6 +32,7 @@ import os
 import re
 import subprocess
 import sys
+import sysconfig
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from types import ModuleType
@@ -321,19 +322,51 @@ AUDIT_EVENTS = (
 # module -> attributes whose calls are counted once the module is imported.
 CALL_TARGETS: dict[str, tuple[str, ...]] = {
     "tarfile": ("open", "TarFile.extractall", "TarFile.extract", "TarFile.addfile"),
-    "zipfile": ("ZipFile.__init__",),
+    "zipfile": ("ZipFile.__init__", "ZipFile.open"),
     "imaplib": ("IMAP4.__init__",),
     "poplib": ("POP3.__init__",),
-    "http.cookies": ("BaseCookie.load",),
+    "http.cookies": ("BaseCookie.load", "Morsel.js_output"),
     "urllib.request": ("HTTPPasswordMgr.__init__", "HTTPBasicAuthHandler.__init__"),
-    "base64": ("b64decode", "urlsafe_b64decode", "b32decode", "b16decode", "a85decode"),
+    "base64": (
+        "b64decode",
+        "standard_b64decode",
+        "urlsafe_b64decode",
+        "b32decode",
+        "b16decode",
+        "a85decode",
+    ),
+    "pkgutil": ("get_data",),
     "gzip": ("GzipFile.__init__",),
     "diskcache": ("Cache.__init__", "FanoutCache.__init__"),
     "llama_cpp.llama_cache": ("LlamaDiskCache.__init__", "LlamaRAMCache.__init__"),
     "llama_cpp.llama": ("Llama.set_cache",),
-    "stringprep": ("in_table_a1",),
+    "stringprep": ("in_table_a1", "in_table_b2"),
     "encodings.idna": ("ToASCII",),
 }
+PATH_PREFIXES = (
+    (sysconfig.get_paths()["purelib"], ""),
+    (sysconfig.get_paths()["platlib"], ""),
+    (sysconfig.get_paths()["stdlib"], "stdlib/"),
+)
+
+
+def short_path(filename: str) -> str:
+    for prefix, tag in PATH_PREFIXES:
+        if filename.startswith(prefix + os.sep):
+            return tag + filename[len(prefix) + 1 :]
+    return filename
+
+
+def origin(depth: int = 6) -> str:
+    """The calling frames (innermost first), without this probe's and frozen frames."""
+    frames: list[str] = []
+    frame = sys._getframe(1)
+    while frame is not None and len(frames) < depth:
+        name = frame.f_code.co_filename
+        if name != __file__ and not name.startswith("<frozen"):
+            frames.append(f"{short_path(name)}:{frame.f_lineno} {frame.f_code.co_name}")
+        frame = frame.f_back
+    return " <- ".join(frames)
 
 
 class Recorder:
@@ -341,6 +374,11 @@ class Recorder:
         self.events: collections.Counter[str] = collections.Counter()
         self.details: dict[str, set[str]] = collections.defaultdict(set)
         self.calls: collections.Counter[str] = collections.Counter()
+        self.origins: dict[str, set[str]] = collections.defaultdict(set)
+
+    def note(self, label: str) -> None:
+        if len(self.origins[label]) < 5:
+            self.origins[label].add(origin())
 
     def audit(self, event: str, args: tuple[Any, ...]) -> None:
         if not event.startswith(AUDIT_EVENTS):
@@ -350,6 +388,8 @@ class Recorder:
             self.details[event].add(str(args[0])[:200])
         elif event.startswith(("subprocess", "os.")):
             self.details[event].add(repr(args[:2])[:200])
+        if not event.startswith("sqlite3.connect"):
+            self.note(event)
 
     def wrap(self, module: ModuleType, dotted: str) -> None:
         owner: Any = module
@@ -363,9 +403,11 @@ class Recorder:
             return
         label = f"{module.__name__}.{dotted}"
         counter = self.calls
+        note = self.note
 
         def counted(*args: Any, **kwargs: Any) -> Any:
             counter[label] += 1
+            note(label)
             return original(*args, **kwargs)
 
         if isinstance(owner, type) and isinstance(owner.__dict__.get(attr), staticmethod):
@@ -378,6 +420,10 @@ class Recorder:
     def patch(self, module: ModuleType) -> None:
         for dotted in CALL_TARGETS.get(module.__name__, ()):
             self.wrap(module, dotted)
+
+    def loaded(self, module: ModuleType) -> None:
+        self.note(f"import {module.__name__}")
+        self.patch(module)
 
 
 class PostImportPatcher(importlib.abc.MetaPathFinder):
@@ -422,12 +468,14 @@ def record(argv: list[str], out: Path) -> int:
     for name in CALL_TARGETS:
         if name in sys.modules:
             recorder.patch(sys.modules[name])
-    sys.meta_path.insert(0, PostImportPatcher(recorder.patch))
+    sys.meta_path.insert(0, PostImportPatcher(recorder.loaded))
     sys.addaudithook(recorder.audit)
 
     def dump() -> None:
         loaded = sorted(
-            t for t in (*STDLIB_TARGETS, "gzip", "llama_cpp.llama_cache") if t in sys.modules
+            t
+            for t in (*STDLIB_TARGETS, "gzip", "pkgutil", "llama_cpp.llama_cache")
+            if t in sys.modules
         )
         out.write_text(
             json.dumps(
@@ -438,6 +486,7 @@ def record(argv: list[str], out: Path) -> int:
                     "calls": dict(sorted(recorder.calls.items())),
                     "audit_events": dict(sorted(recorder.events.items())),
                     "audit_details": {k: sorted(v) for k, v in recorder.details.items()},
+                    "origins": {k: sorted(v) for k, v in sorted(recorder.origins.items())},
                 },
                 indent=2,
             )
