@@ -184,10 +184,21 @@ endpoint and delivery controls. Every write is recorded in the engine's audit lo
   client, or leaving the view aborts the request and drops a late response.
   The key or secret still exists on the engine; revoke or rotate it if it was
   not saved.
-- **Confirmations.** Updating an existing plan, disabling an endpoint,
-  rotating its secret, deleting it and replaying a delivery each ask first
-  (Cancel is focused). Creating a plan, client, key or endpoint, enabling an
-  endpoint and reconciling do not.
+- **Confirmations.** Saving a plan, disabling an endpoint, rotating its
+  secret, deleting it and replaying a delivery each ask first (Cancel is
+  focused). Saving a plan is an upsert, so a nominally new id is confirmed
+  too: a plan with that id may have been created since the list loaded, and
+  it would be replaced. The dialog repeats the model and rate entitlement
+  being saved. Plans cannot be saved while the plan list is loading or has
+  failed (the form says why and offers a retry). Creating a client, key or
+  endpoint, enabling an endpoint and reconciling do not ask.
+- **Plan entitlements.** Allowed models is one of three explicit choices:
+  All models (`null`), Only these models (a non-empty list) or No models
+  (`[]`, every request refused). Editing a plan starts from its stored
+  choice, so an unrelated edit never widens or narrows it; an empty "only
+  these" list is refused rather than sent as all models. An empty requests
+  per minute inherits the engine-wide default ("Engine default" in the table,
+  not unlimited); 0 is shown as "Unlimited".
 - **Rotation** shows the grace period and when the previous secret stops
   signing. **Disabling** an endpoint dead-letters its queued deliveries; they
   are not resent on enable (replay them). **Deleting** removes its secrets and

@@ -231,7 +231,7 @@ from §3.
 | CVE-2026-15806 | `urllib.request.HTTPPasswordMgr` | referenced only in `pip/_vendor/distlib/index.py` | never constructed | not used by the engine's code paths found |
 | CVE-2026-6019 | `http.cookies.Morsel.js_output` | `http.cookies` imported by starlette (and pip); no `set_cookie`/`SimpleCookie`/`js_output` in `engine/` | loaded by starlette; `js_output`, `BaseCookie.load`: 0 calls | not observed; other starlette paths unassessed |
 | CVE-2026-15310 (Low) | `zipfile` decompression | Jinja2, numpy, pip | one `ZipFile()` per process from `importlib.metadata` probing a `sys.path` zip entry; `ZipFile.open`: 0 calls | no decompression observed |
-| CVE-2026-17084 | `stringprep` via the `idna` codec | pip only | loaded when uvicorn creates its listener; `ToASCII`, `in_table_b2`: 0 calls | **open**: non-ASCII hostnames in operator-supplied model-download or webhook URLs would use IDNA 2003. Not exercised |
+| CVE-2026-17084 | `stringprep` via the `idna` codec | pip only | loaded when uvicorn creates its listener; `ToASCII`, `in_table_b2`: 0 calls | **open** for model downloads: non-ASCII hostnames in operator-supplied model-download URLs would use IDNA 2003. Not exercised. Webhook URLs: closed by #48 once merged (ASCII-only hosts at registration and delivery) |
 | CVE-2025-12781, CVE-2026-3446 | `base64` decoding laxity | engine webhook signing; websockets handshake, fastapi HTTP basic, starlette sessions, pydantic types, llama_cpp chat format, psutil, PyYAML | 0 decode calls | **open**: the engine uses neither starlette `SessionMiddleware` nor fastapi `HTTPBasic` (source search), which leaves the WebSocket handshake key and other unexercised paths. The consequence (lenient decoding) was not assessed for those paths |
 | CVE-2026-3479 (Negligible, disputed) | `pkgutil.get_data` | not assessed | 0 calls | unchanged |
 
@@ -304,8 +304,9 @@ state is not-fixed. Not accepted by the user yet.
   affected native functions (G4, G5). `libstdc++`/llama.cpp `iconv` with
   JISX0213 charsets (G5).
 - Unexercised request paths and settings: WebSocket handshake base64, non-ASCII
-  hostnames (IDNA) in model-download or webhook URLs, remote backends, webhook
-  delivery, model downloads, and compiled extension modules (G1, G3, G12).
+  hostnames (IDNA) in model-download URLs (webhook URLs: see A3b below), remote
+  backends, webhook delivery, model downloads, and compiled extension modules
+  (G1, G3, G12).
 - Whether the installed `zlib1g` binary matches the inspected source, and the
   tracker disagreement (G4, F4b).
 - SQLite per-advisory items above (G12).
@@ -327,8 +328,16 @@ fixed in #48 and take effect only once it is merged:
 - **IDNA for webhook hosts.** A non-ASCII host that is a subdomain of an
   allowlisted entry (for example `bücher.hooks.example.com`) was accepted, and
   delivery would then go through the IDNA 2003 conversion (G1 CVE-2026-17084).
-  Fixed: endpoint hosts must be ASCII (`endpoint_host_not_ascii`; use the
-  `xn--` form). Endpoints registered earlier are unchanged.
+  Fixed for new and existing endpoints: registration refuses a non-ASCII host
+  (`endpoint_host_not_ascii`; use the `xn--` form), and delivery checks the
+  stored host again before any connection or hostname conversion. An endpoint
+  stored before the rule is never sent to; its deliveries are dead-lettered at
+  once with an error that names neither host nor URL (tested with an endpoint
+  inserted through the store, bypassing registration). Stored endpoints are
+  not rewritten; remediation (re-register the `xn--` form, delete the old
+  endpoint) is in `docs/webhooks.md`. Selected over keeping legacy endpoints
+  working, because that would have kept the IDNA path open with no owner. This
+  closes the webhook IDNA path only; model-download IDNA stays open (below).
 - **Audit.** Billing and webhook admin writes, including creating a client key,
   were not audited. They are now, with ids, labels and hosts only.
 

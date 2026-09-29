@@ -13,6 +13,7 @@ import asyncio
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from http.client import HTTPMessage
@@ -27,6 +28,9 @@ _log = get_logger("engine.webhooks")
 DEFAULT_BACKOFF_SCHEDULE_S: tuple[float, ...] = (30.0, 120.0, 600.0, 1800.0)
 DEFAULT_MAX_ATTEMPTS = 5
 
+# Recorded as the delivery error. It names neither the host nor the URL.
+NON_ASCII_HOST_ERROR = "endpoint host is not ASCII; re-register it in the xn-- (punycode) form"
+
 
 class TransportError(Exception):
     """A network-level failure (connection refused, timeout, DNS)."""
@@ -37,6 +41,22 @@ class Transport(Protocol):
         """POST the body and return the HTTP status code. Raise
         :class:`TransportError` on a network-level failure."""
         ...
+
+
+def host_is_ascii(url: str) -> bool:
+    """False when the URL's host has non-ASCII characters.
+
+    Registration refuses such hosts, but an endpoint stored before that rule
+    can still have one. Sending to it would put the host through the IDNA 2003
+    (``idna`` codec) conversion, so delivery refuses it before any connection
+    or hostname conversion. A URL with no host is left to the transport, which
+    fails it as a network error.
+    """
+    try:
+        host = urllib.parse.urlsplit(url).hostname
+    except ValueError:
+        return False
+    return host is None or host.isascii()
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -63,13 +83,16 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 class UrllibTransport:
     """Default transport using the standard library (no third-party dependency).
 
-    Redirects are not followed (see :class:`_NoRedirect`).
+    Redirects are not followed (see :class:`_NoRedirect`), and a non-ASCII host
+    is refused before a connection is opened (see :func:`host_is_ascii`).
     """
 
     def __init__(self) -> None:
         self._opener = urllib.request.build_opener(_NoRedirect)
 
     def post(self, url: str, body: str, headers: dict[str, str], timeout: float) -> int:
+        if not host_is_ascii(url):
+            raise TransportError(NON_ASCII_HOST_ERROR)
         req = urllib.request.Request(  # noqa: S310 - scheme is validated at registration
             url, data=body.encode("utf-8"), headers=headers, method="POST"
         )
@@ -158,6 +181,25 @@ class DeliveryWorker:
                 status_code=None,
                 error="endpoint missing or disabled",
                 now=now,
+            )
+            return
+        if not host_is_ascii(endpoint.url):
+            # Stored before hosts had to be ASCII. The stored URL never changes,
+            # so a retry cannot succeed: dead-letter now, without a connection.
+            # The operator registers the xn-- form (docs/webhooks.md).
+            self._store.mark_dead(
+                d.id,  # type: ignore[attr-defined]
+                status_code=None,
+                error=NON_ASCII_HOST_ERROR,
+                now=now,
+            )
+            _log.warning(
+                "webhook_delivery_dead",
+                extra={
+                    "delivery_id": d.id,  # type: ignore[attr-defined]
+                    "endpoint_id": endpoint.id,
+                    "error": NON_ASCII_HOST_ERROR,
+                },
             )
             return
         secrets = self._store.active_secrets(endpoint.id, now=now)

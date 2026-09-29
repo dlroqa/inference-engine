@@ -164,12 +164,15 @@ def test_plans_client_and_one_time_client_key(page: Page, engine: Engine) -> Non
     ref = f"cus_e2e_{uuid.uuid4().hex[:8]}"
     open_clients(page, engine)
 
-    # Plans: create, then update through the confirmation dialog.
+    # Plans: create (an upsert, so confirmed too), then update, each through the
+    # confirmation dialog.
     page.get_by_role("tab", name="Plans").click()
     page.get_by_label("Plan id").fill(plan_id)
     page.get_by_label("Name", exact=True).fill("E2E plan")
     page.get_by_label("Weekly quota (CU)").fill("500")
     page.get_by_role("button", name=re.compile(r"^Create plan")).click()
+    expect(page.get_by_role("dialog")).to_contain_text("it is replaced")
+    confirm(page, "Create plan")
     expect(page.get_by_text(f"Created plan {plan_id}.")).to_be_visible()
     page.get_by_role("button", name=f"Edit plan {plan_id}", exact=True).click()
     page.get_by_label("Weekly quota (CU)").fill("750")
@@ -259,7 +262,11 @@ def test_a_deny_all_plan_stays_deny_all_after_an_unrelated_edit(page: Page, engi
             assert me.status_code == 200, "the client key must authenticate"
             resp = c.post(
                 "/v1/chat/completions",
-                json={"model": "tiny", "messages": [{"role": "user", "content": "hi"}]},
+                json={
+                    "model": "tiny",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "max_tokens": 1,
+                },
             )
         if resp.status_code == 200:
             return 200, None
@@ -283,8 +290,30 @@ def test_a_deny_all_plan_stays_deny_all_after_an_unrelated_edit(page: Page, engi
 
         assert stored_models() == []
         assert attempt() == (403, "model_not_entitled")
+
+        # Deliberate changes do take effect: only "tiny" lifts the entitlement
+        # refusal (the request may still fail for other reasons, e.g. no model
+        # loaded yet, but not with model_not_entitled), and "No models" restores it.
+        save_models(page, plan_id, "Only these models", "tiny")
+        assert stored_models() == ["tiny"]
+        status, code = attempt()
+        assert code != "model_not_entitled" and status not in (401, 403), (status, code)
+        save_models(page, plan_id, "No models")
+        assert stored_models() == []
+        assert attempt() == (403, "model_not_entitled")
     finally:
         purge_key(engine, key_id)
+
+
+def save_models(page: Page, plan_id: str, mode: str, names: str | None = None) -> None:
+    button(page, f"Edit plan {plan_id}").click()
+    page.get_by_role("radio", name=mode, exact=True).check()
+    if names is not None:
+        page.get_by_label("Model names", exact=True).fill(names)
+    page.get_by_role("button", name=re.compile(r"^Update plan")).click()
+    expect(page.get_by_role("dialog")).to_contain_text(f"Every client on {plan_id}")
+    confirm(page, "Update plan")
+    expect(page.get_by_text(f"Updated plan {plan_id}.")).to_be_visible()
 
 
 def test_client_key_token_does_not_survive_a_key_change(page: Page, engine: Engine) -> None:

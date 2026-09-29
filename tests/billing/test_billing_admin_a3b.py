@@ -5,7 +5,9 @@
 - Rotating a signing secret reports the grace period during which the previous
   secret still signs deliveries.
 - Webhook endpoint hosts must be ASCII (the xn-- form for internationalized
-  names), so delivery never goes through the IDNA 2003 conversion.
+  names), so delivery never goes through the IDNA 2003 conversion. Delivery
+  checks again, so an endpoint stored before the rule is never sent to.
+- A plan's allowed_models keeps null (all), [] (none) and a list apart.
 - Outbound delivery never follows a redirect: the egress allowlist is checked
   against the registered URL only (real HTTP servers on loopback).
 """
@@ -178,14 +180,6 @@ def test_null_empty_and_named_allowed_models_round_trip_and_are_enforced(
         billing.create_client(id="c1")
         record, token = KeyStore(settings.db_path).create()  # type: ignore[arg-type]
         billing.attach_key(record.id, "c1")
-        billing.upsert_subscription(
-            id="s1",
-            client_id="c1",
-            plan_id="p",
-            provider="stripe",
-            provider_sub_id="sub_1",
-            status="active",
-        )
 
         def save(name: str, models: list[str] | None) -> None:
             body = {"id": "p", "name": name, "quota_5h_cu": 0, "quota_weekly_cu": 0}
@@ -205,6 +199,14 @@ def test_null_empty_and_named_allowed_models_round_trip_and_are_enforced(
             return resp.status_code, code
 
         save("closed", [])
+        billing.upsert_subscription(  # the plan must exist first
+            id="s1",
+            client_id="c1",
+            plan_id="p",
+            provider="stripe",
+            provider_sub_id="sub_1",
+            status="active",
+        )
         assert chat() == (403, "model_not_entitled")
         save("closed, renamed", [])  # an unrelated edit
         assert chat() == (403, "model_not_entitled")

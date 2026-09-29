@@ -120,7 +120,19 @@ these from a client's detail panel.
   webhook headers.
 - **Hosts must be ASCII.** The allowlist check and the connection then see the
   same name, and delivery never goes through the IDNA 2003 (`idna` codec)
-  conversion. Endpoints registered before this rule keep working unchanged.
+  conversion. Registration refuses a non-ASCII host (`endpoint_host_not_ascii`),
+  and delivery checks again before any connection or hostname conversion, so an
+  endpoint stored before this rule is never sent to either. Each of its
+  deliveries is dead-lettered at once, without retries (the stored URL cannot
+  change), with the error `endpoint host is not ASCII; re-register it in the
+  xn-- (punycode) form`, which names neither the host nor the URL; the worker
+  carries on with other deliveries. Stored endpoints are never rewritten.
+  **Remediation:** find them by listing endpoints and looking for non-ASCII
+  hosts, or dead deliveries with that error; register the `xn--` form of the
+  same URL (a new endpoint with a new signing secret, for the receiver); then
+  delete the old endpoint. Replaying a dead delivery re-sends it to its own
+  endpoint, so it dead-letters again; events already dead-lettered are not
+  moved to the new endpoint.
 - The allowlist is checked when an endpoint is registered. Narrowing
   `egress_allowlist` later does not disable endpoints that are already
   registered: review and delete them.

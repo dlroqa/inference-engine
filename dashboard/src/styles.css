@@ -1143,3 +1143,19 @@ a.navbtn {
   height: 18px;
   accent-color: var(--color-accent);
 }
+fieldset.field {
+  border: 0;
+  padding: 0;
+  margin-inline: 0;
+  min-width: 0;
+}
+fieldset.field legend {
+  padding: 0;
+  margin-bottom: 6px;
+  font-size: 13px;
+  color: var(--color-fg-muted);
+}
+.plan-models .check-row {
+  font-size: 14px;
+  color: var(--color-fg);
+}

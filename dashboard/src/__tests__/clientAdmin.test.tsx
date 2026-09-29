@@ -61,15 +61,18 @@ describe("plans", () => {
     await screen.findByText("Pro");
   }
 
-  it("creates a new plan without a confirmation", async () => {
+  it("creates a new plan after confirming that a same-id plan would be replaced", async () => {
     await openPlans();
     await userEvent.type(screen.getByLabelText("Plan id"), "team");
     await userEvent.type(screen.getByLabelText("Name"), "Team");
     await userEvent.clear(screen.getByLabelText("Weekly quota (CU)"));
     await userEvent.type(screen.getByLabelText("Weekly quota (CU)"), "500");
-    await userEvent.type(screen.getByLabelText("Allowed models (optional)"), "tiny, big");
+    await userEvent.click(screen.getByRole("radio", { name: "Only these models" }));
+    await userEvent.type(screen.getByLabelText("Model names"), "tiny, big");
     await userEvent.click(screen.getByRole("button", { name: /^Create plan/ }));
-    expect(screen.queryByRole("dialog")).toBeNull();
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("Models: tiny, big");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create plan" }));
     await waitFor(() =>
       expect(api.upsertPlan).toHaveBeenCalledWith({
         id: "team",
@@ -166,6 +169,77 @@ describe("plan contract", () => {
     const row = (await screen.findByText("CLOSED")).closest("tr") as HTMLElement;
     expect(row).toHaveTextContent("No models");
     expect(row).not.toHaveTextContent(/all models/i);
+  });
+
+  it("moves between all, only-these and no models only when the operator chooses", async () => {
+    await openPlans();
+    await userEvent.click(await screen.findByRole("button", { name: "Edit plan some" }));
+    expect(screen.getByRole("radio", { name: "Only these models" })).toBeChecked();
+    expect(screen.getByLabelText("Model names")).toHaveValue("tiny, big");
+
+    const save = async () => {
+      await userEvent.click(screen.getByRole("button", { name: /^Update plan/ }));
+      await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Update plan" }));
+    };
+    const sent = (n: number) => vi.mocked(api.upsertPlan).mock.calls[n][0].allowed_models;
+
+    await userEvent.click(screen.getByRole("radio", { name: "No models" }));
+    expect(screen.queryByLabelText("Model names")).toBeNull();
+    await save();
+    await waitFor(() => expect(api.upsertPlan).toHaveBeenCalledTimes(1));
+    expect(sent(0)).toEqual([]);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Edit plan closed" }));
+    expect(screen.getByRole("radio", { name: "No models" })).toBeChecked();
+    await userEvent.click(screen.getByRole("radio", { name: "All models" }));
+    await save();
+    await waitFor(() => expect(api.upsertPlan).toHaveBeenCalledTimes(2));
+    expect(sent(1)).toBeNull();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Edit plan pro" }));
+    expect(screen.getByRole("radio", { name: "All models" })).toBeChecked();
+    await userEvent.click(screen.getByRole("radio", { name: "Only these models" }));
+    await userEvent.type(screen.getByLabelText("Model names"), " tiny ,, ");
+    await save();
+    await waitFor(() => expect(api.upsertPlan).toHaveBeenCalledTimes(3));
+    expect(sent(2)).toEqual(["tiny"]);
+  });
+
+  it("refuses an empty only-these-models list instead of widening it", async () => {
+    await openPlans();
+    await userEvent.click(await screen.findByRole("button", { name: "Edit plan some" }));
+    await userEvent.clear(screen.getByLabelText("Model names"));
+    await userEvent.type(screen.getByLabelText("Model names"), " , ");
+    await userEvent.click(screen.getByRole("button", { name: /^Update plan/ }));
+    expect(await screen.findByRole("alert")).toHaveTextContent('choose "No models"');
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(api.upsertPlan).not.toHaveBeenCalled();
+  });
+
+  it("shows 0 requests per minute as unlimited, and explains an empty rate as the engine default", async () => {
+    vi.mocked(api.listPlans).mockResolvedValue({ plans: [plan("free", { rate_limit_per_min: 0 })] });
+    await openPlans();
+    const row = (await screen.findByText("FREE")).closest("tr") as HTMLElement;
+    expect(row).toHaveTextContent("Unlimited");
+    expect(screen.getByText(/engine-wide default/)).toBeInTheDocument();
+  });
+
+  it("keeps keyboard focus sensible: Cancel first, then back to the save button", async () => {
+    await openPlans();
+    await userEvent.click(await screen.findByRole("button", { name: "Edit plan pro" }));
+    const submit = screen.getByRole("button", { name: /^Update plan/ });
+    submit.focus();
+    await userEvent.keyboard("{Enter}");
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus();
+    expect(within(dialog).getByRole("button", { name: "How this works: Create or update plan" })).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(submit).toHaveFocus();
+    expect(api.upsertPlan).not.toHaveBeenCalled();
+    expect(screen.getByRole("group", { name: "Allowed models" })).toContainElement(
+      screen.getByRole("radio", { name: "All models" }),
+    );
   });
 
   async function fillNewPlan(id: string) {

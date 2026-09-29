@@ -380,6 +380,27 @@ describe("wiring coverage of dashboard controls", () => {
     expect(audit("Clients: plan update dialog").explained).toEqual(["local.dialog-cancel", "plans.upsert"]);
   });
 
+  it("Clients: plan model list, the create dialog, and a failed plan list", async () => {
+    await show(<Clients onNavigate={vi.fn()} />, () => screen.findByText("a@x.io"));
+    await userEvent.click(screen.getByRole("tab", { name: "Plans" }));
+    await screen.findByText("Pro");
+    await userEvent.click(screen.getByRole("radio", { name: "Only these models" }));
+    audit("Clients: plans tab, model list");
+    await userEvent.type(screen.getByLabelText("Plan id"), "team");
+    await userEvent.type(screen.getByLabelText("Name"), "Team");
+    await userEvent.type(screen.getByLabelText("Model names"), "tiny");
+    await userEvent.click(screen.getByRole("button", { name: /^Create plan/ }));
+    expect(audit("Clients: plan create dialog").explained).toEqual(["local.dialog-cancel", "plans.upsert"]);
+  });
+
+  it("Clients: a failed plan list pauses saving and offers a retry", async () => {
+    vi.mocked(api.listPlans).mockRejectedValue(new ApiError("engine unavailable", 503, "unavailable"));
+    await show(<Clients onNavigate={vi.fn()} />, () => screen.findByText("a@x.io"));
+    await userEvent.click(screen.getByRole("tab", { name: "Plans" }));
+    await screen.findByRole("button", { name: "Retry loading plans" });
+    audit("Clients: plan list failed");
+  });
+
   it("Clients: one-time client key, endpoint secret, and rotated secret", async () => {
     await show(<Clients focusClientId="c1" onNavigate={vi.fn()} />, () => screen.findByText("invoice.paid"));
     await userEvent.click(screen.getByRole("button", { name: /^Create client key/ }));
