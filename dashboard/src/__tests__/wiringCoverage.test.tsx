@@ -21,6 +21,8 @@ import { Models } from "../views/Models";
 import { Logs } from "../views/Logs";
 import { Security } from "../views/Security";
 import { Keys } from "../views/Keys";
+import { System } from "../views/System";
+import { Routing } from "../views/Routing";
 import { api, ApiError, setApiKey } from "../lib/api";
 import { LOCAL_CONTROLS, WIRING, explain } from "../lib/wiring";
 import { SystemProvider } from "../hooks/useSystem";
@@ -106,6 +108,41 @@ const systemInfo = (switches: Record<string, boolean> = {}) => ({
 
 function mockApi() {
   vi.spyOn(api, "system").mockImplementation(() => ok(systemInfo()));
+  vi.spyOn(api, "diagnostics").mockImplementation(() => ok({}));
+  vi.spyOn(api, "backends").mockImplementation(() =>
+    ok({
+      backends: [
+        {
+          name: "primary", kind: "llamacpp", location: "local", state: "ready", available: true,
+          in_flight: 0, max_in_flight: 1, model_id: "tiny", served_model: null, context_length: 2048,
+          supports_prefix_cache: false, supports_kv_cache_metrics: false, tier: "primary", external: false,
+        },
+      ],
+      ready: true,
+      count: 1,
+    }),
+  );
+  vi.spyOn(api, "routes").mockImplementation(() =>
+    ok({
+      routes: [
+        {
+          model: "tiny", backend: "primary", requests: 1, errors: 0, cancelled: 0, prompt_tokens: 3,
+          completion_tokens: 2, cost: 0, success_rate: 1, avg_total_ms: 10, avg_ttft_ms: 4,
+          avg_queue_wait_ms: 0, avg_output_tps: 200, upstream_attempts: 0, tier: "primary",
+          reasons: { model_map: 1 }, fallbacks: {}, policies: { base: 1 }, workload_rules: {},
+        },
+      ],
+      sheds: {},
+      totals: { requests: 1, errors: 0, cancelled: 0, cost: 0, sheds: 0 },
+    }),
+  );
+  vi.spyOn(api, "routePlan").mockImplementation(() =>
+    ok({
+      model: "tiny", policy: "base", known: true, chosen: "primary", chosen_step: 0,
+      steps: [{ targets: ["*all*"], chosen: "primary", candidates: [{ name: "primary", state: "ready", available: true, in_flight: 0, has_capacity: true }] }],
+      workload_rule: null, workload_rule_preferred_targets: null,
+    }),
+  );
   vi.spyOn(api, "identity").mockImplementation(() =>
     ok({ kind: "key", auth_required: true, key: { id: "k1", prefix: "sk-ie-ab12", label: "owner", role: "operator" } }),
   );
@@ -394,6 +431,69 @@ describe("wiring coverage of dashboard controls", () => {
     );
     const r = audit("Models: switch status unavailable");
     expect(r.explained).toContain("app.system");
+  });
+
+  it("System: populated, with the diagnostics download", async () => {
+    await show(
+      <SystemProvider>
+        <System />
+      </SystemProvider>,
+      () => screen.findByRole("heading", { name: "Feature switches" }),
+    );
+    const r = audit("System: populated");
+    expect(r.explained).toEqual(expect.arrayContaining(["app.system", "system.diagnostics"]));
+  });
+
+  it("System: diagnostics switch off", async () => {
+    vi.mocked(api.system).mockImplementation(() => ok(systemInfo({ diagnostics_enabled: false })));
+    await show(
+      <SystemProvider>
+        <System />
+      </SystemProvider>,
+      () => screen.findByText(/diagnostics_enabled=false/),
+    );
+    audit("System: diagnostics off");
+  });
+
+  it("System: error with retry", async () => {
+    vi.mocked(api.system).mockImplementation(boom);
+    await show(
+      <SystemProvider>
+        <System />
+      </SystemProvider>,
+      () => screen.findByRole("button", { name: "Retry" }),
+    );
+    audit("System: error");
+  });
+
+  it("Routing: populated, with a dry-run result", async () => {
+    await show(
+      <SystemProvider>
+        <Routing />
+      </SystemProvider>,
+      () => screen.findByRole("region", { name: "Per-route table" }),
+    );
+    await userEvent.type(screen.getByLabelText("Model name"), "tiny{Enter}");
+    await screen.findByTestId("route-plan-result");
+    const r = audit("Routing: populated + dry run");
+    expect(r.explained).toEqual(
+      expect.arrayContaining(["routing.backends", "routing.routes", "routing.plan", "app.system", "local.docs-link"]),
+    );
+  });
+
+  it("Routing: errors with retry", async () => {
+    vi.mocked(api.backends).mockImplementation(boom);
+    vi.mocked(api.routes).mockImplementation(boom);
+    vi.mocked(api.system).mockImplementation(boom);
+    await show(
+      <SystemProvider>
+        <Routing />
+      </SystemProvider>,
+      async () => {
+        expect((await screen.findAllByRole("button", { name: "Retry" })).length).toBe(3);
+      },
+    );
+    audit("Routing: errors");
   });
 
   it("Logs: filtered to a request", async () => {

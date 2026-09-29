@@ -52,6 +52,8 @@ vi.mock("../views/Models", async () => {
   };
   return { Models };
 });
+vi.mock("../views/System", () => ({ System: () => <h1>System view</h1> }));
+vi.mock("../views/Routing", () => ({ Routing: () => <h1>Routing view</h1> }));
 vi.mock("../views/Logs", () => ({
   Logs: ({ requestId }: { requestId?: string }) => <h1>Logs view {requestId ?? "all"}</h1>,
 }));
@@ -271,6 +273,25 @@ describe("App routing", () => {
     await waitFor(() => expect(screen.getByRole("main")).toHaveFocus());
     goTo("#/clients/acme");
     expect(await screen.findByRole("heading", { name: "Clients view acme" })).toBeInTheDocument();
+  });
+
+  it("deep-links the System and Backends & routing views from their nav entries", async () => {
+    render(<App />);
+    const nav = await screen.findByRole("navigation", { name: "Primary" });
+    const system = within(within(nav).getByRole("list", { name: "Operate" })).getByRole("link", { name: "System" });
+    const routing = within(within(nav).getByRole("list", { name: "Serve" })).getByRole("link", {
+      name: "Backends & routing",
+    });
+    expect(system).toHaveAttribute("href", "#/system");
+    expect(routing).toHaveAttribute("href", "#/routing");
+    goTo("#/system");
+    expect(await screen.findByRole("heading", { name: "System view" })).toBeInTheDocument();
+    expect(system).toHaveAttribute("aria-current", "page");
+    await waitFor(() => expect(screen.getByRole("main")).toHaveFocus());
+    goTo("#/routing");
+    expect(await screen.findByRole("heading", { name: "Routing view" })).toBeInTheDocument();
+    expect(routing).toHaveAttribute("aria-current", "page");
+    expect(system).not.toHaveAttribute("aria-current");
   });
 
   it("groups navigation into labelled sections", async () => {

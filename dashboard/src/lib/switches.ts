@@ -75,3 +75,53 @@ export function describeActionError(e: unknown): string {
   }
   return String(e);
 }
+
+/**
+ * What each switch controls and where it is set, for the System view's
+ * read-only table. `setting` is the config.toml key; the environment variable is
+ * IE_ plus the upper-cased key. The engine reads both at startup.
+ */
+export const SWITCH_DETAILS: Record<SwitchName, { effect: string; setting: string }> = {
+  allow_model_management: {
+    effect: "Model import, download, load, unload and delete. Off: those return 403 model_management_disabled.",
+    setting: "allow_model_management",
+  },
+  allow_network_downloads: {
+    effect: "Model downloads from Hugging Face or a URL. Off: downloads return 403 downloads_disabled.",
+    setting: "allow_network_downloads",
+  },
+  allow_structured_output: {
+    effect: "JSON- and grammar-constrained generation. Off: such requests return 400 structured_output_disabled.",
+    setting: "allow_structured_output",
+  },
+  diagnostics_enabled: {
+    effect: "The GET /diagnostics support bundle. Off: it returns 403 diagnostics_disabled.",
+    setting: "diagnostics_enabled",
+  },
+  require_auth: {
+    effect:
+      "Whether inference requests need an API key. This is the effective value: when the setting is not given, a key is required unless the engine binds only to loopback.",
+    setting: "require_auth",
+  },
+  webhooks_enabled: {
+    effect: "Signed outbound webhook delivery to client endpoints, with retries.",
+    setting: "webhooks_enabled",
+  },
+  client_events_enabled: {
+    effect: "The per-client account event stream (SSE) for client keys.",
+    setting: "client_events_enabled",
+  },
+  ip_allowlist_set: {
+    effect:
+      "Whether an IP allowlist is configured. When it is, only the listed networks may reach the engine (others get 403). The addresses are not shown here.",
+    setting: "ip_allowlist",
+  },
+  grpc_enabled: {
+    effect: "The gRPC inference service, on the port shown under Metadata.",
+    setting: "grpc_enabled",
+  },
+};
+
+export function envVarFor(setting: string): string {
+  return `IE_${setting.toUpperCase()}`;
+}

@@ -14,8 +14,19 @@ import { Models } from "./views/Models";
 import { Logs } from "./views/Logs";
 import { Security } from "./views/Security";
 import { Keys } from "./views/Keys";
+import { System } from "./views/System";
+import { Routing } from "./views/Routing";
 
-type ViewId = "overview" | "monitoring" | "clients" | "models" | "logs" | "security" | "keys";
+type ViewId =
+  | "overview"
+  | "monitoring"
+  | "clients"
+  | "models"
+  | "logs"
+  | "security"
+  | "keys"
+  | "system"
+  | "routing";
 
 interface NavOpts {
   logQuery?: string;
@@ -46,9 +57,16 @@ const NAV_SECTIONS: { label: string; items: NavItem[] }[] = [
       { id: "overview", label: "Overview", icon: "gauge" },
       { id: "monitoring", label: "Monitoring", icon: "activity" },
       { id: "logs", label: "Logs", icon: "list" },
+      { id: "system", label: "System", icon: "server" },
     ],
   },
-  { label: "Serve", items: [{ id: "models", label: "Models", icon: "cpu" }] },
+  {
+    label: "Serve",
+    items: [
+      { id: "models", label: "Models", icon: "cpu" },
+      { id: "routing", label: "Backends & routing", icon: "route" },
+    ],
+  },
   { label: "Business", items: [{ id: "clients", label: "Clients", icon: "users" }] },
   {
     label: "Access",
@@ -449,6 +467,8 @@ function Shell(): JSX.Element {
             {view === "logs" && <Logs requestId={params.get("request_id") ?? undefined} onNavigate={navigate} />}
             {view === "security" && <Security />}
             {view === "keys" && <Keys />}
+            {view === "system" && <System />}
+            {view === "routing" && <Routing />}
             {!VIEW_IDS.has(view) && <NotFound view={view} onHome={() => go(buildHash("overview"))} />}
           </main>
           {changingKey && (
