@@ -184,6 +184,49 @@ jobs:
             and ."org.opencontainers.image.source" == "https://github.com/dlroqa/inference-engine"
             and (."org.opencontainers.image.licenses" | length > 0)'
 
+      - name: Privilege inventory (informational)
+        # What the image could escalate with (setuid/setgid/file-capability
+        # files), and what the engine user holds with Docker's defaults and with
+        # deploy/compose.yaml's least-privilege settings. The image E2E below
+        # asserts those settings on the running engine.
+        run: |
+          set -euo pipefail
+          INVENTORY='import os, stat
+          for root, dirs, files in os.walk("/"):
+              if root == "/":
+                  dirs[:] = [d for d in dirs if d not in ("proc", "sys", "dev")]
+              for name in files:
+                  path = os.path.join(root, name)
+                  mode = os.lstat(path).st_mode
+                  if not stat.S_ISREG(mode):
+                      continue
+                  flags = [f for f, bit in (("setuid", stat.S_ISUID), ("setgid", stat.S_ISGID)) if mode & bit]
+                  try:
+                      if os.getxattr(path, "security.capability", follow_symlinks=False):
+                          flags.append("file-capabilities")
+                  except OSError:
+                      pass
+                  if flags:
+                      st = os.lstat(path)
+                      print(oct(mode & 0o7777), f"{st.st_uid}:{st.st_gid}", path, "+".join(flags))'
+          docker run --rm --user root --entrypoint python "$CANDIDATE" -c "$INVENTORY" \
+            | sort > privileged-files.txt
+          status() {
+            docker run --rm "$@" --entrypoint grep "$CANDIDATE" \
+              -E '^(Uid|Gid|Cap(Inh|Prm|Eff|Bnd|Amb)|NoNewPrivs):' /proc/self/status
+          }
+          status > default.txt
+          status --security-opt no-new-privileges:true --cap-drop ALL > hardened.txt
+          {
+            echo "### Privilege inventory"
+            echo "Setuid/setgid/file-capability files ($(wc -l < privileged-files.txt)):"
+            echo '```'; cat privileged-files.txt; echo '```'
+            echo "Engine user, Docker defaults:"
+            echo '```'; cat default.txt; echo '```'
+            echo "Engine user, deploy/compose.yaml (no-new-privileges, cap_drop ALL):"
+            echo '```'; cat hardened.txt; echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Cache tiny GGUF model
         id: gguf-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

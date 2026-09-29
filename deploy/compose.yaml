@@ -38,6 +38,13 @@ services:
       # above) or mount an existing host directory of models:
       # - /srv/models:/data/models
     stop_grace_period: 40s            # > IE_DRAIN_TIMEOUT_S; a kill allowance, not a shutdown bound
+    # Least privilege (docs/deployment.md#container-privileges). The engine runs
+    # as uid 10001 on port 8000 and needs no Linux capabilities; setuid/setgid
+    # files in the base image cannot raise privileges.
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
 
 volumes:
   engine-data:
