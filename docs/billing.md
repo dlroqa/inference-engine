@@ -76,6 +76,14 @@ Any other event type is ignored (no-op success).
 - `GET /admin/billing/clients/{id}/reconcile` — per-window CU summed across the
   client's keys.
 
+Every write above is recorded in the tamper-evident audit log (`GET /admin/audit`):
+`billing.plan.upsert`, `billing.client.create`, and `key.create` for a client key
+(the same action as an operator key, with the owning `client_id`). Audit details
+carry ids and labels only, never a token. The dashboard's **Clients** view drives
+all of these, with a **Plans** tab; a client key's token is shown once and is
+dropped if the dashboard session or the selected client changes before it
+arrives (see [docs/dashboard.md](dashboard.md)).
+
 ## Metering reconciliation
 
 `usage_events` remains the single source of truth for both attribution and the CU

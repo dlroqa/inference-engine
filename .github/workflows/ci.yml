@@ -463,7 +463,19 @@ jobs:
           DATA=/tmp/ie-e2e
           OWNER=$(owner_key "$DATA")
           echo "::add-mask::$OWNER"
-          IE_REQUIRE_AUTH=true inference-engine serve --port 8140 --data-dir "$DATA" &
+          # A3b: billing/webhook administration against real deliveries. Webhooks
+          # on, egress only to loopback (the test's receiver), one attempt per
+          # delivery (a failure is dead at once, then replayed), a fast poll, a
+          # one-hour rotation grace, and a per-run Stripe signing secret so the
+          # test emits real lifecycle events through the signed inbound webhook.
+          STRIPE_SECRET="whsec_e2e_$(python -c 'import secrets; print(secrets.token_hex(16))')"
+          echo "::add-mask::$STRIPE_SECRET"
+          IE_REQUIRE_AUTH=true \
+          IE_WEBHOOKS_ENABLED=true IE_EGRESS_ALLOWLIST='["127.0.0.1"]' \
+          IE_WEBHOOK_MAX_ATTEMPTS=1 IE_WEBHOOK_POLL_INTERVAL_S=0.5 \
+          IE_WEBHOOK_SIGNING_ROTATION_GRACE_S=3600 \
+          IE_BILLING_PROVIDER=stripe IE_STRIPE_WEBHOOK_SECRET="$STRIPE_SECRET" \
+            inference-engine serve --port 8140 --data-dir "$DATA" &
           SRV=$!
           wait_healthy 8140
 
@@ -497,6 +509,7 @@ jobs:
           IE_E2E_MODEL_SHA256="$MODEL_SHA256" \
           IE_E2E_RESTRICTED_BASE_URL=http://127.0.0.1:8141 \
           IE_E2E_RESTRICTED_OPERATOR_KEY="$ROWNER" \
+          IE_E2E_STRIPE_SECRET="$STRIPE_SECRET" \
           IE_E2E_SCREENSHOT_DIR=e2e-screenshots \
             python -m pytest e2e -v -p no:cacheprovider --junitxml=e2e-report.xml \
             | tee e2e-output.txt

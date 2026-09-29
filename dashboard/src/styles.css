@@ -677,7 +677,8 @@ a.navbtn {
   background: var(--color-border);
   color: var(--color-fg);
 }
-.segbtn[aria-pressed="true"] {
+.segbtn[aria-pressed="true"],
+.segbtn[role="tab"][aria-selected="true"] {
   background: var(--color-accent);
   color: var(--color-accent-fg);
 }
