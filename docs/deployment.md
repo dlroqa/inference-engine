@@ -109,6 +109,46 @@ use `-f compose.yaml`.)
   supervisor's allowance before it kills the process, not a shutdown guarantee
   (see [Graceful shutdown & drain](#graceful-shutdown--drain)).
 - Secrets from the uncommitted `inference-engine.env`; nothing secret is committed.
+- Least privilege: `security_opt: ["no-new-privileges:true"]` and `cap_drop: [ALL]`
+  (see [Container privileges](#container-privileges)).
+
+### Container privileges
+
+The engine runs as the image's non-root user `engine` (uid 10001), listens on
+port 8000 inside the container and needs **no Linux capabilities**. The Compose
+file therefore:
+
+- drops every capability (`cap_drop: [ALL]`), including the bounding set, so no
+  process in the container can hold or regain one;
+- sets `no-new-privileges`, so the setuid/setgid programs that the Debian base
+  ships (for example `su`, `mount`, `passwd`) cannot raise privileges, even after
+  code execution as uid 10001.
+
+`docker compose exec` and `docker compose run` (backups, key creation, restore)
+use the same settings. Each Release run records the image's setuid/setgid and
+file-capability files and the engine user's capability sets (with Docker's
+defaults and with these settings) in its summary. The image end-to-end test
+asserts the settings on the running engine (`CapEff`/`CapPrm`/`CapBnd`/`CapAmb`
+all zero, `NoNewPrivs: 1`) and runs install, model import and load,
+generation, restart, drain, backup, database loss and restore under them. The
+store-ownership and interrupted-download recovery test runs its engines with
+them too.
+
+Keep these settings when you adapt the file:
+
+- Do not add `cap_add`, `privileged`, or `user: root`. Nothing in the engine
+  needs them; a permission error means the volume ownership is wrong.
+- Files the engine writes must belong to uid/gid 10001. A fresh named volume
+  already does, because Docker copies the image's `/data` (owned by `engine`)
+  into it. A host directory you mount (for example `/srv/models:/data/models`)
+  must be writable by uid 10001 (`sudo chown -R 10001:10001 /srv/models`), since
+  without `CAP_DAC_OVERRIDE` nothing in the container can bypass file permissions.
+- To prepare or repair a volume's ownership, use a separate one-off container
+  (`docker run --rm --user root -v <volume>:/v <image> chown -R engine:engine /v`),
+  not the service.
+
+The development `docker-compose.yml` at the repository root does not set these
+options; the release Compose file is the supported deployment.
 
 ### Volumes, model store, and database
 
