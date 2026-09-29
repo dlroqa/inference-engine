@@ -143,10 +143,13 @@ triage. The SBOM is an inventory, not a security result.
 to the GitHub release. A dry run (pull request or manual run) keeps them as the
 run artifact `candidate-scan-evidence` for **14 days**: `sbom.spdx.json`,
 `grype.json`, `scan-summary.md` (when the gate produced one),
-`scan-evidence.json` (commit, version, candidate manifest and config digests,
-run URL, grype version and vulnerability-database identity) and `SHA256SUMS`.
+`scan-evidence.json` (checked-out commit, which is the synthetic merge on a pull
+request, plus the pull request head, version, candidate manifest and config
+digests, run URL and attempt, grype version and vulnerability-database identity) and `SHA256SUMS`.
 The same identity and checksums are printed in the run summary, so a downloaded
-copy can be checked against it. The files are kept even when the gate fails.
+copy can be checked against it. The steps are configured to keep the files
+when the Critical gate fails as well; unit tests check that configuration,
+but no failing-gate run has exercised it yet.
 They are not kept when the run was cancelled or the scan itself did not
 complete. Retrieve them with
 `gh run download <run-id> -n candidate-scan-evidence`. The repository is public,

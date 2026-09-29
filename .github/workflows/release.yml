@@ -243,8 +243,9 @@ jobs:
 
       - name: Record the scan evidence identity (dry runs)
         # F6 (docs/security/candidate-image-triage.md): a non-publishing run keeps
-        # its SBOM and full grype report for triage. It runs even when the gate
-        # fails, as that is when the report matters most. Publishing runs attach
+        # its SBOM and full grype report for triage. It is configured to run even
+        # when the gate fails, as that is when the report matters most (checked by
+        # tests; not yet exercised by a failing run). Publishing runs attach
         # the same files to the GitHub release instead (publish job).
         if: ${{ !cancelled() && needs.validate.outputs.publish != 'true' && steps.scan.outcome == 'success' }}
         run: |
@@ -256,9 +257,10 @@ jobs:
             --arg config "${{ steps.build.outputs.config }}" \
             --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" \
             --arg event "$GITHUB_EVENT_NAME" \
+            --arg pr_head "${{ github.event.pull_request.head.sha }}" \
             --argjson scanner "$(jq '{scan_time: .descriptor.timestamp, grype: .descriptor.version, db: .descriptor.db}' grype.json)" \
             '{commit: $commit, version: $version, manifest_digest: $digest, config_digest: $config,
-              run: $run, event: $event, scanner: $scanner}' > scan-evidence.json
+              run: $run, event: $event, pr_head: $pr_head, scanner: $scanner}' > scan-evidence.json
           sha256sum "${FILES[@]}" scan-evidence.json > SHA256SUMS
           {
             echo "### Retained scan evidence (artifact \`candidate-scan-evidence\`, 14 days)"
