@@ -1,12 +1,19 @@
 name: Image reachability audit
 
-# Bounded evidence for the candidate-image triage (docs/security/
-# candidate-image-triage.md, F3 and F4a). Builds the candidate exactly as
-# release.yml's candidate job does, then records which shared objects import the
-# affected zlib/glibc/SQLite functions, whether the Debian zlib source carries
-# the CVE-2026-85091 code, which installed distributions import the affected
-# stdlib modules, and what a real serve session and a backup/restore load and
-# call. Read-only: nothing is pushed, published, or gated on.
+# Diagnostic evidence for the candidate-image triage (docs/security/
+# candidate-image-triage.md, F3 and F4a). Not a release gate and not an
+# automatic approval: nothing here decides whether a release may publish.
+#
+# Authority: `contents: read`, no secrets, no registry login, no push, publish or
+# deploy step. The job still builds the candidate image, runs containers and
+# writes disposable runner files and one artifact (14 days).
+#
+# It rebuilds the candidate as release.yml's candidate job does (same Dockerfile,
+# base digests and lock files). The rebuild is NOT byte-identical to any scanned
+# or published image; its own digests are recorded in candidate.json.
+#
+# Triggers: changes to this workflow or its probe, or a manual dispatch. It does
+# not run on base-image refreshes by itself; the master plan dispatches it then.
 on:
   workflow_dispatch:
   pull_request:
@@ -30,6 +37,11 @@ env:
   # Same pinned fixture as ci.yml and release.yml.
   MODEL_URL: "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q4_K_M.gguf"
   MODEL_SHA256: "2e8040ceae7815abe0dcb3540b9995eaa1fa0d2ca9e797d0a635ae4433c68c2d"
+  # Positive control for the zlib source check: upstream v1.3.1.2, the first
+  # release with non-blocking gz support (and gz_vacate), pinned by commit and
+  # file checksum.
+  ZLIB_CONTROL_COMMIT: 570720b0c24f9686c33f35a1b3165c1f568b96be
+  ZLIB_CONTROL_SHA256: 21f87de1e7c4f71f175b5ede78d649056d9aa7e162e46236f7a2434dc6c2326f
 
 jobs:
   audit:
@@ -57,13 +69,29 @@ jobs:
             --build-arg IE_BUILD_SHA="$COMMIT" \
             --build-arg IE_BUILD_DATE="$CREATED" \
             --provenance=false --sbom=false \
+            --output "type=oci,dest=candidate.oci.tar,name=$CANDIDATE" \
             --output "type=docker,name=$CANDIDATE" \
             .
           mkdir -p out && chmod 0777 out
+          DIGESTS=$(python3 scripts/release.py oci-digests candidate.oci.tar)
+          rm candidate.oci.tar
           jq -n --arg commit "$COMMIT" --arg tree "$(git rev-parse 'HEAD^{tree}')" \
+            --arg pr_head "${{ github.event.pull_request.head.sha }}" \
+            --arg event "$GITHUB_EVENT_NAME" --arg version "$VERSION" --arg built_at "$CREATED" \
+            --argjson digests "$DIGESTS" \
             --arg image_id "$(docker image inspect -f '{{.Id}}' "$CANDIDATE")" \
+            --arg probe_sha256 "$(sha256sum scripts/image_reachability.py | cut -d' ' -f1)" \
+            --arg dockerfile_sha256 "$(sha256sum Dockerfile | cut -d' ' -f1)" \
+            --arg lock_sha256 "$(sha256sum requirements/release-cpu.txt | cut -d' ' -f1)" \
             --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" \
-            '{commit: $commit, tree: $tree, image_config: $image_id, run: $run}' | tee out/candidate.json
+            --arg tools "$(docker version -f 'docker {{.Server.Version}}'); $(readelf --version | head -1); $(python3 --version)" \
+            '{checkout_commit: $commit, tree: $tree, pr_head: $pr_head, event: $event,
+              version: $version, built_at: $built_at, manifest_digest: $digests.manifest,
+              config_digest: $digests.config, docker_image_id: $image_id,
+              probe_sha256: $probe_sha256, dockerfile_sha256: $dockerfile_sha256,
+              release_cpu_lock_sha256: $lock_sha256, run: $run, tools: $tools,
+              note: "rebuild; not byte-identical to any scanned or published image"}' \
+            | tee out/candidate.json
           docker run --rm --entrypoint dpkg-query "$CANDIDATE" \
             -W -f '${Package}\t${Version}\t${source:Package}\t${source:Version}\n' > out/dpkg.tsv
 
@@ -74,54 +102,109 @@ jobs:
           mkdir rootfs
           docker export "$CID" | sudo tar -x -C rootfs
           docker rm "$CID" >/dev/null
+          # Exit 3 = incomplete inspection: fail rather than present gaps as negatives.
           sudo python3 scripts/image_reachability.py elf rootfs --json out/elf.json | tee out/elf.md
           { echo "### F4a: shared-object imports"; cat out/elf.md; } >> "$GITHUB_STEP_SUMMARY"
 
       - name: F4a — does the image's Debian zlib source contain the CVE-2026-85091 code?
+        # Trust chain: the Debian archive keyring inside the digest-pinned base
+        # image -> signed trixie InRelease -> Sources.xz checksum -> zlib .dsc
+        # checksum -> source archive checksums. Positive control: pinned upstream
+        # 1.3.1.2 gzwrite.c must show the code, or the negative result is void.
         run: |
           set -euo pipefail
-          ZSRC=$(awk -F'\t' '$1 == "zlib1g" {print $4}' out/dpkg.tsv)
-          V=${ZSRC#*:}   # drop the epoch
-          POOL=https://deb.debian.org/debian/pool/main/z/zlib
-          mkdir -p zsrc && cd zsrc
-          curl -sfL --retry 3 -o "zlib_$V.dsc" "$POOL/zlib_$V.dsc"
+          EVIDENCE="$PWD/out/zlib-source"
+          mkdir -p "$EVIDENCE" zsrc && cd zsrc
+          ZSRC=$(awk -F'\t' '$1 == "zlib1g" {print $4}' ../out/dpkg.tsv)
+          V=${ZSRC#*:}   # the epoch is not part of file names
+          KEYRING=$(ls ../rootfs/usr/share/keyrings/debian-archive-keyring.pgp)
+          curl -sfL --retry 3 -o InRelease https://deb.debian.org/debian/dists/trixie/InRelease
+          # InRelease may carry several signatures: require a valid one from the
+          # image's keyring and no bad one, and read only the verified content.
+          gpgv --status-fd 3 --keyring "$KEYRING" --output Release.verified InRelease \
+            3> gpgv-status.txt 2> gpgv.txt || true
+          if ! grep -q '^\[GNUPG:\] VALIDSIG' gpgv-status.txt \
+             || grep -q '^\[GNUPG:\] BADSIG' gpgv-status.txt || [ ! -s Release.verified ]; then
+            cat gpgv.txt; echo "::error::InRelease signature not verified"; exit 1
+          fi
+          SOURCES_SHA=$(awk '/^SHA256:/ {f=1; next} /^[^ ]/ {f=0}
+                             f && $3 == "main/source/Sources.xz" {print $1}' Release.verified)
+          test -n "$SOURCES_SHA"
+          curl -sfL --retry 3 -o Sources.xz https://deb.debian.org/debian/dists/trixie/main/source/Sources.xz
+          echo "$SOURCES_SHA  Sources.xz" | sha256sum -c -
+          # The zlib paragraph of the signed index must carry the image's version.
+          xz -dc Sources.xz | python3 -c 'import sys
+          paragraphs = sys.stdin.read().split("\n\n")
+          print(next(p for p in paragraphs if p.startswith("Package: zlib\n")))' > zlib-paragraph.txt
+          grep -qx "Version: $ZSRC" zlib-paragraph.txt || {
+            echo "::error::trixie Sources does not list zlib $ZSRC; investigate (snapshot.debian.org)"
+            exit 1
+          }
+          DIR=$(awk '/^Directory:/ {print $2}' zlib-paragraph.txt)
           awk '/^Checksums-Sha256:/ {f=1; next} /^[^ ]/ {f=0} f && NF == 3 {print $1 "  " $3}' \
-            "zlib_$V.dsc" > SHA256SUMS
-          while read -r _ file; do curl -sfL --retry 3 -o "$file" "$POOL/$file"; done < SHA256SUMS
-          sha256sum -c SHA256SUMS
+            zlib-paragraph.txt > files.sha256
+          while read -r _ file; do
+            curl -sfL --retry 3 -o "$file" "https://deb.debian.org/debian/$DIR/$file"
+          done < files.sha256
+          sha256sum -c files.sha256
           mkdir tree
           tar -xf zlib_*.orig.tar.* -C tree --strip-components=1
           tar -xf "zlib_$V.debian.tar."* -C tree
-          cd tree
-          APPLIED=0
-          if [ -f debian/patches/series ]; then
+          PATCHES=()
+          if [ -f tree/debian/patches/series ]; then
             while read -r patch _; do
               case "$patch" in ''|'#'*) continue ;; esac
-              patch -p1 --quiet < "debian/patches/$patch"
-              APPLIED=$((APPLIED + 1))
-            done < debian/patches/series
+              (cd tree && patch -p1 --quiet < "debian/patches/$patch")
+              PATCHES+=("$patch")
+            done < tree/debian/patches/series
           fi
+          curl -sfL --retry 3 -o control-gzwrite.c \
+            "https://raw.githubusercontent.com/madler/zlib/$ZLIB_CONTROL_COMMIT/gzwrite.c"
+          echo "$ZLIB_CONTROL_SHA256  control-gzwrite.c" | sha256sum -c -
           count() { grep -c "$1" "$2" || true; }
-          # Positive control: the first upstream release with the non-blocking code.
-          curl -sfL --retry 3 -o ../upstream-1.3.1.2-gzwrite.c \
-            https://raw.githubusercontent.com/madler/zlib/v1.3.1.2/gzwrite.c
-          jq -n --arg source "$ZSRC" --argjson patches "$APPLIED" \
-            --arg zlib_h "$(grep -m1 '#define ZLIB_VERSION' zlib.h)" \
-            --argjson vacate "$(count gz_vacate gzwrite.c)" \
-            --argjson again "$(count 'state->again' gzwrite.c)" \
-            --argjson ctl_vacate "$(count gz_vacate ../upstream-1.3.1.2-gzwrite.c)" \
-            --argjson ctl_again "$(count 'state->again' ../upstream-1.3.1.2-gzwrite.c)" \
-            --arg patch_names "$(tr '\n' ' ' < debian/patches/series 2>/dev/null || true)" \
-            '{debian_source: $source, debian_patches_applied: $patches, patch_series: $patch_names,
-              zlib_h: $zlib_h, gzwrite_c: {gz_vacate: $vacate, nonblocking_state_again: $again},
-              control_upstream_1_3_1_2: {gz_vacate: $ctl_vacate, nonblocking_state_again: $ctl_again}}' \
-            | tee ../../out/zlib-source.json
-          { echo "### F4a: Debian zlib source"; echo '```json'; cat ../../out/zlib-source.json; echo '```'; } \
+          CTL_VACATE=$(count gz_vacate control-gzwrite.c)
+          CTL_AGAIN=$(count 'state->again' control-gzwrite.c)
+          if [ "$CTL_VACATE" -eq 0 ] || [ "$CTL_AGAIN" -eq 0 ]; then
+            echo "::error::positive control did not detect the code; the negative check is void"
+            exit 1
+          fi
+          VACATE=$(count gz_vacate tree/gzwrite.c)
+          AGAIN=$(count 'state->again' tree/gzwrite.c)
+          ZLIB_H=$(grep -m1 '#define ZLIB_VERSION' tree/zlib.h)
+          # Keep the inputs of the conclusion (small) for durable retention.
+          cp InRelease zlib-paragraph.txt files.sha256 zlib_*.dsc zlib_*.debian.tar.* \
+             control-gzwrite.c gpgv.txt gpgv-status.txt "$EVIDENCE/"
+          cp tree/gzwrite.c "$EVIDENCE/inspected-gzwrite.c"
+          cp tree/zlib.h "$EVIDENCE/inspected-zlib.h"
+          jq -n --arg source "$ZSRC" --arg dir "$DIR" \
+            --arg keyring "${KEYRING#../rootfs}" \
+            --arg inrelease_sha256 "$(sha256sum InRelease | cut -d' ' -f1)" \
+            --arg sources_xz_sha256 "$SOURCES_SHA" \
+            --arg gpgv "$(grep '^\[GNUPG:\] VALIDSIG' gpgv-status.txt | cut -d' ' -f3 | paste -sd,)" \
+            --argjson files "$(awk '{print $2 "\t" $1}' files.sha256 | jq -R 'split("\t") | {(.[0]): .[1]}' | jq -s add)" \
+            --argjson patches "$(printf '%s\n' "${PATCHES[@]}" | jq -R 'select(length > 0)' | jq -s .)" \
+            --arg zlib_h "$ZLIB_H" \
+            --argjson vacate "$VACATE" --argjson again "$AGAIN" \
+            --arg control_commit "$ZLIB_CONTROL_COMMIT" --arg control_sha256 "$ZLIB_CONTROL_SHA256" \
+            --argjson ctl_vacate "$CTL_VACATE" --argjson ctl_again "$CTL_AGAIN" \
+            --arg snapshot "https://snapshot.debian.org/package/zlib/$ZSRC/" \
+            '{debian_source: $source, archive_directory: $dir,
+              trust: {keyring_in_image: $keyring, inrelease_sha256: $inrelease_sha256,
+                      valid_signature_fingerprints: $gpgv, sources_xz_sha256: $sources_xz_sha256},
+              source_files_sha256: $files, durable_reference: $snapshot,
+              debian_patches_applied: $patches, zlib_h: $zlib_h,
+              gzwrite_c: {gz_vacate: $vacate, nonblocking_state_again: $again},
+              positive_control: {repository: "madler/zlib", commit: $control_commit,
+                                 file: "gzwrite.c", sha256: $control_sha256,
+                                 gz_vacate: $ctl_vacate, nonblocking_state_again: $ctl_again}}' \
+            | tee ../out/zlib-source.json
+          { echo "### F4a: Debian zlib source"; echo '```json'; cat ../out/zlib-source.json; echo '```'; } \
             >> "$GITHUB_STEP_SUMMARY"
 
       - name: F3 — third-party stdlib use, SQLite and zlib identity (inside the image)
         run: |
           set -euo pipefail
+          # Exit 3 = incomplete scan (unparsed files, distributions without RECORD).
           docker run --rm -v "$PWD/scripts/image_reachability.py:/opt/probe/probe.py:ro" \
             -v "$PWD/out:/out" --entrypoint python "$CANDIDATE" \
             /opt/probe/probe.py python-static --json /out/static.json | tee out/static.md
@@ -141,7 +224,9 @@ jobs:
       - name: Verify model checksum before use
         run: echo "${MODEL_SHA256}  $HOME/models/tiny.gguf" | sha256sum -c -
 
-      - name: F3/F4a — record a real serve session and a backup/restore
+      - name: F3/F4a — record a checked serve session and a backup/restore
+        # Fresh, disposable Docker volume; no operator data. Every workload step
+        # and each process's exit must succeed, or the recording is not evidence.
         run: |
           set -euo pipefail
           PROBE=(-v "$PWD/scripts/image_reachability.py:/opt/probe/probe.py:ro")
@@ -151,30 +236,18 @@ jobs:
             --entrypoint python "$CANDIDATE" \
             /opt/probe/probe.py record --out /data/record-serve.json -- serve
           for _ in $(seq 120); do curl -sf http://127.0.0.1:8000/healthz >/dev/null && break; sleep 1; done
-          KEY=$(docker exec ie-audit inference-engine keys create --label audit | jq -r .token)
-          echo "::add-mask::$KEY"
-          AUTH=(-H "Authorization: Bearer $KEY" -H "Content-Type: application/json")
-          api() { curl -sS -o /dev/null -w "%{http_code} $1 $2\n" -X "$1" "${AUTH[@]}" \
-                    "http://127.0.0.1:8000$2" "${@:3}"; }
+          IE_AUDIT_KEY=$(docker exec ie-audit inference-engine keys create --label audit | jq -r .token)
+          echo "::add-mask::$IE_AUDIT_KEY"
+          export IE_AUDIT_KEY
           docker exec -i ie-audit sh -c 'mkdir -p /data/models && cat > /data/models/audit.gguf' \
             < "$HOME/models/tiny.gguf"
-          MODEL_ID=$(curl -sf -X POST "${AUTH[@]}" http://127.0.0.1:8000/admin/models/import \
-            -d '{"path": "/data/models/audit.gguf", "name": "audit"}' | jq -r .id)
-          {
-            api POST "/admin/models/$MODEL_ID/load"
-            api POST /v1/chat/completions \
-              -d '{"model": "audit", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 8}'
-            api POST /v1/chat/completions -d '{"model": "audit", "stream": true, "max_tokens": 8,
-              "messages": [{"role": "user", "content": "Count to three."}]}'
-            api POST /v1/messages -H "anthropic-version: 2023-06-01" \
-              -d '{"model": "audit", "max_tokens": 8, "messages": [{"role": "user", "content": "hi"}]}'
-            for path in /admin/overview /admin/system /admin/models /admin/keys /metrics /logs \
-                        /dashboard/ /version /readyz; do
-              api GET "$path"
-            done
-          } | tee out/serve-requests.txt
+          WORKLOAD=0
+          timeout 600 python3 scripts/image_reachability.py workload \
+            --model-path /data/models/audit.gguf --json out/workload.json || WORKLOAD=$?
+          unset IE_AUDIT_KEY
           docker stop -t 40 ie-audit >/dev/null
-          echo "serve exit code: $(docker inspect -f '{{.State.ExitCode}}' ie-audit)" | tee -a out/serve-requests.txt
+          SERVE_EXIT=$(docker inspect -f '{{.State.ExitCode}}' ie-audit)
+          docker logs ie-audit 2>&1 | grep -c '"event": "drain_complete"' > out/serve-drain-count.txt || true
           docker cp ie-audit:/data/record-serve.json out/record-serve.json
           docker rm ie-audit >/dev/null
           # One-off CLI processes, recorded the same way.
@@ -183,20 +256,37 @@ jobs:
           ARCHIVE=$(docker run --rm -v ie-audit-data:/data "${PROBE[@]}" --entrypoint python \
             "$CANDIDATE" /opt/probe/probe.py record --out /data/record-backup.json -- \
             backup --out /data/backups | jq -r .archive)
-          docker run --rm -v ie-audit-data:/data "${PROBE[@]}" -e IE_DATA_DIR=/data/restore \
+          RESTORED=$(docker run --rm -v ie-audit-data:/data "${PROBE[@]}" -e IE_DATA_DIR=/data/restore \
             --entrypoint python "$CANDIDATE" /opt/probe/probe.py record \
-            --out /data/record-restore.json -- restore --from "$ARCHIVE"
+            --out /data/record-restore.json -- restore --from "$ARCHIVE" | jq -r .db_path)
           for f in record-backup.json record-restore.json; do
             docker run --rm -v ie-audit-data:/data --entrypoint cat "$CANDIDATE" "/data/$f" > "out/$f"
           done
           docker volume rm ie-audit-data >/dev/null
+          jq -n --argjson workload "$WORKLOAD" --argjson serve_exit "$SERVE_EXIT" \
+            --argjson drain "$(cat out/serve-drain-count.txt)" \
+            --arg archive "$ARCHIVE" --arg restored "$RESTORED" \
+            '{workload_exit: $workload, serve_exit: $serve_exit, drain_complete_events: $drain,
+              backup_archive: $archive, restore_db_path: $restored}' | tee out/session-outcome.json
           {
-            echo "### F3/F4a: recorded processes"
-            echo '```'; cat out/serve-requests.txt; echo '```'
+            echo "### F3/F4a: checked session outcome"
+            echo '```json'; cat out/session-outcome.json; jq '.steps' out/workload.json; echo '```'
             for f in record-serve record-backup record-restore; do
               echo "#### $f"; echo '```json'; cat "out/$f.json"; echo '```'
             done
           } >> "$GITHUB_STEP_SUMMARY"
+          test "$WORKLOAD" -eq 0 || { echo "::error::workload failed (see workload.json)"; exit 1; }
+          test "$SERVE_EXIT" -eq 0 || { echo "::error::serve exited $SERVE_EXIT"; exit 1; }
+          test "$(cat out/serve-drain-count.txt)" -ge 1 || { echo "::error::no drain_complete"; exit 1; }
+          case "$ARCHIVE" in /data/backups/*.tar.gz) ;; *) echo "::error::backup failed"; exit 1 ;; esac
+          test "$RESTORED" = /data/restore/inference_engine.db || { echo "::error::restore failed"; exit 1; }
+
+      - name: Checksums of the evidence
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          cd out && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+          { echo "### Evidence checksums"; echo '```'; cat SHA256SUMS; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Keep the audit evidence (14 days)
         if: ${{ !cancelled() }}

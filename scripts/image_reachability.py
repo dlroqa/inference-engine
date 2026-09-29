@@ -14,9 +14,16 @@ Subcommands:
     python-static       Inside the image: which installed distributions import
                         the affected stdlib modules (AST), plus the sqlite3 and
                         zlib runtime identity.
+    workload            Runner side: drive the recorded serve session (import,
+                        load, OpenAI plain + streamed, Anthropic, admin reads)
+                        and fail unless every step has the expected outcome.
     record -- ARGS      Inside the image: run ``inference-engine ARGS`` with an
                         audit hook and post-import counters, then write what the
                         process loaded and called to ``--out`` on exit.
+
+``elf`` and ``python-static`` report what they could not inspect and exit 3 when
+the inspection is incomplete, so an unreadable file or a failed ``readelf`` is
+never presented as a negative finding.
 """
 
 from __future__ import annotations
@@ -33,7 +40,7 @@ import re
 import subprocess
 import sys
 import sysconfig
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -103,37 +110,83 @@ CCS_MODE = re.compile(rb"[rwa]\+?[a-z]*,ccs=")
 GCONV_JISX0213 = ("EUC-JISX0213.so", "SHIFT_JISX0213.so")
 
 
-def elf_files(root: Path) -> Iterator[Path]:
-    for dirpath, dirnames, filenames in os.walk(root):
+class InspectionError(Exception):
+    """An ELF file could not be inspected; its absence of findings means nothing."""
+
+
+def _rel(root: Path, path: str | os.PathLike[str]) -> str:
+    try:
+        return "/" + str(Path(path).relative_to(root))
+    except ValueError:
+        return str(path)
+
+
+def _reason(exc: OSError) -> str:
+    return f"{type(exc).__name__}: {exc.strerror or exc}"
+
+
+def elf_candidates(root: Path) -> tuple[list[Path], int, list[dict[str, str]]]:
+    """(ELF files, regular files examined, files/directories that could not be read)."""
+    elves: list[Path] = []
+    unreadable: list[dict[str, str]] = []
+    examined = 0
+
+    def walk_error(exc: OSError) -> None:
+        unreadable.append({"path": _rel(root, exc.filename or ""), "reason": _reason(exc)})
+
+    for dirpath, dirnames, filenames in os.walk(root, onerror=walk_error):
         if Path(dirpath) == root:
             dirnames[:] = [d for d in dirnames if d not in ("proc", "sys", "dev")]
         for name in filenames:
             path = Path(dirpath) / name
             if path.is_symlink() or not path.is_file():
                 continue
+            examined += 1
             try:
                 with path.open("rb") as handle:
                     if handle.read(4) == b"\x7fELF":
-                        yield path
-            except OSError:
-                continue
+                        elves.append(path)
+            except OSError as exc:
+                unreadable.append({"path": _rel(root, path), "reason": _reason(exc)})
+    return elves, examined, unreadable
 
 
-def dynamic_symbols(path: Path) -> tuple[set[str], set[str]]:
-    """(imported, defined) dynamic symbol names, without version suffixes."""
-    out = subprocess.run(
-        ["readelf", "-W", "--dyn-syms", str(path)], capture_output=True, text=True
-    ).stdout
+class DynSyms:
+    def __init__(self, imported: set[str], defined: set[str], has_dynsym: bool) -> None:
+        self.imported = imported
+        self.defined = defined
+        self.has_dynsym = has_dynsym
+
+
+def dynamic_symbols(path: Path, timeout: float = 60) -> DynSyms:
+    """Imported and defined dynamic symbols (no version suffixes).
+
+    Raises InspectionError when readelf fails, so a failure is never read as
+    "no symbols". A file without ``.dynsym`` (for example a static binary) is
+    reported as such: it can hold code that no import table shows.
+    """
+    try:
+        proc = subprocess.run(
+            ["readelf", "-W", "--dyn-syms", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise InspectionError(f"readelf did not run: {type(exc).__name__}") from exc
+    if proc.returncode != 0:
+        detail = " ".join(proc.stderr.split())[-300:]
+        raise InspectionError(f"readelf exit {proc.returncode}: {detail}")
     imported: set[str] = set()
     defined: set[str] = set()
-    for line in out.splitlines():
+    for line in proc.stdout.splitlines():
         parts = line.split()
         # Num: Value Size Type Bind Vis Ndx Name
         if len(parts) < 8 or not parts[0].endswith(":") or parts[3] not in ("FUNC", "NOTYPE"):
             continue
         name = parts[7].split("@")[0]
         (imported if parts[6] == "UND" else defined).add(name)
-    return imported, defined
+    return DynSyms(imported, defined, "Symbol table '.dynsym'" in proc.stdout)
 
 
 def elf_report(root: Path) -> dict[str, Any]:
@@ -142,16 +195,27 @@ def elf_report(root: Path) -> dict[str, Any]:
     definers: dict[str, list[str]] = collections.defaultdict(list)
     embedded: list[dict[str, Any]] = []
     ccs: list[str] = []
-    count = 0
-    for path in elf_files(root):
-        count += 1
-        rel = "/" + str(path.relative_to(root))
-        imported, defined = dynamic_symbols(path)
-        for sym in imported & wanted:
+    elves, examined, unassessed = elf_candidates(root)
+    inspected = 0
+    no_dynsym: list[str] = []
+    for path in elves:
+        rel = _rel(root, path)
+        try:
+            syms = dynamic_symbols(path)
+            data = path.read_bytes()
+        except InspectionError as exc:
+            unassessed.append({"path": rel, "reason": str(exc)})
+            continue
+        except OSError as exc:
+            unassessed.append({"path": rel, "reason": _reason(exc)})
+            continue
+        inspected += 1
+        if not syms.has_dynsym:
+            no_dynsym.append(rel)
+        for sym in syms.imported & wanted:
             importers[sym].append(rel)
-        for sym in defined & wanted:
+        for sym in syms.defined & wanted:
             definers[sym].append(rel)
-        data = path.read_bytes()
         if not Path(rel).name.startswith("libz.so"):
             versions = sorted({m.decode() for m in EMBEDDED_ZLIB.findall(data)})
             if versions:
@@ -159,14 +223,24 @@ def elf_report(root: Path) -> dict[str, Any]:
         if not Path(rel).name.startswith(("libc.so", "libc-")) and CCS_MODE.search(data):
             ccs.append(rel)
     gconv = sorted(str(p.relative_to(root)) for p in root.glob("usr/lib/*/gconv/*JISX0213*"))
-    report: dict[str, Any] = {"elf_files_scanned": count, "groups": {}}
+    report: dict[str, Any] = {
+        "completeness": {
+            "status": "complete" if not unassessed else "incomplete",
+            "regular_files_examined": examined,
+            "elf_discovered": len(elves),
+            "elf_inspected": inspected,
+            "elf_without_dynsym": sorted(no_dynsym),
+            "unassessed": sorted(unassessed, key=lambda u: u["path"]),
+        },
+        "groups": {},
+    }
     for lib, groups in ELF_TARGETS.items():
-        for label, syms in groups.items():
+        for label, target_syms in groups.items():
             report["groups"][f"{lib}: {label}"] = {
                 sym: {"defined_in": sorted(definers[sym]), "imported_by": sorted(importers[sym])}
-                for sym in syms
+                for sym in target_syms
             }
-    report["embedded_zlib_copies"] = embedded
+    report["embedded_zlib_version_strings"] = embedded
     report["ccs_fopen_mode_strings_outside_libc"] = sorted(ccs)
     report["jisx0213_gconv_modules"] = gconv
     report["nscd_present"] = [
@@ -176,17 +250,28 @@ def elf_report(root: Path) -> dict[str, Any]:
 
 
 def elf_markdown(report: dict[str, Any]) -> str:
-    lines = [f"ELF files scanned: {report['elf_files_scanned']}", ""]
-    lines += ["| Group | Symbol | Defined in | Imported by |", "| --- | --- | --- | --- |"]
+    done = report["completeness"]
+    lines = [
+        f"Completeness: **{done['status']}**. Regular files examined "
+        f"{done['regular_files_examined']}; ELF discovered {done['elf_discovered']}, "
+        f"inspected {done['elf_inspected']}, unassessed {len(done['unassessed'])}; "
+        f"inspected without a dynamic symbol table {len(done['elf_without_dynsym'])}.",
+        "",
+    ]
+    lines += [f"- unassessed `{u['path']}`: {u['reason']}" for u in done["unassessed"]]
+    lines += [f"- no `.dynsym` (imports not visible): `{p}`" for p in done["elf_without_dynsym"]]
+    none = f"no direct dynamic-symbol import in the {done['elf_inspected']} inspected files"
+    lines += ["", "| Group | Symbol | Defined in | Imported by |", "| --- | --- | --- | --- |"]
     for group, syms in report["groups"].items():
         for sym, where in syms.items():
             defined = ", ".join(where["defined_in"]) or "-"
-            used = ", ".join(where["imported_by"]) or "**none**"
+            used = ", ".join(where["imported_by"]) or none
             lines.append(f"| {group} | `{sym}` | {defined} | {used} |")
     lines.append("")
-    lines.append(f"Embedded zlib copies: {report['embedded_zlib_copies'] or 'none'}")
+    embedded = report["embedded_zlib_version_strings"]
+    lines.append(f"zlib version strings outside libz (string search): {embedded or 'none found'}")
     ccs = report["ccs_fopen_mode_strings_outside_libc"]
-    lines.append(f"`,ccs=` mode strings outside libc: {ccs or 'none'}")
+    lines.append(f"`,ccs=` mode strings outside libc (string search): {ccs or 'none found'}")
     lines.append(f"JISX0213 gconv modules: {report['jisx0213_gconv_modules'] or 'none'}")
     lines.append(f"nscd present: {report['nscd_present'] or 'no'}")
     return "\n".join(lines)
@@ -232,19 +317,27 @@ def python_static() -> dict[str, Any]:
 
     targets = (*STDLIB_TARGETS, *NAME_TARGETS)
     per_target: dict[str, dict[str, list[str]]] = {t: {} for t in targets}
-    errors: list[str] = []
+    unparsed: list[str] = []
+    no_record: list[str] = []
+    native: collections.Counter[str] = collections.Counter()
+    parsed = 0
     for dist in metadata.distributions():
         name = dist.metadata["Name"]
-        for file in dist.files or []:
+        if dist.files is None:
+            no_record.append(name)  # no RECORD: its files cannot be enumerated
+            continue
+        for file in dist.files:
+            if file.suffix == ".so":
+                native[name] += 1  # compiled code: not visible to an AST scan
             if file.suffix != ".py":
                 continue
             path = Path(str(dist.locate_file(file)))
             try:
-                source = path.read_text(encoding="utf-8", errors="replace")
-                tree = ast.parse(source)
+                tree = ast.parse(path.read_bytes())  # honours PEP 263 declarations
             except (OSError, SyntaxError, ValueError) as exc:
-                errors.append(f"{name}:{file}: {type(exc).__name__}")
+                unparsed.append(f"{name}:{file}: {type(exc).__name__}")
                 continue
+            parsed += 1
             modules = imported_modules(tree)
             for target in STDLIB_TARGETS:
                 if any(matches(m, target) for m in modules):
@@ -269,8 +362,14 @@ def python_static() -> dict[str, Any]:
         lib_zlib = f"unavailable: {exc}"
     return {
         "python": sys.version,
+        "completeness": {
+            "status": "complete" if not (unparsed or no_record) else "incomplete",
+            "python_files_parsed": parsed,
+            "unparsed": unparsed,
+            "distributions_without_record": no_record,
+            "native_extension_files_not_scanned": dict(sorted(native.items())),
+        },
         "imports_by_distribution": per_target,
-        "parse_errors": errors,
         "sqlite": {
             "sqlite_version": sqlite3.sqlite_version,
             "compile_options": options,
@@ -287,10 +386,21 @@ def python_static() -> dict[str, Any]:
 
 
 def static_markdown(report: dict[str, Any]) -> str:
-    lines = ["| Module / name | Distributions (files) |", "| --- | --- |"]
+    done = report["completeness"]
+    lines = [
+        f"Completeness: **{done['status']}**. Python files parsed "
+        f"{done['python_files_parsed']}; unparsed {len(done['unparsed'])}; distributions "
+        f"without RECORD {len(done['distributions_without_record'])}; native extension files "
+        f"(not scanned) {sum(done['native_extension_files_not_scanned'].values())}.",
+        "",
+    ]
+    lines += [f"- unparsed: {u}" for u in done["unparsed"]]
+    lines += [f"- no RECORD: {d}" for d in done["distributions_without_record"]]
+    none = f"no import/reference in the {done['python_files_parsed']} parsed files"
+    lines += ["", "| Module / name | Distributions (files) |", "| --- | --- |"]
     for target, dists in report["imports_by_distribution"].items():
         cell = "; ".join(f"{d} ({len(f)}): {', '.join(f[:4])}" for d, f in sorted(dists.items()))
-        lines.append(f"| `{target}` | {cell or '**none**'} |")
+        lines.append(f"| `{target}` | {cell or none} |")
     sqlite = report["sqlite"]
     lines += [
         "",
@@ -299,7 +409,6 @@ def static_markdown(report: dict[str, Any]) -> str:
         f"enable_load_extension present: {sqlite['load_extension_available']}",
         f"compile options: {', '.join(sqlite['compile_options'])}",
         f"zlib: {report['zlib']}",
-        f"parse errors: {len(report['parse_errors'])}",
     ]
     return "\n".join(lines)
 
@@ -498,7 +607,191 @@ def record(argv: list[str], out: Path) -> int:
     return engine_main(argv)
 
 
+# --- workload ----------------------------------------------------------------------
+
+GET_ENDPOINTS = (
+    "/admin/overview",
+    "/admin/system",
+    "/admin/models",
+    "/admin/keys",
+    "/metrics",
+    "/logs",
+    "/dashboard/",
+    "/version",
+    "/readyz",
+)
+
+
+class WorkloadFailure(Exception):
+    pass
+
+
+class Workload:
+    """Drives the recorded serve session and checks each outcome.
+
+    The summary keeps only step names, HTTP statuses, counts and pass/fail. It
+    never keeps prompts, generated text, response bodies or the key.
+    """
+
+    def __init__(self, base: str, key: str, timeout: float = 120.0) -> None:
+        self.base = base.rstrip("/")
+        self.key = key
+        self.timeout = timeout
+        self.steps: list[dict[str, Any]] = []
+
+    def request(
+        self, method: str, path: str, body: dict[str, Any] | None = None, auth: bool = True
+    ) -> Any:
+        import urllib.error
+        import urllib.request
+
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(f"{self.base}{path}", data=data, method=method)
+        if data is not None:
+            req.add_header("Content-Type", "application/json")
+        if auth:
+            req.add_header("Authorization", f"Bearer {self.key}")
+        if path == "/v1/messages":
+            req.add_header("anthropic-version", "2023-06-01")
+        try:
+            return urllib.request.urlopen(req, timeout=self.timeout)  # noqa: S310
+        except urllib.error.HTTPError as exc:
+            return exc
+        except (urllib.error.URLError, OSError) as exc:
+            raise WorkloadFailure(f"{method} {path}: {type(exc).__name__}") from exc
+
+    def step(self, name: str, check: Callable[[], dict[str, Any]]) -> None:
+        try:
+            detail = check()
+            self.steps.append({"step": name, "ok": True, **detail})
+        except WorkloadFailure as exc:
+            self.steps.append({"step": name, "ok": False, "reason": str(exc)})
+        except Exception as exc:  # malformed responses count as failures, not crashes
+            self.steps.append({"step": name, "ok": False, "reason": type(exc).__name__})
+
+    def json_ok(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
+        with self.request(method, path, body) as resp:
+            if resp.status != 200:
+                raise WorkloadFailure(f"{method} {path}: HTTP {resp.status}")
+            return json.loads(resp.read())
+
+    def wait_status(self, path: str, want: int, within: float, auth: bool = False) -> None:
+        import time
+
+        deadline = time.monotonic() + within
+        last = "no response"
+        while time.monotonic() < deadline:
+            try:
+                with self.request("GET", path, auth=auth) as resp:
+                    if resp.status == want:
+                        return
+                    last = f"HTTP {resp.status}"
+            except WorkloadFailure as exc:
+                last = str(exc)
+            time.sleep(0.5)
+        raise WorkloadFailure(f"GET {path} not {want} within {within:.0f}s ({last})")
+
+    def stream(self, model: str) -> dict[str, Any]:
+        body = {
+            "model": model,
+            "stream": True,
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "Count to three."}],
+        }
+        chunks = content = 0
+        finish: str | None = None
+        done = False
+        with self.request("POST", "/v1/chat/completions", body) as resp:
+            if resp.status != 200:
+                raise WorkloadFailure(f"stream: HTTP {resp.status}")
+            for raw in resp:
+                line = raw.decode().strip()
+                if not line.startswith("data:"):
+                    continue
+                payload = line[len("data:") :].strip()
+                if payload == "[DONE]":
+                    done = True
+                    break
+                if finish is not None:
+                    raise WorkloadFailure("stream: chunk after the finishing chunk")
+                choice = json.loads(payload)["choices"][0]
+                chunks += 1
+                content += len(choice.get("delta", {}).get("content") or "")
+                finish = choice.get("finish_reason") or finish
+        if not (content and finish in ("stop", "length") and done):
+            raise WorkloadFailure(
+                f"stream incomplete: content_chars={content} finish={finish} done={done}"
+            )
+        return {"chunks": chunks, "content_chars": content, "finish_reason": finish}
+
+    def run(self, model_path: str, model: str, ready_within: float = 120.0) -> bool:
+        self.step("healthz", lambda: self.wait_status("/healthz", 200, ready_within) or {})
+        model_id: dict[str, str] = {}
+
+        def import_model() -> dict[str, Any]:
+            got = self.json_ok("POST", "/admin/models/import", {"path": model_path, "name": model})
+            if got.get("status") != "ready" or not got.get("id"):
+                raise WorkloadFailure(f"import: status={got.get('status')}")
+            model_id["id"] = got["id"]
+            return {"status": 200, "model_status": "ready", "sha256": got.get("sha256")}
+
+        self.step("import model", import_model)
+
+        def load() -> dict[str, Any]:
+            if "id" not in model_id:
+                raise WorkloadFailure("no imported model")
+            self.json_ok("POST", f"/admin/models/{model_id['id']}/load")
+            self.wait_status("/readyz", 200, ready_within)
+            return {"status": 200, "readyz": 200}
+
+        self.step("load model + ready", load)
+
+        def chat() -> dict[str, Any]:
+            got = self.json_ok(
+                "POST",
+                "/v1/chat/completions",
+                {"model": model, "max_tokens": 8, "messages": [{"role": "user", "content": "hi"}]},
+            )
+            choice = got["choices"][0]
+            text = choice["message"]["content"]
+            finish = choice["finish_reason"]
+            if not (isinstance(text, str) and text) or finish not in ("stop", "length"):
+                raise WorkloadFailure(f"chat: finish={finish}")
+            return {"status": 200, "content_chars": len(text), "finish_reason": finish}
+
+        self.step("OpenAI chat completion", chat)
+        self.step("OpenAI streamed completion", lambda: self.stream(model))
+
+        def messages() -> dict[str, Any]:
+            got = self.json_ok(
+                "POST",
+                "/v1/messages",
+                {"model": model, "max_tokens": 8, "messages": [{"role": "user", "content": "hi"}]},
+            )
+            blocks = [b for b in got["content"] if b.get("type") == "text" and b.get("text")]
+            if not blocks or got.get("stop_reason") not in ("end_turn", "max_tokens"):
+                raise WorkloadFailure(f"messages: stop_reason={got.get('stop_reason')}")
+            chars = sum(len(b["text"]) for b in blocks)
+            return {"status": 200, "content_chars": chars, "stop_reason": got["stop_reason"]}
+
+        self.step("Anthropic messages", messages)
+        for path in GET_ENDPOINTS:
+
+            def get(path: str = path) -> dict[str, Any]:
+                with self.request("GET", path) as resp:
+                    if resp.status != 200:
+                        raise WorkloadFailure(f"GET {path}: HTTP {resp.status}")
+                    resp.read()
+                return {"status": 200}
+
+            self.step(f"GET {path}", get)
+        return all(step["ok"] for step in self.steps)
+
+
 # --- cli --------------------------------------------------------------------------
+
+
+INCOMPLETE_EXIT = 3
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -506,23 +799,41 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     elf = sub.add_parser("elf")
     elf.add_argument("rootfs", type=Path)
-    elf.add_argument("--json", type=Path, required=True)
     static = sub.add_parser("python-static")
-    static.add_argument("--json", type=Path, required=True)
+    for command in (elf, static):
+        command.add_argument("--json", type=Path, required=True)
+        command.add_argument(
+            "--allow-incomplete",
+            action="store_true",
+            help=f"Report an incomplete inspection with exit 0 instead of {INCOMPLETE_EXIT}.",
+        )
+    work = sub.add_parser("workload", help="Drive and check the recorded serve session.")
+    work.add_argument("--base", default="http://127.0.0.1:8000")
+    work.add_argument("--model-path", required=True, help="GGUF path inside the container.")
+    work.add_argument("--model", default="audit")
+    work.add_argument("--json", type=Path, required=True)
+    work.add_argument("--ready-within", type=float, default=120.0)
+    work.add_argument("--timeout", type=float, default=120.0)
     rec = sub.add_parser("record")
     rec.add_argument("--out", type=Path, required=True)
     rec.add_argument("engine_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
-    if args.cmd == "elf":
-        report = elf_report(args.rootfs)
+    if args.cmd in ("elf", "python-static"):
+        report = elf_report(args.rootfs) if args.cmd == "elf" else python_static()
         args.json.write_text(json.dumps(report, indent=2))
-        print(elf_markdown(report))
-        return 0
-    if args.cmd == "python-static":
-        report = python_static()
-        args.json.write_text(json.dumps(report, indent=2))
-        print(static_markdown(report))
-        return 0
+        print(elf_markdown(report) if args.cmd == "elf" else static_markdown(report))
+        complete = report["completeness"]["status"] == "complete"
+        return 0 if complete or args.allow_incomplete else INCOMPLETE_EXIT
+    if args.cmd == "workload":
+        key = os.environ.get("IE_AUDIT_KEY", "")
+        if not key:
+            parser.error("set IE_AUDIT_KEY (the key is read from the environment only)")
+        workload = Workload(args.base, key, timeout=args.timeout)
+        ok = workload.run(args.model_path, args.model, ready_within=args.ready_within)
+        args.json.write_text(json.dumps({"ok": ok, "steps": workload.steps}, indent=2))
+        for step in workload.steps:
+            print(f"[{'PASS' if step['ok'] else 'FAIL'}] {step['step']}", flush=True)
+        return 0 if ok else 1
     engine_args = [a for a in args.engine_args if a != "--"]
     return record(engine_args, args.out)
 
