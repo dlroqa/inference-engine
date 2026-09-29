@@ -29,7 +29,7 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
-from playwright.sync_api import Page, expect
+from playwright.sync_api import Locator, Page, expect
 
 from e2e.conftest import Engine, login, mask, purge_key, safe_screenshot
 
@@ -139,10 +139,15 @@ def open_clients(page: Page, engine: Engine) -> None:
     expect(page.get_by_role("heading", name="Clients", exact=True)).to_be_visible()
 
 
-def confirm(page: Page, button: str) -> None:
+def button(page: Page, name: str) -> Locator:
+    """A button by its exact accessible name (never its "How this works: …" hint)."""
+    return page.get_by_role("button", name=name, exact=True)
+
+
+def confirm(page: Page, label: str) -> None:
     dialog = page.get_by_role("dialog")
     expect(dialog).to_be_visible()
-    dialog.get_by_role("button", name=button, exact=True).click()
+    dialog.get_by_role("button", name=label, exact=True).click()
     expect(dialog).to_be_hidden()
 
 
@@ -161,7 +166,7 @@ def test_plans_client_and_one_time_client_key(page: Page, engine: Engine) -> Non
     page.get_by_label("Weekly quota (CU)").fill("500")
     page.get_by_role("button", name=re.compile(r"^Create plan")).click()
     expect(page.get_by_text(f"Created plan {plan_id}.")).to_be_visible()
-    page.get_by_role("button", name=f"Edit plan {plan_id}").click()
+    page.get_by_role("button", name=f"Edit plan {plan_id}", exact=True).click()
     page.get_by_label("Weekly quota (CU)").fill("750")
     page.get_by_role("button", name=re.compile(r"^Update plan")).click()
     confirm(page, "Update plan")
@@ -201,7 +206,7 @@ def test_plans_client_and_one_time_client_key(page: Page, engine: Engine) -> Non
         key_id = match[0]["target"]
 
         # Dismissed, and absent after a reload and after a new sign-in.
-        page.get_by_role("button", name="I have saved it").click()
+        page.get_by_role("button", name="I have saved it", exact=True).click()
         expect(box).to_be_hidden()
         safe_screenshot(page, "a3b-client-key-dismissed", [engine.operator_key, token])
         page.reload()
@@ -226,7 +231,7 @@ def test_client_key_token_does_not_survive_a_key_change(page: Page, engine: Engi
     mask(token)
     try:
         # Changing the key ends the session: the new session never shows it.
-        page.get_by_role("button", name="Change key").click()
+        page.get_by_role("button", name="Change key", exact=True).click()
         dialog = page.get_by_role("dialog")
         dialog.get_by_label("Operator API key").fill(engine.operator_key)
         dialog.get_by_role("button", name="Continue").click()
@@ -271,7 +276,7 @@ def test_webhook_endpoint_lifecycle_with_real_deliveries(
     expect(page.get_by_role("heading", name=f"Client {client_id[:12]}")).to_be_visible()
 
     # Add the endpoint; its signing secret is shown once.
-    page.get_by_label("URL").fill(receiver.url)
+    page.get_by_label("URL", exact=True).fill(receiver.url)
     page.get_by_role("button", name=re.compile(r"^Add endpoint")).click()
     secret_box = page.get_by_test_id("new-endpoint-secret")
     expect(secret_box).to_be_visible()
@@ -282,7 +287,7 @@ def test_webhook_endpoint_lifecycle_with_real_deliveries(
     (endpoint,) = listed.json()["endpoints"]
     assert endpoint["url"] == receiver.url and endpoint["disabled"] is False
     endpoint_id = endpoint["id"]
-    page.get_by_role("button", name="I have saved it").click()
+    page.get_by_role("button", name="I have saved it", exact=True).click()
     secrets = [engine.operator_key, first_secret]
 
     # A real lifecycle event is delivered and verifies with the secret shown once.
@@ -290,13 +295,13 @@ def test_webhook_endpoint_lifecycle_with_real_deliveries(
     (first,) = receiver.wait_for(1)
     assert signed_by(first_secret, first)
     wait_delivery(engine, endpoint_id, "subscription.activated", "succeeded")
-    page.get_by_role("button", name="Refresh").last.click()
+    page.get_by_role("button", name="Refresh", exact=True).last.click()
     row = page.locator("tr", has_text="subscription.activated")
     expect(row.first).to_contain_text("succeeded")
 
     # Rotate: the new secret is shown once with its grace period, and during the
     # grace period a delivery verifies with both the new and the previous secret.
-    page.get_by_role("button", name=f"Rotate secret for endpoint {receiver.url}").click()
+    button(page, f"Rotate secret for endpoint {receiver.url}").click()
     confirm(page, "Rotate secret")
     rotated_box = page.get_by_test_id("rotated-secret")
     expect(rotated_box).to_be_visible()
@@ -308,13 +313,13 @@ def test_webhook_endpoint_lifecycle_with_real_deliveries(
     stripe_event(engine, "customer.subscription.updated", ref)
     second = receiver.wait_for(2)[1]
     assert signed_by(new_secret, second) and signed_by(first_secret, second)
-    page.get_by_role("button", name="I have saved it").click()
+    page.get_by_role("button", name="I have saved it", exact=True).click()
     safe_screenshot(page, "a3b-endpoint-rotated", secrets)
 
     # Disable (confirmed): the endpoint gets no new events.
-    page.get_by_role("button", name=f"Disable endpoint {receiver.url}").click()
+    button(page, f"Disable endpoint {receiver.url}").click()
     confirm(page, "Disable endpoint")
-    expect(page.get_by_role("button", name=f"Enable endpoint {receiver.url}")).to_be_visible()
+    expect(button(page, f"Enable endpoint {receiver.url}")).to_be_visible()
     before = len(deliveries_for(engine, endpoint_id))
     stripe_event(engine, "customer.subscription.updated", ref)
     time.sleep(2)
@@ -322,8 +327,8 @@ def test_webhook_endpoint_lifecycle_with_real_deliveries(
     assert len(receiver.requests) == 2
 
     # Enable (no confirmation needed).
-    page.get_by_role("button", name=f"Enable endpoint {receiver.url}").click()
-    expect(page.get_by_role("button", name=f"Disable endpoint {receiver.url}")).to_be_visible()
+    button(page, f"Enable endpoint {receiver.url}").click()
+    expect(button(page, f"Disable endpoint {receiver.url}")).to_be_visible()
 
     # A failed delivery is dead after its one attempt; Replay sends it again.
     receiver.status = 500
@@ -331,7 +336,7 @@ def test_webhook_endpoint_lifecycle_with_real_deliveries(
     dead = wait_delivery(engine, endpoint_id, "subscription.updated", "dead")
     assert dead["last_status_code"] == 500
     receiver.status = 200
-    page.get_by_label("Status").select_option("dead")
+    page.get_by_label("Status", exact=True).select_option("dead")
     replay_name = re.compile(rf"^Replay subscription\.updated delivery {dead['id'][:8]}")
     replay = page.get_by_role("button", name=replay_name)
     expect(replay).to_be_enabled()
@@ -343,7 +348,7 @@ def test_webhook_endpoint_lifecycle_with_real_deliveries(
     assert ids.count(ids[-1]) == 2, "the replay reuses the delivery's webhook-id"
 
     # Delete (confirmed): the endpoint and its history are gone.
-    page.get_by_role("button", name=f"Delete endpoint {receiver.url}").click()
+    button(page, f"Delete endpoint {receiver.url}").click()
     confirm(page, "Delete endpoint")
     expect(page.get_by_text("No webhook endpoints.")).to_be_visible()
     with engine.api(engine.operator_key) as c:
@@ -368,7 +373,7 @@ def test_webhook_endpoint_lifecycle_with_real_deliveries(
 def test_endpoint_refusals_are_explained(page: Page, engine: Engine) -> None:
     login(page, engine)
     page.goto(f"{engine.dashboard}#/clients/{engine.client_id}")
-    url = page.get_by_label("URL")
+    url = page.get_by_label("URL", exact=True)
     add = page.get_by_role("button", name=re.compile(r"^Add endpoint"))
     # A non-ASCII (IDN) host is refused before any egress check.
     url.fill("http://bücher.example.com/hook")
