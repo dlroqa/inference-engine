@@ -20,6 +20,7 @@ import hashlib
 import hmac
 import http.server
 import json
+import os
 import re
 import threading
 import time
@@ -30,7 +31,7 @@ from typing import Any
 import pytest
 from playwright.sync_api import Page, expect
 
-from e2e.conftest import Engine, _required, login, mask, purge_key, safe_screenshot
+from e2e.conftest import Engine, login, mask, purge_key, safe_screenshot
 
 
 # --- a loopback webhook receiver ----------------------------------------------------
@@ -74,7 +75,8 @@ class Receiver:
                 if len(self.requests) >= count:
                     return list(self.requests)
             time.sleep(0.2)
-        raise AssertionError(f"receiver got {len(self.requests)} of {count} deliveries in {timeout} s")
+        got = len(self.requests)
+        raise AssertionError(f"receiver got {got} of {count} deliveries in {timeout} s")
 
     def close(self) -> None:
         self.httpd.shutdown()
@@ -99,9 +101,16 @@ def signed_by(secret: str, delivery: dict[str, Any]) -> bool:
     return any(hmac.compare_digest(t, expected) for t in tokens)
 
 
+def stripe_secret() -> str:
+    secret = os.environ.get("IE_E2E_STRIPE_SECRET")
+    if not secret:
+        pytest.fail("IE_E2E_STRIPE_SECRET must be set for the browser suite", pytrace=False)
+    return secret
+
+
 def stripe_event(engine: Engine, event_type: str, customer: str, status: str = "active") -> None:
     """Emit a real lifecycle event through the signed inbound Stripe webhook."""
-    secret = _required("IE_E2E_STRIPE_SECRET")
+    secret = stripe_secret()
     event = {
         "id": f"evt_{uuid.uuid4().hex}",
         "type": event_type,
@@ -270,9 +279,8 @@ def test_webhook_endpoint_lifecycle_with_real_deliveries(
     first_secret = secret_box.inner_text().strip()
     mask(first_secret)
     with engine.api(engine.operator_key) as c:
-        (endpoint,) = c.get("/admin/billing/webhooks/endpoints", params={"client_id": client_id}).json()[
-            "endpoints"
-        ]
+        listed = c.get("/admin/billing/webhooks/endpoints", params={"client_id": client_id})
+    (endpoint,) = listed.json()["endpoints"]
     assert endpoint["url"] == receiver.url and endpoint["disabled"] is False
     endpoint_id = endpoint["id"]
     page.get_by_role("button", name="I have saved it").click()
@@ -325,7 +333,8 @@ def test_webhook_endpoint_lifecycle_with_real_deliveries(
     assert dead["last_status_code"] == 500
     receiver.status = 200
     page.get_by_label("Status").select_option("dead")
-    replay = page.get_by_role("button", name=re.compile(rf"^Replay subscription\.updated delivery {dead['id'][:8]}"))
+    replay_name = re.compile(rf"^Replay subscription\.updated delivery {dead['id'][:8]}")
+    replay = page.get_by_role("button", name=replay_name)
     expect(replay).to_be_enabled()
     replay.click()
     confirm(page, "Replay delivery")
@@ -371,5 +380,6 @@ def test_endpoint_refusals_are_explained(page: Page, engine: Engine) -> None:
     add.click()
     expect(page.get_by_role("alert")).to_contain_text("egress_allowlist")
     with engine.api(engine.operator_key) as c:
-        listed = c.get("/admin/billing/webhooks/endpoints", params={"client_id": engine.client_id}).json()
+        params = {"client_id": engine.client_id}
+        listed = c.get("/admin/billing/webhooks/endpoints", params=params).json()
     assert all("example.com" not in e["url"] for e in listed["endpoints"])
