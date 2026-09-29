@@ -6,10 +6,12 @@ import asyncio
 import sqlite3
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from engine.auth.keys import KeyStore
 from engine.config import Settings
+from engine.gateway import Limiter
 from engine.main import create_app
 from tests.support.fake_backend import FakeBackend
 
@@ -70,7 +72,19 @@ def test_valid_key_works_and_sets_quota_headers(tmp_path: Path) -> None:
         assert "x-ratelimit-remaining-cu-week" in resp.headers
 
 
-def test_rate_limit(tmp_path: Path) -> None:
+def test_rate_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The limiter counts per fixed wall-clock minute, so two real requests that
+    # straddle a minute boundary are (correctly) both allowed. Pin the limiter's
+    # clock mid-window so this test checks the limit, not the time of day.
+    mid_window = 1_800_000_030.0  # 30 s into a minute
+    check_rate = Limiter.check_rate
+
+    def pinned(
+        self: Limiter, key_id: str, now: float | None = None, *, rate: int | None = None
+    ) -> bool:
+        return check_rate(self, key_id, mid_window, rate=rate)
+
+    monkeypatch.setattr(Limiter, "check_rate", pinned)
     app, settings = _app(tmp_path, rate_limit_per_min=1)
     with TestClient(app) as client:
         token = _new_key(settings)
