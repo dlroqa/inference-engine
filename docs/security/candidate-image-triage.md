@@ -310,6 +310,39 @@ state is not-fixed. Not accepted by the user yet.
   tracker disagreement (G4, F4b).
 - SQLite per-advisory items above (G12).
 
+### Revisited in A3b (2026-09-29, draft PR #48)
+
+A3b exercises the webhook administration paths. Two concrete findings there are
+fixed in #48 and take effect only once it is merged:
+
+- **Webhook redirects bypassed `egress_allowlist`.** The delivery transport used
+  the default `urllib` opener, which follows 301/302/303 redirects. The
+  allowlist is checked only when an endpoint is registered, so an allowlisted
+  receiver that redirected made the engine send a follow-up request (GET, with
+  the `webhook-id`/`-timestamp`/`-signature` headers) to an unchecked host,
+  including loopback or internal addresses. The delivery was then recorded as
+  succeeded. Shown by the pre-fix run (CI 36630287301). Fixed: redirects are
+  never followed, and a 3xx is a failed attempt. Prerequisite for exploitation:
+  a registered, allowlisted receiver that returns a redirect.
+- **IDNA for webhook hosts.** A non-ASCII host that is a subdomain of an
+  allowlisted entry (for example `bücher.hooks.example.com`) was accepted, and
+  delivery would then go through the IDNA 2003 conversion (G1 CVE-2026-17084).
+  Fixed: endpoint hosts must be ASCII (`endpoint_host_not_ascii`; use the
+  `xn--` form). Endpoints registered earlier are unchanged.
+- **Audit.** Billing and webhook admin writes, including creating a client key,
+  were not audited. They are now, with ids, labels and hosts only.
+
+Still open after A3b (tracked, not urgent on the assessed evidence):
+
+- **Model downloads** (`POST /admin/models/download`, operator-only, gated by
+  `allow_network_downloads`) have no host allowlist and follow redirects by
+  design, because Hugging Face serves files through CDN redirects. Non-ASCII
+  download hosts still go through IDNA 2003.
+- Narrowing `egress_allowlist` does not disable webhook endpoints that are
+  already registered (documented in `docs/webhooks.md`).
+- WebSocket handshake base64, runtime-resolved native calls, `libstdc++`
+  `iconv`, remote backends and compiled extensions are unchanged.
+
 ## 3b. Proposed versus accepted dispositions
 
 | Item | Proposed (this report) | User-accepted |
