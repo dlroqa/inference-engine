@@ -15,6 +15,10 @@ production endpoint or setting.
    start. Afterwards the engine starts, marks the model ``error`` ("download
    interrupted") and keeps the files as found.
 
+Engine and download-child containers run with deploy/compose.yaml's least
+privilege (``HARDENING``: no new privileges, every capability dropped). Only the
+volume preparation step runs as root, as an operator preparing a volume would.
+
 Usage:
     python scripts/release_image_ownership.py --image <candidate ref>
 """
@@ -37,6 +41,9 @@ ROOT = Path(__file__).resolve().parent.parent
 CHILD_SCRIPT = ROOT / "tests" / "support" / "download_child.py"
 LOCK_REFUSAL = "owns this model directory"
 INTERRUPTED_PREFIX = "download interrupted"
+# The same settings as deploy/compose.yaml (tests/test_release_tooling.py keeps
+# them in step).
+HARDENING = ["--security-opt", "no-new-privileges:true", "--cap-drop", "ALL"]
 
 
 class Failure(Exception):
@@ -90,7 +97,7 @@ class Run:
 
     def engine(self, name: str, port: int, mounts: list[str], env: dict[str, str]) -> str:
         full = f"ie-own-{self.tag}-{name}"
-        args = ["run", "-d", "--name", full, "-p", f"127.0.0.1:{port}:8000"]
+        args = ["run", "-d", "--name", full, "-p", f"127.0.0.1:{port}:8000", *HARDENING]
         base_env = {
             "IE_HOST": "0.0.0.0",
             "IE_ALLOW_NETWORK_BIND": "true",
@@ -103,6 +110,14 @@ class Run:
             args += ["-v", mount]
         docker(*args, self.image)
         self.containers.append(full)
+        host = json.loads(docker("inspect", "-f", "{{json .HostConfig}}", full).stdout)
+        self.check(
+            f"{name}: no-new-privileges and every capability dropped",
+            "no-new-privileges:true" in (host.get("SecurityOpt") or [])
+            and host.get("CapDrop") == ["ALL"]
+            and not host.get("CapAdd"),
+            f"SecurityOpt={host.get('SecurityOpt')} CapDrop={host.get('CapDrop')}",
+        )
         return full
 
     def healthy(self, port: int, timeout: float = 120) -> bool:
@@ -184,7 +199,7 @@ class Run:
         # first on sys.path and shadow stdlib modules (e.g. its operator.py).
         mounts = ["-v", f"{data}:/data", "-v", f"{CHILD_SCRIPT}:/opt/test-support/child.py:ro"]
         script = ["python", "/opt/test-support/child.py", "/data", barrier, marker]
-        docker("run", "-d", "--name", child, *mounts, self.image, *script)
+        docker("run", "-d", "--name", child, *HARDENING, *mounts, self.image, *script)
         self.containers.append(child)
         deadline = time.monotonic() + 120
         reached = False

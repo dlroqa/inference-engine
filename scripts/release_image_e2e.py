@@ -4,9 +4,12 @@ Runs the *exact built image* through the owner deployment (deploy/compose.yaml)
 on a fresh persistent volume and proves the artifact — not the source checkout —
 works: health, not-ready-before-model, dashboard, auth over the network path,
 owner key via the container CLI, checksum-verified GGUF import + load, streamed
-OpenAI generation, operator API with the key, persistence across restart, and a
-clean drain on stop. ``/version`` must report exactly the candidate's release
-version, commit, and build date. Stdlib only; needs Docker + the Compose plugin.
+OpenAI generation, operator API with the key, persistence across restart, a
+clean drain on stop, and backup -> database loss -> restore. ``/version`` must
+report exactly the candidate's release version, commit, and build date. The
+container must run with Compose's least-privilege settings (no new privileges,
+every capability dropped) and every file it writes to the volume must belong to
+the engine user. Stdlib only; needs Docker + the Compose plugin.
 
 The owner key is never printed (it is masked in GitHub Actions logs).
 
@@ -42,6 +45,8 @@ VERSION_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 # The release build date form (validate job: `date -u +%Y-%m-%dT%H:%M:%SZ`).
 BUILT_AT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+DB_IN_CONTAINER = "/data/inference_engine.db"
+CAPABILITY_FIELDS = ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb")
 
 
 class E2EFailure(Exception):
@@ -84,6 +89,39 @@ def version_mismatches(body: Any, expected: dict[str, str]) -> list[str]:
         for field, want in expected.items()
         if body.get(field) != want
     ]
+
+
+def hardening_problems(host_config: Any) -> list[str]:
+    """Where a container's ``HostConfig`` misses deploy/compose.yaml's least privilege."""
+    if not isinstance(host_config, dict):
+        return [f"HostConfig is not an object: {host_config!r}"]
+    problems = []
+    if "no-new-privileges:true" not in (host_config.get("SecurityOpt") or []):
+        problems.append(f"SecurityOpt={host_config.get('SecurityOpt')!r}")
+    if [c.upper() for c in host_config.get("CapDrop") or []] != ["ALL"]:
+        problems.append(f"CapDrop={host_config.get('CapDrop')!r}")
+    if host_config.get("CapAdd"):
+        problems.append(f"CapAdd={host_config.get('CapAdd')!r}")
+    if host_config.get("Privileged"):
+        problems.append("Privileged=true")
+    return problems
+
+
+def privilege_problems(proc_status: str) -> list[str]:
+    """Where a ``/proc/<pid>/status`` shows a capability or can gain privileges."""
+    fields: dict[str, str] = {}
+    for line in proc_status.splitlines():
+        name, sep, value = line.partition(":")
+        if sep:
+            fields[name.strip()] = value.strip()
+    problems = [
+        f"{name}={fields.get(name)}"
+        for name in CAPABILITY_FIELDS
+        if fields.get(name) is None or int(fields[name], 16) != 0
+    ]
+    if fields.get("NoNewPrivs") != "1":
+        problems.append(f"NoNewPrivs={fields.get('NoNewPrivs')}")
+    return problems
 
 
 def http(
@@ -255,6 +293,12 @@ def main() -> int:
         )
         volumes = docker_inspect(cid, "{{range .Mounts}}{{.Type}}:{{.Destination}} {{end}}")
         check("persistent named volume at /data", "volume:/data" in volumes, volumes)
+        wrong = hardening_problems(json.loads(docker_inspect(cid, "{{json .HostConfig}}")))
+        check(
+            "container runs with no-new-privileges and every capability dropped",
+            not wrong,
+            "; ".join(wrong),
+        )
 
         check("/healthz 200", wait_status("/healthz", 200, 120) == 200)
         status, body = http_json("GET", "/version")
@@ -264,6 +308,14 @@ def main() -> int:
             status == 200 and not wrong,
             f"status={status} {'; '.join(wrong)}".strip(),
         )
+        for pid in ("1", "self"):  # the engine (PID 1) and an exec'd process
+            proc = compose.run("exec", "-T", SERVICE, "cat", f"/proc/{pid}/status")
+            wrong = privilege_problems(proc.stdout.decode())
+            check(
+                f"/proc/{pid}: no capabilities, NoNewPrivs=1",
+                not wrong,
+                "; ".join(wrong) or "Cap*=0 NoNewPrivs=1",
+            )
         status, _ = http("GET", "/readyz")
         check("/readyz not ready before a model is loaded", status == 503, f"status={status}")
         status, raw = http("GET", "/dashboard/")
@@ -371,6 +423,48 @@ def main() -> int:
             f"{elapsed:.1f}s < {args.grace_seconds:.0f}s, exit={exit_code}",
         )
         check("not killed at the grace deadline", exit_code != "137", f"exit={exit_code}")
+
+        # Recovery with the engine stopped, in one-off containers of the same
+        # service: `compose run` applies the same volume and least-privilege
+        # settings, so backup and restore are proven under them too.
+        def one_off(*command: str) -> subprocess.CompletedProcess[bytes]:
+            run = ["run", "--rm", "-T", "--no-deps", "--entrypoint", command[0], SERVICE]
+            return compose.run(*run, *command[1:])
+
+        backup = one_off("inference-engine", "backup", "--out", "/data/backups")
+        archive = str(json.loads(backup.stdout)["archive"])
+        check(
+            "backup from a hardened one-off container",
+            archive.startswith("/data/backups/"),
+            archive,
+        )
+        db_files = f"{DB_IN_CONTAINER} {DB_IN_CONTAINER}-wal {DB_IN_CONTAINER}-shm"
+        one_off("sh", "-c", f"rm -f {db_files}")
+        # Without --force, restore refuses an existing database: success also
+        # proves the database was really gone.
+        restored = json.loads(one_off("inference-engine", "restore", "--from", archive).stdout)
+        check(
+            "restore after database loss (hardened one-off container)",
+            restored.get("db_path") == DB_IN_CONTAINER,
+            f"db_path={restored.get('db_path')}",
+        )
+        compose.run("start", SERVICE)
+        check("/healthz 200 after restore", wait_status("/healthz", 200, 120) == 200)
+        status, models = http_json("GET", "/admin/models", key=key)
+        listed = (models or {}).get("models", [])
+        check(
+            "restored database keeps the owner key and the model registry",
+            status == 200 and any(m.get("id") == model_id for m in listed),
+            f"status={status} models={len(listed)}",
+        )
+        not_engine = ["(", "!", "-user", "engine", "-o", "!", "-group", "engine", ")"]
+        found = compose.run("exec", "-T", SERVICE, "find", "/data", "-xdev", *not_engine, "-print")
+        foreign = found.stdout.decode().split()
+        check(
+            "every path on the data volume belongs to engine:engine",
+            not foreign,
+            " ".join(foreign[:10]) or "database, models, logs, backups, lock files",
+        )
     except E2EFailure:
         pass
     except Exception as exc:  # surface unexpected errors as a failed run
