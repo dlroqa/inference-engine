@@ -139,6 +139,20 @@ free of vulnerabilities: High, Medium, Low, Negligible and Unknown findings are
 counted in the gate's summary table but do not fail it, and they need their own
 triage. The SBOM is an inventory, not a security result.
 
+**Scan evidence.** A publishing run attaches the SBOM and the full grype report
+to the GitHub release. A dry run (pull request or manual run) keeps them as the
+run artifact `candidate-scan-evidence` for **14 days**: `sbom.spdx.json`,
+`grype.json`, `scan-summary.md` (when the gate produced one),
+`scan-evidence.json` (commit, version, candidate manifest and config digests,
+run URL, grype version and vulnerability-database identity) and `SHA256SUMS`.
+The same identity and checksums are printed in the run summary, so a downloaded
+copy can be checked against it. The files are kept even when the gate fails.
+They are not kept when the run was cancelled or the scan itself did not
+complete. Retrieve them with
+`gh run download <run-id> -n candidate-scan-evidence`. The repository is public,
+so signed-in GitHub users can download the artifact too. It holds the same kind
+of information that every release publishes.
+
 ## Verifying a published release
 
 ```bash

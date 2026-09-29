@@ -819,3 +819,41 @@ def test_version_response_mismatch_fails(field: str, value: Any) -> None:
 @pytest.mark.parametrize("body", [None, [], "0.1.0", {}])
 def test_version_response_missing_fields_fails(body: Any) -> None:
     assert e2e.version_mismatches(body, EXPECTED_VERSION)
+
+
+# --- F6: dry-run scan evidence retention ---------------------------------------
+
+DRY_RUN_ONLY = "needs.validate.outputs.publish != 'true'"
+
+
+def test_dry_runs_keep_the_scan_evidence_for_a_bounded_time() -> None:
+    steps = _steps("candidate")
+    gate = _step_index(steps, lambda st: "scan-gate" in st.get("run", ""))
+    keep = _step_index(
+        steps, lambda st: st.get("with", {}).get("name") == "candidate-scan-evidence"
+    )
+    record = _step_index(steps, lambda st: "scan-evidence.json" in st.get("run", ""))
+    assert gate < record < keep
+    upload = steps[keep]
+    assert upload["uses"].startswith("actions/upload-artifact@")
+    assert upload["with"]["retention-days"] == 14
+    assert upload["with"]["if-no-files-found"] == "error"
+    for field in ("sbom.spdx.json", "grype.json", "scan-evidence.json", "SHA256SUMS"):
+        assert field in upload["with"]["path"]
+    for step in (steps[record], steps[keep]):
+        # Never on a publishing run; kept even when the gate fails; not on cancel.
+        condition = step["if"]
+        assert DRY_RUN_ONLY in condition
+        assert "!cancelled()" in condition and "steps.scan.outcome == 'success'" in condition
+
+
+def test_scan_retention_leaves_the_gate_and_publication_guard_unchanged() -> None:
+    workflow = _workflow("release.yml")
+    assert workflow["permissions"] == {"contents": "read"}
+    assert "permissions" not in workflow["jobs"]["candidate"]
+    steps = _steps("candidate")
+    gate = next(st for st in steps if "scan-gate" in st.get("run", ""))
+    assert "if" not in gate and "continue-on-error" not in gate
+    handoff = next(st for st in steps if st.get("with", {}).get("name") == "release-candidate")
+    assert handoff["if"] == "needs.validate.outputs.publish == 'true'"
+    assert workflow["jobs"]["publish"]["if"] == "needs.validate.outputs.publish == 'true'"

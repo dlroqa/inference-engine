@@ -241,6 +241,44 @@ jobs:
           python3 scripts/release.py scan-gate --report grype.json --summary-out scan-summary.md
           { echo "### Vulnerability scan"; cat scan-summary.md; } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Record the scan evidence identity (dry runs)
+        # F6 (docs/security/candidate-image-triage.md): a non-publishing run keeps
+        # its SBOM and full grype report for triage. It runs even when the gate
+        # fails, as that is when the report matters most. Publishing runs attach
+        # the same files to the GitHub release instead (publish job).
+        if: ${{ !cancelled() && needs.validate.outputs.publish != 'true' && steps.scan.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          FILES=(sbom.spdx.json grype.json)
+          [ -f scan-summary.md ] && FILES+=(scan-summary.md)
+          jq -n --arg commit "$COMMIT" --arg version "$VERSION" \
+            --arg digest "${{ steps.build.outputs.digest }}" \
+            --arg config "${{ steps.build.outputs.config }}" \
+            --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" \
+            --arg event "$GITHUB_EVENT_NAME" \
+            --argjson scanner "$(jq '{scan_time: .descriptor.timestamp, grype: .descriptor.version, db: .descriptor.db}' grype.json)" \
+            '{commit: $commit, version: $version, manifest_digest: $digest, config_digest: $config,
+              run: $run, event: $event, scanner: $scanner}' > scan-evidence.json
+          sha256sum "${FILES[@]}" scan-evidence.json > SHA256SUMS
+          {
+            echo "### Retained scan evidence (artifact \`candidate-scan-evidence\`, 14 days)"
+            echo '```'; cat scan-evidence.json; cat SHA256SUMS; echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the scan evidence (dry runs, 14 days)
+        if: ${{ !cancelled() && needs.validate.outputs.publish != 'true' && steps.scan.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-scan-evidence
+          path: |
+            sbom.spdx.json
+            grype.json
+            scan-summary.md
+            scan-evidence.json
+            SHA256SUMS
+          retention-days: 14
+          if-no-files-found: error
+
       - name: Render release Compose + notes (dry-run preview)
         run: |
           set -euo pipefail
