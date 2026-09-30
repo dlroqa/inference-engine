@@ -181,16 +181,18 @@ describe("Architecture navigation", () => {
     render(<App />);
     await screen.findByRole("heading", { name: "Architecture", level: 1 });
     await userEvent.click(screen.getByRole("button", { name: "How this works: Architecture data" }));
-    const chain = (await screen.findAllByRole("list", { name: "Subsystems, in order" }))[0];
-    expect(within(chain).getByRole("link", { name: /Gateway \(open in Architecture\)/ })).toHaveAttribute(
+    const pop = await screen.findByRole("group", { name: "How this works: Architecture data" });
+    // One link per explanation, to the first subsystem of its chain.
+    expect(within(pop).getByRole("link", { name: "Open Gateway in Architecture" })).toHaveAttribute(
       "href",
       "#/architecture?focus=gateway",
     );
+    expect(within(pop).getAllByRole("link", { name: /in Architecture$/ })).toHaveLength(5);
     await userEvent.keyboard("{Escape}");
     await userEvent.click(screen.getByRole("button", { name: "Change key" }));
     const dialog = await screen.findByRole("dialog");
     await userEvent.click(within(dialog).getByRole("button", { name: "How this works: Operator sign-in" }));
-    const inDialog = await within(dialog).findAllByRole("list", { name: "Subsystems, in order" });
-    expect(within(inDialog[0]).queryAllByRole("link")).toHaveLength(0);
+    const inDialog = await within(dialog).findByRole("group", { name: /^How this works: Operator sign-in/ });
+    expect(within(inDialog).queryAllByRole("link", { name: /in Architecture$/ })).toHaveLength(0);
   });
 });

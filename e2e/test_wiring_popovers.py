@@ -45,6 +45,10 @@ def _handler(method: str, path: str) -> str:
     return f"{row['module']}.{row['handler']}"
 
 
+# The focused element as "TAG:text", for readable keyboard-order failures.
+_FOCUSED = "() => { const a = document.activeElement; return `${a.tagName}:${a.textContent}`; }"
+
+
 def _info(page: Page, name: str) -> Locator:
     return page.get_by_role("button", name=f"How this works: {name}", exact=True)
 
@@ -264,17 +268,18 @@ def test_keyboard_reaches_scroll_content_and_docs_link(page: Page, engine: Engin
         "el => el.scrollTop > 0 && el.scrollTop + el.clientHeight >= el.scrollHeight - 1",
         arg=pop.element_handle(),
     )
-    # Tab passes the subsystem links ("open in Architecture", A3c) without
-    # leaving the panel, and reaches the docs link, which stays inside the
-    # visible panel.
+    # Tab passes the "Open … in Architecture" link (A3c, one per explanation)
+    # without leaving the panel, and reaches the docs link, which stays inside
+    # the visible panel.
     link = pop.get_by_role("link", name="README: model lifecycle (opens in a new tab)")
-    for _ in range(12):
+    stops: list[str] = []
+    for _ in range(4):
         page.keyboard.press("Tab")
         if link.evaluate("el => el === document.activeElement"):
             break
-        assert pop.evaluate("el => el.contains(document.activeElement)"), "Tab left the panel"
-        name = page.evaluate("() => document.activeElement.textContent")
-        assert "(open in Architecture)" in name, f"unexpected stop before the docs link: {name}"
+        stops.append(page.evaluate(_FOCUSED))
+        assert pop.evaluate("el => el.contains(document.activeElement)"), f"left the panel: {stops}"
+        assert stops[-1].startswith("A:") and stops[-1].endswith("in Architecture"), stops
     expect(link).to_be_focused()
     expect(link).to_have_attribute("href", f"{DOCS_BASE}README.md#model-lifecycle-block-6")
     expect(link).to_have_attribute("target", "_blank")

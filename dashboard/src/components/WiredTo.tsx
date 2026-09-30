@@ -81,9 +81,11 @@ function callText(entry: WiringEntry): string {
   return entry.client.startsWith("useLive") ? `${entry.client}() hook` : `api.${entry.client}()`;
 }
 
-// "Open in Architecture": each subsystem in the chain links to its node, but
-// only in the signed-in dashboard (where the view exists) and never inside a
-// modal dialog, where leaving the page would silently abandon the dialog.
+// "Open in Architecture": one link per explanation, to the node of the first
+// subsystem in its chain (the entry's own subsystem), so a popover gains one
+// tab stop per explanation, not one per subsystem. Only in the signed-in
+// dashboard (where the view exists), and never inside a modal dialog, where
+// leaving the page would silently abandon the dialog.
 function WiredFacts({ entry, archLinks }: { entry: WiringEntry; archLinks: boolean }): JSX.Element {
   const route = routeFor(entry);
   return (
@@ -105,18 +107,21 @@ function WiredFacts({ entry, archLinks }: { entry: WiringEntry; archLinks: boole
         <ol className="wired-chain" aria-label="Subsystems, in order">
           {entry.chain.map((s) => (
             <li key={s} title={SUBSYSTEMS[s].description}>
-              {archLinks ? (
-                <a className="wired-arch" href={buildHash("architecture", { params: { focus: s } })}>
-                  {SUBSYSTEMS[s].label}
-                  <span className="sr-only"> (open in Architecture)</span>
-                </a>
-              ) : (
-                SUBSYSTEMS[s].label
-              )}
+              {SUBSYSTEMS[s].label}
             </li>
           ))}
         </ol>
       </dd>
+      {archLinks && entry.chain.length > 0 && (
+        <>
+          <dt>Architecture</dt>
+          <dd>
+            <a className="wired-arch" href={buildHash("architecture", { params: { focus: entry.chain[0] } })}>
+              Open {SUBSYSTEMS[entry.chain[0]].label} in Architecture
+            </a>
+          </dd>
+        </>
+      )}
       <dt>Audit log</dt>
       <dd>{entry.audited ? "Recorded" : "Not recorded"}</dd>
       {entry.requiredSwitches && entry.requiredSwitches.length > 0 && (

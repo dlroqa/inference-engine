@@ -130,7 +130,7 @@ def test_deep_links_and_popover_links(page: Page, engine: Engine) -> None:
     page.get_by_role("link", name="System", exact=True).click()
     expect(page.get_by_role("heading", name="System", exact=True, level=1)).to_be_visible()
     page.get_by_role("button", name="How this works: Refresh", exact=True).first.click()
-    link = page.get_by_role("link", name=re.compile(r"^Gateway \(open in Architecture\)"))
+    link = page.get_by_role("link", name="Open Gateway in Architecture", exact=True)
     expect(link.first).to_be_visible()
     link.first.click()
     expect(page).to_have_url(re.compile(r"#/architecture\?focus=gateway$"))
