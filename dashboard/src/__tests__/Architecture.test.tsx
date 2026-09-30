@@ -1,7 +1,7 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState, type JSX } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { Architecture } from "../views/Architecture";
 import { SystemProvider } from "../hooks/useSystem";
 import { AuthScopeProvider } from "../hooks/useAuthScope";
@@ -73,10 +73,10 @@ function deferred<T>() {
 
 const settle = () => act(async () => new Promise((r) => setTimeout(r, 0)));
 
-let reporter: ReturnType<typeof vi.fn>;
+let reporter: Mock<(e: unknown) => boolean>;
 
 beforeEach(() => {
-  reporter = vi.fn(() => false);
+  reporter = vi.fn((_e: unknown) => false);
   vi.spyOn(api, "system").mockResolvedValue(info());
   vi.spyOn(api, "backends").mockResolvedValue(pool([true]));
   vi.spyOn(api, "listModels").mockResolvedValue({ models: [] });
