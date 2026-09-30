@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Iterator
 from pathlib import Path
 from urllib.parse import urlparse
@@ -43,13 +44,6 @@ DOCS_BASE = "https://github.com/dlroqa/inference-engine/blob/main/"
 def _handler(method: str, path: str) -> str:
     row = next(r for r in INVENTORY if r["method"] == method and r["path"] == path)
     return f"{row['module']}.{row['handler']}"
-
-
-# The focused element as "TAG:text", for readable keyboard-order failures.
-_FOCUSED = (
-    "() => { const a = document.activeElement;"
-    " return `${a.tagName}:${a.outerHTML.slice(0, 160)}`; }"
-)
 
 
 def _info(page: Page, name: str) -> Locator:
@@ -271,25 +265,20 @@ def test_keyboard_reaches_scroll_content_and_docs_link(page: Page, engine: Engin
         "el => el.scrollTop > 0 && el.scrollTop + el.clientHeight >= el.scrollHeight - 1",
         arg=pop.element_handle(),
     )
-    # Tab passes the "Open … in Architecture" link (A3c, one per explanation)
-    # without leaving the panel, and reaches the docs link, which stays inside
-    # the visible panel.
+    # Tab reaches the docs link, which stays inside the visible panel.
+    page.keyboard.press("Tab")
     link = pop.get_by_role("link", name="README: model lifecycle (opens in a new tab)")
-    stops: list[str] = []
-    for _ in range(4):
-        page.keyboard.press("Tab")
-        stops.append(page.evaluate(_FOCUSED))
-        if link.evaluate("el => el === document.activeElement"):
-            break
-        assert pop.evaluate("el => el.contains(document.activeElement)"), f"left the panel: {stops}"
-        assert stops[-1].startswith("A:") and "in Architecture" in stops[-1], stops
-    assert link.evaluate("el => el === document.activeElement"), f"focus stops: {stops}"
     expect(link).to_be_focused()
     expect(link).to_have_attribute("href", f"{DOCS_BASE}README.md#model-lifecycle-block-6")
     expect(link).to_have_attribute("target", "_blank")
     expect(link).to_have_attribute("rel", "noopener noreferrer")
     expect(pop).to_be_visible()
     _shot(page, "03-keyboard-docs-link", trigger, pop, engine)
+    # A3c: the next Tab reaches the panel's "Open … in Architecture" link, last.
+    page.keyboard.press("Tab")
+    arch = pop.get_by_role("link", name=re.compile(r"^Open .+ in Architecture$"))
+    expect(arch).to_be_focused()
+    expect(arch).to_have_attribute("href", re.compile(r"^#/architecture\?focus=[a-z_]+$"))
 
     # Escape from inside the panel returns focus to the button and stays closed.
     page.keyboard.press("Escape")
@@ -299,12 +288,14 @@ def test_keyboard_reaches_scroll_content_and_docs_link(page: Page, engine: Engin
     expect(pop).to_be_hidden()
     expect(trigger).to_have_attribute("aria-expanded", "false")
 
-    # Enter reopens it; Tab through the panel and its link, then out, closes it.
+    # Enter reopens it; Tab through the panel and its links, then out, closes it.
     page.keyboard.press("Enter")
     expect(pop).to_be_visible()
     page.keyboard.press("Tab")
     page.keyboard.press("Tab")
     expect(link).to_be_focused()
+    page.keyboard.press("Tab")
+    expect(arch).to_be_focused()
     page.keyboard.press("Tab")
     expect(pop).to_be_hidden()
 

@@ -82,8 +82,8 @@ function callText(entry: WiringEntry): string {
 }
 
 // "Open in Architecture": one link per explanation, to the node of the first
-// subsystem in its chain (the entry's own subsystem), so a popover gains one
-// tab stop per explanation, not one per subsystem. Only in the signed-in
+// subsystem in its chain (the entry's own subsystem), placed last so the
+// panel's existing Tab order (content, then docs link) is unchanged. Only in the signed-in
 // dashboard (where the view exists), and never inside a modal dialog, where
 // leaving the page would silently abandon the dialog.
 function WiredFacts({ entry, archLinks }: { entry: WiringEntry; archLinks: boolean }): JSX.Element {
@@ -112,16 +112,6 @@ function WiredFacts({ entry, archLinks }: { entry: WiringEntry; archLinks: boole
           ))}
         </ol>
       </dd>
-      {archLinks && entry.chain.length > 0 && (
-        <>
-          <dt>Architecture</dt>
-          <dd>
-            <a className="wired-arch" href={buildHash("architecture", { params: { focus: entry.chain[0] } })}>
-              Open {SUBSYSTEMS[entry.chain[0]].label} in Architecture
-            </a>
-          </dd>
-        </>
-      )}
       <dt>Audit log</dt>
       <dd>{entry.audited ? "Recorded" : "Not recorded"}</dd>
       {entry.requiredSwitches && entry.requiredSwitches.length > 0 && (
@@ -141,6 +131,16 @@ function WiredFacts({ entry, archLinks }: { entry: WiringEntry; archLinks: boole
               {entry.docs.title}
               <Icon name="external" size={13} />
               <span className="sr-only"> (opens in a new tab)</span>
+            </a>
+          </dd>
+        </>
+      )}
+      {archLinks && entry.chain.length > 0 && (
+        <>
+          <dt>Architecture</dt>
+          <dd>
+            <a className="wired-arch" href={buildHash("architecture", { params: { focus: entry.chain[0] } })}>
+              Open {SUBSYSTEMS[entry.chain[0]].label} in Architecture
             </a>
           </dd>
         </>
