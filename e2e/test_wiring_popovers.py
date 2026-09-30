@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Iterator
 from pathlib import Path
 from urllib.parse import urlparse
@@ -273,6 +274,11 @@ def test_keyboard_reaches_scroll_content_and_docs_link(page: Page, engine: Engin
     expect(link).to_have_attribute("rel", "noopener noreferrer")
     expect(pop).to_be_visible()
     _shot(page, "03-keyboard-docs-link", trigger, pop, engine)
+    # A3c: the next Tab reaches the panel's "Open … in Architecture" link, last.
+    page.keyboard.press("Tab")
+    arch = pop.get_by_role("link", name=re.compile(r"^Open .+ in Architecture$"))
+    expect(arch).to_be_focused()
+    expect(arch).to_have_attribute("href", re.compile(r"^#/architecture\?focus=[a-z_]+$"))
 
     # Escape from inside the panel returns focus to the button and stays closed.
     page.keyboard.press("Escape")
@@ -282,12 +288,14 @@ def test_keyboard_reaches_scroll_content_and_docs_link(page: Page, engine: Engin
     expect(pop).to_be_hidden()
     expect(trigger).to_have_attribute("aria-expanded", "false")
 
-    # Enter reopens it; Tab through the panel and its link, then out, closes it.
+    # Enter reopens it; Tab through the panel and its links, then out, closes it.
     page.keyboard.press("Enter")
     expect(pop).to_be_visible()
     page.keyboard.press("Tab")
     page.keyboard.press("Tab")
     expect(link).to_be_focused()
+    page.keyboard.press("Tab")
+    expect(arch).to_be_focused()
     page.keyboard.press("Tab")
     expect(pop).to_be_hidden()
 

@@ -11,7 +11,13 @@ Current dispositions are in §3a, and which of them the user has accepted is in
 supersedes them where they differ. Follow-ups (§5): F1 is **integrated** (#45,
 merged as `199c4da`; not deployed); F6 is **integrated** (#46, merged as
 `84b6817`; main CI 36612186495 green; retention after a failing Critical gate
-not yet exercised); F3/F4a are partially investigated; F2, F4b and F5 are open.
+not yet exercised); F3/F4a are partially investigated (#47, merged as
+`c2e2278`); F2, F4b and F5 are open. A3b (#48, merged as `1f3bbe0`, main CI
+36644507886 green) fixed the webhook redirect and IDNA findings in source; they
+take effect in a deployment only once it runs `1f3bbe0` or later (see
+"Revisited in A3b", including the operator step for existing non-ASCII webhook
+endpoints). Integrated means merged to `main`; nothing here is deployed by a
+merge, and no proposed disposition is accepted by one.
 
 The release gate is unchanged. It fails only on unexcepted **Critical** findings
 (`docs/releasing.md`, "Vulnerability gate"). No exceptions were added, no
@@ -122,7 +128,7 @@ the technical evidence.
 
 | Source | Run | What it is |
 | --- | --- | --- |
-| Image reachability audit (F3/F4a), draft PR #47 | [36523922216](https://github.com/dlroqa/inference-engine/actions/runs/36523922216) attempt 1: checkout `c6d9544` (synthetic merge of PR head `6f042d6` into `f121e91`) | `.github/workflows/image-audit.yml` + `scripts/image_reachability.py`, with completeness checks, the enforced workload and the source trust chain. **Raw evidence retained in `docs/security/evidence/image-audit-2026-09-29/`** (checksums verified) |
+| Image reachability audit (F3/F4a), PR #47 (then a draft; merged 2026-09-29 as `c2e2278`) | [36523922216](https://github.com/dlroqa/inference-engine/actions/runs/36523922216) attempt 1: checkout `c6d9544` (synthetic merge of PR head `6f042d6` into `f121e91`) | `.github/workflows/image-audit.yml` + `scripts/image_reachability.py`, with completeness checks, the enforced workload and the source trust chain. **Raw evidence retained in `docs/security/evidence/image-audit-2026-09-29/`** (checksums verified) |
 | Earlier audit runs (same PR) | [36514927554](https://github.com/dlroqa/inference-engine/actions/runs/36514927554), [36515304639](https://github.com/dlroqa/inference-engine/actions/runs/36515304639), [36515849536](https://github.com/dlroqa/inference-engine/actions/runs/36515849536) | Same ELF, static and zlib-source findings, but these runs **did not enforce** inspection completeness or workload outcomes. They recorded HTTP 200 and serve exit 0 without asserting them. They are kept as observations only |
 | Release dry run of F1, PR #45 (merged 2026-09-29 as `199c4da`; main CI [36565420928](https://github.com/dlroqa/inference-engine/actions/runs/36565420928) green) | [36514494606](https://github.com/dlroqa/inference-engine/actions/runs/36514494606) | Privilege inventory + image E2E + ownership E2E under the hardened Compose settings |
 
@@ -231,7 +237,7 @@ from §3.
 | CVE-2026-15806 | `urllib.request.HTTPPasswordMgr` | referenced only in `pip/_vendor/distlib/index.py` | never constructed | not used by the engine's code paths found |
 | CVE-2026-6019 | `http.cookies.Morsel.js_output` | `http.cookies` imported by starlette (and pip); no `set_cookie`/`SimpleCookie`/`js_output` in `engine/` | loaded by starlette; `js_output`, `BaseCookie.load`: 0 calls | not observed; other starlette paths unassessed |
 | CVE-2026-15310 (Low) | `zipfile` decompression | Jinja2, numpy, pip | one `ZipFile()` per process from `importlib.metadata` probing a `sys.path` zip entry; `ZipFile.open`: 0 calls | no decompression observed |
-| CVE-2026-17084 | `stringprep` via the `idna` codec | pip only | loaded when uvicorn creates its listener; `ToASCII`, `in_table_b2`: 0 calls | **open** for model downloads: non-ASCII hostnames in operator-supplied model-download URLs would use IDNA 2003. Not exercised. Webhook URLs: closed by #48 once merged (ASCII-only hosts at registration and delivery) |
+| CVE-2026-17084 | `stringprep` via the `idna` codec | pip only | loaded when uvicorn creates its listener; `ToASCII`, `in_table_b2`: 0 calls | **open** for model downloads: non-ASCII hostnames in operator-supplied model-download URLs would use IDNA 2003. Not exercised. Webhook URLs: closed in source by #48 (merged as `1f3bbe0`; ASCII-only hosts at registration and delivery), effective once deployed |
 | CVE-2025-12781, CVE-2026-3446 | `base64` decoding laxity | engine webhook signing; websockets handshake, fastapi HTTP basic, starlette sessions, pydantic types, llama_cpp chat format, psutil, PyYAML | 0 decode calls | **open**: the engine uses neither starlette `SessionMiddleware` nor fastapi `HTTPBasic` (source search), which leaves the WebSocket handshake key and other unexercised paths. The consequence (lenient decoding) was not assessed for those paths |
 | CVE-2026-3479 (Negligible, disputed) | `pkgutil.get_data` | not assessed | 0 calls | unchanged |
 
@@ -311,10 +317,11 @@ state is not-fixed. Not accepted by the user yet.
   tracker disagreement (G4, F4b).
 - SQLite per-advisory items above (G12).
 
-### Revisited in A3b (2026-09-29, draft PR #48)
+### Revisited in A3b (2026-09-29, PR #48, merged as `1f3bbe0`)
 
 A3b exercises the webhook administration paths. Two concrete findings there are
-fixed in #48 and take effect only once it is merged:
+fixed in #48, merged 2026-09-29 as `1f3bbe0` (main CI 36644507886 green). They
+take effect in a deployment only once it runs that revision or later:
 
 - **Webhook redirects bypassed `egress_allowlist`.** The delivery transport used
   the default `urllib` opener, which follows 301/302/303 redirects. The
@@ -388,7 +395,9 @@ conclusion (G12); the setuid state of this image (G6). A lack of any known fix
 does not by itself make an item low risk. Production assurances need F1–F6
 assessed and an explicit risk decision by the user.
 
-## 4a. Reassessment before A3b (2026-09-29)
+## 4a. Reassessment before A3b (2026-09-29, historical)
+
+(Recorded before A3b. Its outcome is in §3a, "Revisited in A3b".)
 
 **No urgent blocker has been identified in the assessed findings; unresolved
 investigations may change that decision.** This is an input to the A3b entry
@@ -418,9 +427,9 @@ decision. The decision and any risk acceptance are the user's.
 | --- | --- | --- | --- | --- | --- |
 | F1 | List the image's setuid/setgid files and effective capabilities; propose Compose `security_opt: [no-new-privileges:true]` + `cap_drop: [ALL]` with matching docs (read-only rootfs/tmpfs is optional extra scope) | Claude implements after user authorization; user decides | **integrated**: #45 merged 2026-09-29 as `199c4da`; main CI 36565420928 green (attempt 1). PR qualification: CI 36514494237, Release 36514494606. **Not deployed**: existing deployments need a separately authorized configuration update. Read-only rootfs and the development compose file are not in scope | user authorization | Separate PR; image E2E under the hardened configuration incl. volume ownership/persistence; before v0.2.0 release |
 | F2 | Evaluate removing pip from the runtime layer after `pip check`, or hash-locking a patched pip | Claude after authorization; user decides | not started | user authorization | Separate image change; package inventory, re-scan, Release E2E; next base refresh |
-| F3 | Bounded Actions investigation: third-party use of `imaplib`/`poplib`/`http.cookies`/`zipfile`/`stringprep`; llama-cpp-python disk-cache defaults; SQLite Session exposure (G12) and the two SQLite Negligibles | Claude after authorization; user reviews | **partially investigated** (§3a, draft PR #47, audit 36523922216). Open: base64/WebSocket, IDNA, compiled extensions, unexercised request paths; G3/G12 proposals await the user | none | Explicit reachability evidence plus remaining unknowns; before release review |
-| F4a | Native/CPython reachability audit of the affected zlib (`gzwrite`/`gz_vacate`, `crc32_combine64`) and glibc functions in the image's shared objects | Claude after authorization; user reviews | **partially investigated** (§3a, draft PR #47, audit 36523922216). Open: runtime-resolved/intra-library calls, stripped or static copies, `libstdc++` iconv, binary-to-source identity; G4 proposal awaits the user | none (does not wait for a package fix) | Source/package-specific evidence; before release review |
-| F4b | Monitor for a fixed Debian zlib package (bug #1146895) and the glibc/util-linux items | user/operator (proposed) | **open; monitoring not scheduled**. Proposed cadence: weekly tracker check (rechecked 2026-09-29: trixie still *vulnerable*), plus a re-dispatch of the image audit at each base refresh. It is not closed by an internal disposition. Contacting Debian needs explicit authorization | Debian | Weekly while the zlib High is unfixed |
+| F3 | Bounded Actions investigation: third-party use of `imaplib`/`poplib`/`http.cookies`/`zipfile`/`stringprep`; llama-cpp-python disk-cache defaults; SQLite Session exposure (G12) and the two SQLite Negligibles | Claude after authorization; user reviews | **partially investigated** (§3a, PR #47 merged as `c2e2278`, audit 36523922216). Open: base64/WebSocket, model-download IDNA (webhook IDNA closed in source by #48), compiled extensions, unexercised request paths; G3/G12 proposals await the user | none | Explicit reachability evidence plus remaining unknowns; before release review |
+| F4a | Native/CPython reachability audit of the affected zlib (`gzwrite`/`gz_vacate`, `crc32_combine64`) and glibc functions in the image's shared objects | Claude after authorization; user reviews | **partially investigated** (§3a, PR #47 merged as `c2e2278`, audit 36523922216). Open: runtime-resolved/intra-library calls, stripped or static copies, `libstdc++` iconv, binary-to-source identity; G4 proposal awaits the user | none (does not wait for a package fix) | Source/package-specific evidence; before release review |
+| F4b | Monitor for a fixed Debian zlib package (bug #1146895) and the glibc/util-linux items | **unassigned**: user/operator proposed, not accepted | **open; monitoring not scheduled** (no cron, reminder or account automation exists or was created). Proposed cadence: a weekly tracker check (last rechecked 2026-09-29: trixie still *vulnerable*), plus a re-dispatch of the image audit at each base refresh. **Next review decision** (proposed for 2026-10-06): the owner rechecks the tracker and either records "still vulnerable" or starts F5-style rebuild qualification. **Evidence location:** a dated entry in §6 of this file (tracker state and link), plus any audit run under `docs/security/evidence/`. It is not closed by an internal disposition. Contacting Debian needs explicit authorization | Debian | Weekly while the zlib High is unfixed |
 | F5 | When a newer CPython 3.12 or `python:3.12-slim` digest exists, verify each G1 advisory against its release notes, re-scan and compare | user/operator (proposed); Claude can prepare | waiting on upstream | a new release/digest | Advisory-by-advisory fix list, scan diff, compatibility + Release gates |
 | F6 | Retain SBOM + full grype JSON as a bounded-retention artifact on non-publishing Release runs | Claude after authorization; user decides | **integrated**: #46 merged 2026-09-29 as `84b6817` (merge commit; parent `6c183e9`); main CI [36612186495](https://github.com/dlroqa/inference-engine/actions/runs/36612186495) green (push, attempt 1, 11/11 jobs). PR qualification on `main`: CI 36567830306 and Release 36567830756 (checkout `3dc8a8a`; publish skipped; 53 PASS/0 FAIL; artifact 11032663606 checksums verified). Earlier: dry run 36514562548; combined F1+F6 stack 36523517754. **Limitation:** retention after a *failing* Critical gate is configured and structurally tested but has not been exercised by an actual failing-gate run. Nothing is deployed by this | user authorization | Scoped workflow PR (minimal permissions, publication guard unchanged) + a dry run proving retention |
 
@@ -469,6 +478,13 @@ decision. The decision and any risk acceptance are the user's.
   36612186495 green), so F6 is recorded as integrated, with the failing-gate
   limitation kept. Findings and dispositions are unchanged; no disposition has
   been accepted by the user.
+
+- 2026-09-29 (A3c status refresh): #47 (`c2e2278`) and #48 (`1f3bbe0`) are
+  recorded as merged; webhook redirect and IDNA fixes are integrated in source,
+  effective only once deployed. F4b now names its proposed (unaccepted) owner,
+  next review decision and evidence location; monitoring is still not
+  scheduled. Findings, dispositions, run identities and the gate are unchanged;
+  no disposition has been accepted.
 
 ## Appendix: every advisory in the fresh scan
 

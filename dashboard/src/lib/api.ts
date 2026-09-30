@@ -110,6 +110,11 @@ export interface SchedulerPanel {
   max_concurrency: number;
   max_queue_depth: number;
   queue_timeout_s: number;
+  /**
+   * Whether the scheduler is draining (refusing new requests). Always sent by
+   * this engine; absent or not a boolean means unknown, never "not draining".
+   */
+  draining?: boolean;
   in_use: number;
   available: number;
   queue_depth: number;

@@ -10,6 +10,7 @@ import {
 } from "react";
 import { Icon } from "./Icon";
 import { useSystem } from "../hooks/useSystem";
+import { buildHash } from "../hooks/useHashRoute";
 import { useWiringPrefs } from "../hooks/useWiringPrefs";
 import type { SwitchName } from "../lib/api";
 import {
@@ -80,7 +81,12 @@ function callText(entry: WiringEntry): string {
   return entry.client.startsWith("useLive") ? `${entry.client}() hook` : `api.${entry.client}()`;
 }
 
-function WiredFacts({ entry }: { entry: WiringEntry }): JSX.Element {
+// "Open in Architecture": one link per explanation, to the node of the first
+// subsystem in its chain (the entry's own subsystem), placed last so the
+// panel's existing Tab order (content, then docs link) is unchanged. Only in the signed-in
+// dashboard (where the view exists), and never inside a modal dialog, where
+// leaving the page would silently abandon the dialog.
+function WiredFacts({ entry, archLinks }: { entry: WiringEntry; archLinks: boolean }): JSX.Element {
   const route = routeFor(entry);
   return (
     <dl className="wired-facts">
@@ -125,6 +131,16 @@ function WiredFacts({ entry }: { entry: WiringEntry }): JSX.Element {
               {entry.docs.title}
               <Icon name="external" size={13} />
               <span className="sr-only"> (opens in a new tab)</span>
+            </a>
+          </dd>
+        </>
+      )}
+      {archLinks && entry.chain.length > 0 && (
+        <>
+          <dt>Architecture</dt>
+          <dd>
+            <a className="wired-arch" href={buildHash("architecture", { params: { focus: entry.chain[0] } })}>
+              Open {SUBSYSTEMS[entry.chain[0]].label} in Architecture
             </a>
           </dd>
         </>
@@ -192,7 +208,7 @@ function LocalNote({ control }: { control: LocalControl }): JSX.Element {
   );
 }
 
-function ExplanationBlock({ ex }: { ex: Explanation }): JSX.Element {
+function ExplanationBlock({ ex, archLinks }: { ex: Explanation; archLinks: boolean }): JSX.Element {
   const label = ex.kind === "wired" ? ex.entry.label : ex.control.label;
   const what = ex.kind === "wired" ? ex.entry.what : ex.control.what;
   return (
@@ -208,7 +224,7 @@ function ExplanationBlock({ ex }: { ex: Explanation }): JSX.Element {
         )}
       </div>
       <p className="wired-what">{what}</p>
-      {ex.kind === "wired" ? <WiredFacts entry={ex.entry} /> : <LocalNote control={ex.control} />}
+      {ex.kind === "wired" ? <WiredFacts entry={ex.entry} archLinks={archLinks} /> : <LocalNote control={ex.control} />}
     </section>
   );
 }
@@ -247,6 +263,10 @@ export function WiredTo({ id, label }: { id: string | string[]; label?: string }
   const [open, setOpen] = useState(false);
   const [pinned, setPinned] = useState(false);
   const [style, setStyle] = useState<CSSProperties>({ visibility: "hidden" });
+  // The system provider is mounted only in the signed-in shell, where the
+  // Architecture view exists. Read when the popover renders (after mount).
+  const signedIn = useSystem().status !== "absent";
+  const archLinks = signedIn && open && !trigger.current?.closest('[role="dialog"]');
 
   const clearTimer = () => window.clearTimeout(timer.current);
   const close = useCallback(() => {
@@ -419,7 +439,11 @@ export function WiredTo({ id, label }: { id: string | string[]; label?: string }
             style={style}
           >
             {explanations.map((ex) => (
-              <ExplanationBlock key={ex.kind === "wired" ? ex.entry.id : ex.control.id} ex={ex} />
+              <ExplanationBlock
+                key={ex.kind === "wired" ? ex.entry.id : ex.control.id}
+                ex={ex}
+                archLinks={archLinks}
+              />
             ))}
           </div>
         )}

@@ -16,6 +16,7 @@ import { Security } from "./views/Security";
 import { Keys } from "./views/Keys";
 import { System } from "./views/System";
 import { Routing } from "./views/Routing";
+import { Architecture } from "./views/Architecture";
 
 type ViewId =
   | "overview"
@@ -26,7 +27,8 @@ type ViewId =
   | "security"
   | "keys"
   | "system"
-  | "routing";
+  | "routing"
+  | "architecture";
 
 interface NavOpts {
   logQuery?: string;
@@ -40,6 +42,10 @@ interface NavOpts {
   drawer?: "open" | "close";
   /** Keep focus on the control that navigated (e.g. a row's select button). */
   keepFocus?: boolean;
+  /** The Architecture node to select (#/architecture?focus=<id>). */
+  focus?: string | null;
+  /** Replace the current history entry instead of adding one. */
+  replace?: boolean;
 }
 
 interface NavItem {
@@ -58,6 +64,7 @@ const NAV_SECTIONS: { label: string; items: NavItem[] }[] = [
       { id: "monitoring", label: "Monitoring", icon: "activity" },
       { id: "logs", label: "Logs", icon: "list" },
       { id: "system", label: "System", icon: "server" },
+      { id: "architecture", label: "Architecture", icon: "network" },
     ],
   },
   {
@@ -306,7 +313,9 @@ function Shell(): JSX.Element {
   // where the operator is: opening or closing the model drawer (the drawer takes
   // focus and returns it itself, including on Back/Forward), and a navigation
   // that asked to keep focus (a client row's select button). Leaving a view,
-  // with or without a drawer open, always focuses the destination's content.
+  // with or without a drawer open, always focuses the destination's content,
+  // except a link to an Architecture node, where the view focuses that node's
+  // details itself (its effect runs before this one).
   const routeKey = `${route.view}/${route.segments.join("/")}`;
   useEffect(() => {
     const prev = prevRoute.current;
@@ -320,6 +329,8 @@ function Shell(): JSX.Element {
       return;
     }
     if (prev.view === "models" && route.view === "models") return;
+    // A link to an Architecture node: the view focuses that node's details.
+    if (route.view === "architecture" && route.params.get("focus")) return;
     main.current?.focus();
   }, [routeKey]);
 
@@ -328,6 +339,12 @@ function Shell(): JSX.Element {
       if (next === "models" && opts.drawer === "close") {
         if (isDrawerEntry("models")) window.history.back();
         else go(buildHash("models"), { replace: true, state: untaggedState() });
+        return;
+      }
+      if (next === "architecture") {
+        const hash = buildHash("architecture", { params: { focus: opts.focus ?? undefined } });
+        if (opts.replace) go(hash, { replace: true, state: untaggedState() });
+        else go(hash);
         return;
       }
       let hash: string;
@@ -469,6 +486,12 @@ function Shell(): JSX.Element {
             {view === "keys" && <Keys />}
             {view === "system" && <System />}
             {view === "routing" && <Routing />}
+            {view === "architecture" && (
+              <Architecture
+                focus={params.get("focus")}
+                onSelect={(id) => navigate("architecture", { focus: id, replace: true })}
+              />
+            )}
             {!VIEW_IDS.has(view) && <NotFound view={view} onHome={() => go(buildHash("overview"))} />}
           </main>
           {changingKey && (

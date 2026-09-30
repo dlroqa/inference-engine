@@ -23,6 +23,7 @@ import { Security } from "../views/Security";
 import { Keys } from "../views/Keys";
 import { System } from "../views/System";
 import { Routing } from "../views/Routing";
+import { Architecture } from "../views/Architecture";
 import { api, ApiError, setApiKey } from "../lib/api";
 import { LOCAL_CONTROLS, WIRING, explain } from "../lib/wiring";
 import { SystemProvider } from "../hooks/useSystem";
@@ -547,6 +548,27 @@ describe("wiring coverage of dashboard controls", () => {
       () => screen.findByRole("button", { name: "Retry" }),
     );
     audit("System: error");
+  });
+
+  it("Architecture: diagram, a selected node's details, and the text list", async () => {
+    await show(
+      <SystemProvider>
+        <Architecture focus="backend_pool" onSelect={vi.fn()} />
+      </SystemProvider>,
+      () => screen.findAllByText(/1 of 1 backend available/),
+    );
+    const r = audit("Architecture: node selected");
+    expect(r.explained).toEqual(
+      expect.arrayContaining([
+        "app.system",
+        "routing.backends",
+        "models.list",
+        "monitoring.alerts",
+        "overview.metrics",
+        "local.architecture-node",
+        "local.architecture-open",
+      ]),
+    );
   });
 
   it("Routing: populated, with a dry-run result", async () => {
