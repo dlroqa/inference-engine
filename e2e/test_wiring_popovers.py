@@ -46,7 +46,10 @@ def _handler(method: str, path: str) -> str:
 
 
 # The focused element as "TAG:text", for readable keyboard-order failures.
-_FOCUSED = "() => { const a = document.activeElement; return `${a.tagName}:${a.textContent}`; }"
+_FOCUSED = (
+    "() => { const a = document.activeElement;"
+    " return `${a.tagName}:${a.outerHTML.slice(0, 160)}`; }"
+)
 
 
 def _info(page: Page, name: str) -> Locator:
@@ -275,11 +278,12 @@ def test_keyboard_reaches_scroll_content_and_docs_link(page: Page, engine: Engin
     stops: list[str] = []
     for _ in range(4):
         page.keyboard.press("Tab")
+        stops.append(page.evaluate(_FOCUSED))
         if link.evaluate("el => el === document.activeElement"):
             break
-        stops.append(page.evaluate(_FOCUSED))
         assert pop.evaluate("el => el.contains(document.activeElement)"), f"left the panel: {stops}"
-        assert stops[-1].startswith("A:") and stops[-1].endswith("in Architecture"), stops
+        assert stops[-1].startswith("A:") and "in Architecture" in stops[-1], stops
+    assert link.evaluate("el => el === document.activeElement"), f"focus stops: {stops}"
     expect(link).to_be_focused()
     expect(link).to_have_attribute("href", f"{DOCS_BASE}README.md#model-lifecycle-block-6")
     expect(link).to_have_attribute("target", "_blank")
