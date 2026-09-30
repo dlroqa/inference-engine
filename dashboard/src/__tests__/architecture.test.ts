@@ -212,7 +212,11 @@ describe("status derivation", () => {
 
   it("marks values from a failed refresh stale, with their observation time", () => {
     const o = obs({ backends: failed({ backends: [backend()], ready: true, count: 1 }) });
-    expect(node(o, "backend_pool")).toMatchObject({ tone: "ok", stale: true, observedAt: 1_700_000_050 });
+    expect(node(o, "backend_pool")).toMatchObject({
+      tone: "ok",
+      stale: true,
+      provenance: [{ source: "backends", state: "stale", at: 1_700_000_050 }],
+    });
   });
 
   it("counts the whole pool and separates availability from configuration", () => {
@@ -232,7 +236,12 @@ describe("status derivation", () => {
 
   it("reports the scheduler from its own fields, without percentiles", () => {
     const s = node(obs(), "scheduler");
-    expect(s).toMatchObject({ tone: "ok", summary: "2/4 in use · 3 queued", observedAt: 1_700_000_000, stale: false });
+    expect(s).toMatchObject({
+      tone: "ok",
+      summary: "2/4 in use · 3 queued",
+      stale: false,
+      provenance: [{ source: "metrics", state: "current", at: 1_700_000_000 }],
+    });
     expect(s.facts.join(" ")).toMatch(/average 12 ms, maximum 80 ms/);
     expect(s.facts.join(" ")).not.toMatch(/p\d\d|percentile/i);
     expect(node(obs({ metrics: { snapshot: snapshot(scheduler({ wait_ms_avg: null })), status: "live", fresh: true } }), "scheduler").facts).toContain(
@@ -299,6 +308,57 @@ describe("status derivation", () => {
   it("marks the backend stale when retained readiness is stale, even with a fresh backend list", () => {
     expect(node(obs({ system: failed(sysInfo()) }), "backend")).toMatchObject({ tone: "ok", stale: true });
     expect(node(obs(), "backend").stale).toBe(false);
+  });
+
+  it("keeps each source's own observation time for a mixed-source node", () => {
+    const o = obs({
+      system: ready(sysInfo(), 1_700_000_200),
+      backends: ready({ backends: [backend()], ready: true, count: 1 }, 1_700_000_100),
+    });
+    expect(node(o, "backend").provenance).toEqual([
+      { source: "system", state: "current", at: 1_700_000_200 },
+      { source: "backends", state: "current", at: 1_700_000_100 },
+    ]);
+    // A failed adapter read marks only that source stale; readiness stays current.
+    const failedList = obs({
+      system: ready(sysInfo(), 1_700_000_200),
+      backends: failed({ backends: [backend()], ready: true, count: 1 }),
+    });
+    expect(node(failedList, "backend").provenance).toEqual([
+      { source: "system", state: "current", at: 1_700_000_200 },
+      { source: "backends", state: "stale", at: 1_700_000_050 },
+    ]);
+    // Recovery clears only that source's stale state, with its new time.
+    const recovered = obs({
+      system: ready(sysInfo(), 1_700_000_200),
+      backends: ready({ backends: [backend()], ready: true, count: 1 }, 1_700_000_300),
+    });
+    expect(node(recovered, "backend")).toMatchObject({
+      stale: false,
+      provenance: [
+        { source: "system", state: "current", at: 1_700_000_200 },
+        { source: "backends", state: "current", at: 1_700_000_300 },
+      ],
+    });
+  });
+
+  it("gives webhooks separate times for the setting and the dead-letter state", () => {
+    const o = obs({ system: failed(sysInfo()), alerts: ready({ alerts: [] as Alert[] }, 1_700_000_400) });
+    const w = node(o, "webhooks");
+    expect(w.stale).toBe(true);
+    expect(w.provenance).toEqual([
+      { source: "system", state: "stale", at: 1_700_000_050 },
+      { source: "alerts", state: "current", at: 1_700_000_400 },
+    ]);
+    expect(node(obs({ alerts: failed() }), "webhooks").provenance[1]).toEqual({ source: "alerts", state: "failed", at: null });
+    expect(node(obs({ alerts: loading() }), "webhooks").provenance[1]).toEqual({ source: "alerts", state: "loading", at: null });
+  });
+
+  it("gives static nodes no provenance and never marks them stale", () => {
+    const o = obs({ system: failed(sysInfo()), backends: failed(), models: failed(), alerts: failed() });
+    for (const id of ["keystore", "quota", "audit", "log_buffer"] as NodeId[]) {
+      expect(node(o, id)).toMatchObject({ provenance: [], stale: false });
+    }
   });
 
   it("keeps webhook dead-letter facts when the delivery setting is not observed", () => {

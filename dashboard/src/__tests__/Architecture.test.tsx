@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vite
 import { Architecture } from "../views/Architecture";
 import { SystemProvider } from "../hooks/useSystem";
 import { AuthScopeProvider } from "../hooks/useAuthScope";
-import { api, ApiError, type BackendsPage, type SystemInfo } from "../lib/api";
+import { api, ApiError, type BackendsPage, type MetricsSnapshot, type SchedulerPanel, type SystemInfo } from "../lib/api";
 import type { NodeId } from "../lib/architecture";
 
 // The Architecture view with the engine API mocked (fault injection): loading,
@@ -161,7 +161,7 @@ describe("Architecture view", () => {
     vi.mocked(api.backends).mockRejectedValueOnce(new ApiError("engine error", 500));
     await userEvent.click(screen.getByRole("button", { name: /^Refresh/ }));
     await waitFor(() => expect(listItem("Backend pool")).toHaveTextContent("(stale)"));
-    expect(listItem("Backend pool")).toHaveTextContent(/Last observed .*latest read failed/);
+    expect(listItem("Backend pool")).toHaveTextContent(/GET \/admin\/backends: last observed .*latest read failed/);
     // Independent sources are unaffected.
     expect(listItem("Webhooks")).not.toHaveTextContent("(stale)");
     await userEvent.click(screen.getByRole("button", { name: /^Refresh/ }));
@@ -204,6 +204,93 @@ describe("Architecture view", () => {
     reporter.mockReturnValue(true);
     render(<Harness />);
     await waitFor(() => expect(reporter).toHaveBeenCalledWith(expect.objectContaining({ status: 401 })));
+  });
+});
+
+// Fault injection through the mocked /metrics poll (no engine runs here).
+const metricsWith = (sch: Partial<SchedulerPanel>): MetricsSnapshot =>
+  ({
+    ts: Date.now() / 1000,
+    scheduler: {
+      max_concurrency: 4,
+      max_queue_depth: 16,
+      queue_timeout_s: 30,
+      in_use: 1,
+      available: 3,
+      queue_depth: 0,
+      peak_in_use: 1,
+      peak_queue_depth: 0,
+      admitted_total: 1,
+      rejected_total: 0,
+      rejected_queue_full: 0,
+      rejected_timeout: 0,
+      cancelled_total: 0,
+      slow_consumer_total: 0,
+      wait_ms_avg: null,
+      wait_ms_max: 0,
+      wait_ms_last: 0,
+      ...sch,
+    },
+    energy: { state: "unavailable", watts: null, j_per_token: null, tokens_per_joule: null, source: null, reason: null },
+  }) as unknown as MetricsSnapshot;
+
+describe("Architecture status contracts (rendered)", () => {
+  it("reports draining from live metrics while the system summary says it is not, and recovery keeps focus", async () => {
+    // System summary: not draining. First poll fails, the next reports draining.
+    vi.mocked(api.metrics)
+      .mockRejectedValueOnce(new ApiError("network error: offline", 0))
+      .mockResolvedValue(metricsWith({ draining: true }));
+    render(<Harness />);
+    await waitFor(() => expect(listItem("Scheduler")).toHaveTextContent("Unknown: Not observed: live metrics are unavailable"));
+    const refresh = screen.getByRole("button", { name: /^Refresh/ });
+    refresh.focus();
+    await waitFor(() => expect(listItem("Scheduler")).toHaveTextContent("Needs attention: Draining · 1/4 in use · 0 queued"), {
+      timeout: 6000,
+    });
+    expect(listItem("Scheduler")).toHaveTextContent(/\/ws\/metrics.*: observed/);
+    expect(refresh).toHaveFocus();
+  }, 10_000);
+
+  it("shows an unknown drain state when the snapshot omits it", async () => {
+    vi.mocked(api.metrics).mockResolvedValue(metricsWith({}));
+    render(<Harness />);
+    await waitFor(() => expect(listItem("Scheduler")).toHaveTextContent("Unknown: 1/4 in use · 0 queued · drain state unknown"));
+    expect(listItem("Scheduler")).toHaveTextContent("did not report whether the engine is draining");
+  });
+
+  it("explains missing store checks as unknown, and a reported failure as needing attention", async () => {
+    const missing = info();
+    missing.readiness.checks = {};
+    vi.mocked(api.system).mockResolvedValue(missing);
+    const { unmount } = render(<Harness />);
+    await waitFor(() => expect(listItem("Store")).toHaveTextContent("Unknown: SQLite · database not reported · migrations not reported"));
+    expect(listItem("Store")).toHaveTextContent("The database check was not reported, so its state is unknown");
+    unmount();
+
+    const broken = info();
+    broken.readiness.checks = { database: "error: OperationalError" };
+    vi.mocked(api.system).mockResolvedValue(broken);
+    render(<Harness />);
+    await waitFor(() => expect(listItem("Store")).toHaveTextContent("Needs attention: SQLite · database error: OperationalError"));
+    expect(listItem("Store")).toHaveTextContent("The database check failed: error: OperationalError");
+    expect(listItem("Store")).toHaveTextContent("The migrations check was not reported, so its state is unknown");
+  });
+
+  it("shows retained adapters as stale beside current readiness, in the list and the diagram", async () => {
+    render(<Harness initial="backend" />);
+    await waitFor(() => expect(listItem("Backend")).toHaveTextContent("Configured adapters: llamacpp (local)"));
+    vi.mocked(api.backends).mockRejectedValueOnce(new ApiError("engine error", 500));
+    await userEvent.click(screen.getByRole("button", { name: /^Refresh/ }));
+    await waitFor(() => expect(listItem("Backend")).toHaveTextContent("(from an earlier read; the latest failed)"));
+    const item = listItem("Backend");
+    expect(item).toHaveTextContent("OK: Serving tiny (stale)");
+    expect(item).toHaveTextContent(/GET \/admin\/system: observed/);
+    expect(item).toHaveTextContent(/GET \/admin\/backends: last observed .*latest read failed/);
+    // The diagram node and the selected details render the same status.
+    const diagram = screen.getByRole("group", { name: "Architecture diagram" });
+    expect(within(diagram).getByRole("button", { name: /^Backend\s*OK: Serving tiny \(stale\)$/ })).toBeInTheDocument();
+    const details = screen.getByRole("heading", { name: "Backend", level: 2 }).closest(".card") as HTMLElement;
+    expect(details).toHaveTextContent("(from an earlier read; the latest failed)");
   });
 });
 

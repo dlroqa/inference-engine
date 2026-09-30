@@ -98,13 +98,14 @@ export function Architecture({
         <ul className="arch-legend" aria-label="Status key">
           {LEGEND.map((t) => (
             <li key={t}>
-              <StatusLine status={{ tone: t, summary: TONE_LABELS[t], facts: [], observedAt: null, stale: false }} />
+              <StatusLine status={{ tone: t, summary: TONE_LABELS[t], facts: [], provenance: [], stale: false }} />
             </li>
           ))}
         </ul>
         <p className="sub">
-          Unknown means not observed (loading, a failed read, or nothing reports it), not down. Stale values
-          show when they were last observed. Configured adapters are not a hardware qualification.
+          Unknown means not observed (loading, a failed read, or nothing reports it), not down. Each node lists
+          its sources with their own observation times; stale values keep the time they were last observed.
+          Configured adapters are not a hardware qualification.
         </p>
         {unknownFocus && (
           <div className="banner info" role="status">

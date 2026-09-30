@@ -64,8 +64,16 @@ node opens the view that holds its controls.
 - Backends, models and alerts are read when the view opens and on Refresh;
   the system summary is the session's shared copy; metrics are live (stream,
   or polling when the stream is unavailable).
-- Every observed status shows when it was observed. After a failed refresh or
-  a lost connection, the last values stay, marked **stale** with that time.
+- Every node lists each source it uses with that source's own observation
+  time: facts from different reads are never stamped with one time. After a
+  failed refresh or a lost connection, the last values stay, marked **stale**
+  with the time they were observed; a node is stale when any retained input is.
+  A source that was never observed says so ("loading", "not observed").
+- The scheduler's drain state comes from the same live snapshot as its
+  counters; if a snapshot does not report it, the drain state is unknown.
+- The store follows the readiness probe's checks: a reported database error or
+  pending migrations need attention; a missing or unrecognized check is
+  unknown.
 - Counts come only from sources whose scope is known: the backend count is the
   whole pool `/admin/backends` returns, the model count the whole registry.
   "None dead-lettered" is shown only from a successful `/admin/alerts` read,

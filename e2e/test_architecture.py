@@ -80,7 +80,7 @@ def test_live_fields_match_the_engine(page: Page, engine: Engine) -> None:
     expect(_node(page, "Telemetry")).to_contain_text(
         re.compile(r"Live stream connected|Polling /metrics")
     )
-    expect(_node(page, "Scheduler")).to_contain_text(re.compile(r"Observed \d"))
+    expect(_node(page, "Scheduler")).to_contain_text(re.compile(r"/ws/metrics.*: observed \d"))
 
     page.set_viewport_size({"width": 1280, "height": 900})
     expect(page.get_by_role("group", name="Architecture diagram")).to_be_visible()

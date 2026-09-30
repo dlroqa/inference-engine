@@ -8,6 +8,7 @@ import {
   TONE_LABELS,
   type ArchNode,
   type NodeStatus,
+  type Provenance,
   type Tone,
 } from "../lib/architecture";
 
@@ -37,23 +38,33 @@ export function StatusLine({ status }: { status: NodeStatus }): JSX.Element {
   );
 }
 
+function provenanceText(p: Provenance): string {
+  const label = SOURCE_LABELS[p.source];
+  switch (p.state) {
+    case "current":
+      return `${label}: observed ${clockTime(p.at)}`;
+    case "stale":
+      return `${label}: last observed ${clockTime(p.at)}; the latest read failed or the connection was lost`;
+    case "loading":
+      return `${label}: loading`;
+    case "failed":
+      return `${label}: not observed (the read failed)`;
+  }
+}
+
+/** Where each value came from and when, one line per source (never one shared time). */
 function Observed({ node }: { node: ArchNode }): JSX.Element {
-  const { status } = node;
-  const sources = node.sources.map((s) => SOURCE_LABELS[s]).join("; ");
-  if (node.sources.length === 0) return <>No live source: this is a static description.</>;
-  if (status.observedAt === null) return <>Not observed yet. Source: {sources}.</>;
-  if (status.stale) {
-    return (
-      <>
-        Last observed {clockTime(status.observedAt)}; the latest read failed or the connection was lost. Source:{" "}
-        {sources}.
-      </>
-    );
+  if (node.status.provenance.length === 0) {
+    return <p className="sub">No live source: this is a static description.</p>;
   }
   return (
-    <>
-      Observed {clockTime(status.observedAt)}. Source: {sources}.
-    </>
+    <ul className="arch-provenance" aria-label={`Sources for ${node.label}`}>
+      {node.status.provenance.map((p) => (
+        <li key={p.source} className={p.state === "stale" ? "arch-stale" : undefined}>
+          {provenanceText(p)}
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -70,9 +81,7 @@ export function NodeFacts({ node }: { node: ArchNode }): JSX.Element {
           ))}
         </ul>
       )}
-      <p className="sub">
-        <Observed node={node} />
-      </p>
+      <Observed node={node} />
       <p className="sub">{node.relation}</p>
       <p className="sub">
         Implemented in <span className="mono">{node.modules.join(", ")}</span>

@@ -16,6 +16,10 @@
 // - unknown: not observed: loading, the source failed, or nothing reports it.
 //   A failed read is a failure to observe, never proof the subsystem is down.
 // - info: configuration or a static description; no live probe exists.
+//
+// Freshness: each node lists every source it uses with that source's own
+// observation time (provenance), attached once in deriveNodes. A node is
+// marked stale when any retained input is stale.
 
 import type {
   Alert,
@@ -124,9 +128,9 @@ export const NODE_CONTRACTS: NodeContract[] = [
     lane: "path",
     modules: ["engine/inference/scheduler.py"],
     relation: "Admits an authorized request into a concurrency slot or the bounded queue, then hands it to the router.",
-    sources: ["metrics", "system"],
-    fields: "scheduler.in_use, max_concurrency, queue_depth, admitted_total, rejected_total, wait_ms_avg / wait_ms_max (averages and maxima since start, no percentiles); draining from /admin/system.",
-    unavailable: METRICS_UNAVAILABLE,
+    sources: ["metrics"],
+    fields: "scheduler.draining, in_use, max_concurrency, queue_depth, admitted_total, rejected_total, wait_ms_avg / wait_ms_max (averages and maxima since start, no percentiles), all from one snapshot.",
+    unavailable: `${METRICS_UNAVAILABLE} A missing or non-boolean draining value shows the drain state as unknown, never as accepting requests.`,
     destination: "overview",
   },
   {
@@ -159,7 +163,7 @@ export const NODE_CONTRACTS: NodeContract[] = [
     relation: "Generates tokens for the placed request and streams them back through the edge.",
     sources: ["system", "backends"],
     fields: "readiness.inference.available / model_id / reason from /admin/system; backends[].kind and location (configured adapters, not a hardware qualification).",
-    unavailable: SYSTEM_UNAVAILABLE,
+    unavailable: "Readiness is unknown until /admin/system answers. Adapters say \"loading\", \"not observed\" or \"from an earlier read\" on their own; each source keeps its own observation time, and a stale input marks the node stale.",
     destination: "models",
   },
   {
@@ -216,7 +220,7 @@ export const NODE_CONTRACTS: NodeContract[] = [
     relation: "Receives account events from the emitter and delivers them to registered endpoints (no redirects, ASCII hosts only).",
     sources: ["system", "alerts"],
     fields: "switches.webhooks_enabled; the webhook_dead_letters alert from /admin/alerts, derived from the engine-wide count of dead deliveries (its message is shown as is).",
-    unavailable: "Delivery state is unknown until /admin/system answers; the dead-letter state is unknown until /admin/alerts answers. \"None dead-lettered\" is shown only from a successful alerts read.",
+    unavailable: "Delivery state is unknown until /admin/system answers; the dead-letter state is unknown until /admin/alerts answers, and is still shown when only the setting is unknown. \"None dead-lettered\" is shown only from a successful alerts read. Each source keeps its own observation time.",
     destination: "clients",
   },
   {
@@ -281,8 +285,8 @@ export const NODE_CONTRACTS: NodeContract[] = [
     modules: ["engine/store"],
     relation: "One SQLite file holds keys, usage, billing, webhooks, client events, the audit log, the model registry and persisted logs. One engine per data directory; no replication.",
     sources: ["system"],
-    fields: "readiness.checks.database and readiness.checks.migrations (the /readyz probe's own checks).",
-    unavailable: SYSTEM_UNAVAILABLE,
+    fields: "readiness.checks.database (\"ok\", or \"error: …\") and readiness.checks.migrations (\"applied\" or \"pending\"), the /readyz probe's own checks.",
+    unavailable: `${SYSTEM_UNAVAILABLE} A missing or unrecognized check is unknown; only a reported database error or pending migrations need attention.`,
     destination: "system",
   },
 ];
@@ -370,15 +374,33 @@ export const TONE_LABELS: Record<Tone, string> = {
   info: "Configuration",
 };
 
-export interface NodeStatus {
+/** What a node reads from its sources: its status, before provenance is attached. */
+export interface Reading {
   tone: Tone;
   /** One line, shown on the node. */
   summary: string;
   /** Further observed facts, shown in the details. */
   facts: string[];
-  /** Epoch seconds of the observation behind the status, when there is one. */
-  observedAt: number | null;
-  /** The values are from an earlier observation and the latest one failed or was lost. */
+}
+
+/**
+ * The freshness of one source a node's status uses. Each source keeps its own
+ * time: facts from different reads are never stamped with one timestamp.
+ * - current: `at` is when the data shown was received, and it is the latest.
+ * - stale: the data shown is from `at`; a later read failed or the connection was lost.
+ * - loading / failed: nothing from this source has been observed yet.
+ */
+export interface Provenance {
+  source: SourceId;
+  state: "current" | "stale" | "loading" | "failed";
+  /** Epoch seconds (engine clock for metrics, browser clock for reads). */
+  at: number | null;
+}
+
+export interface NodeStatus extends Reading {
+  /** One entry per source in the node's contract, in contract order. */
+  provenance: Provenance[];
+  /** True when any retained input is stale; the "(stale)" label. */
   stale: boolean;
 }
 
@@ -386,11 +408,11 @@ export interface ArchNode extends NodeContract {
   status: NodeStatus;
 }
 
-function status(tone: Tone, summary: string, facts: string[] = [], at: number | null = null, stale = false): NodeStatus {
-  return { tone, summary, facts, observedAt: at, stale };
+function status(tone: Tone, summary: string, facts: string[] = []): Reading {
+  return { tone, summary, facts };
 }
 
-function notObserved<T>(src: Source<T>, what: string): NodeStatus {
+function notObserved<T>(src: Source<T>, what: string): Reading {
   if (src.status === "loading") return status("unknown", `Loading ${what}…`);
   return status("unknown", `Not observed: ${what} could not be read`, src.error ? [src.error] : []);
 }
@@ -399,20 +421,44 @@ function plural(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`;
 }
 
-function withSystem(obs: Observations, f: (s: SystemInfo) => NodeStatus): NodeStatus {
+function withSystem(obs: Observations, f: (s: SystemInfo) => Reading): Reading {
   const src = obs.system;
   if (!src.data) return notObserved(src, "the system summary");
-  const out = f(src.data);
-  return { ...out, observedAt: src.observedAt, stale: src.stale };
+  return f(src.data);
 }
 
-function metricsState(m: MetricsObservation): NodeStatus | null {
+function metricsState(m: MetricsObservation): Reading | null {
   if (m.snapshot) return null;
   if (m.status === "down") return status("unknown", "Not observed: live metrics are unavailable");
   return status("unknown", "Waiting for live metrics…");
 }
 
-const derive: Record<NodeId, (obs: Observations) => NodeStatus> = {
+/** Configured adapter kinds, saying whether they are current, retained or not observed. */
+function adapterFact(src: Source<BackendsPage>): string {
+  if (!src.data) {
+    return src.status === "loading"
+      ? "Configured adapters: loading…"
+      : `Configured adapters: not observed (${SOURCE_LABELS.backends} could not be read)`;
+  }
+  const kinds = [...new Set(src.data.backends.map((b) => `${b.kind} (${b.location})`))].join(", ") || "none reported";
+  return `Configured adapters: ${kinds}${src.stale ? " (from an earlier read; the latest failed)" : ""}`;
+}
+
+type CheckState = "ok" | "failed" | "missing" | "unrecognized";
+
+/** One readiness check: ok, a known failure, or unknown (missing or unrecognized). */
+function readinessCheck(
+  value: string | undefined,
+  ok: string,
+  failed: (v: string) => boolean,
+): { state: CheckState; text: string } {
+  if (value === undefined) return { state: "missing", text: "not reported" };
+  if (value === ok) return { state: "ok", text: value };
+  if (failed(value)) return { state: "failed", text: value };
+  return { state: "unrecognized", text: `${value} (unrecognized)` };
+}
+
+const derive: Record<NodeId, (obs: Observations) => Reading> = {
   edges: (obs) => {
     const http = "HTTP: OpenAI /v1/chat/completions, Anthropic /v1/messages";
     if (!obs.system.data) {
@@ -434,12 +480,13 @@ const derive: Record<NodeId, (obs: Observations) => NodeStatus> = {
       ]),
     ),
   scheduler: (obs) => {
+    // Everything here, drain state included, comes from one live snapshot, so
+    // the status and its observation time always agree.
     const m = obs.metrics;
     const waiting = metricsState(m);
     if (waiting) return waiting;
     const sch = m.snapshot?.scheduler ?? null;
-    const at = m.snapshot?.ts ?? null;
-    if (!sch) return status("unknown", "Not reported by this engine", [], at, !m.fresh);
+    if (!sch) return status("unknown", "Not reported by this engine");
     const facts = [
       `${plural(sch.admitted_total, "request")} admitted, ${sch.rejected_total} rejected since start`,
       sch.wait_ms_avg === null
@@ -447,10 +494,15 @@ const derive: Record<NodeId, (obs: Observations) => NodeStatus> = {
         : `Queue wait: average ${Math.round(sch.wait_ms_avg)} ms, maximum ${Math.round(sch.wait_ms_max)} ms`,
     ];
     const summary = `${sch.in_use}/${sch.max_concurrency} in use · ${sch.queue_depth} queued`;
-    if (obs.system.data?.draining) {
-      return status("attention", `Draining · ${summary}`, ["New requests are refused while the engine drains", ...facts], at, !m.fresh);
+    const draining: unknown = sch.draining;
+    if (draining === true) {
+      return status("attention", `Draining · ${summary}`, ["New requests are refused while the engine drains", ...facts]);
     }
-    return status("ok", summary, facts, at, !m.fresh);
+    if (draining === false) return status("ok", summary, facts);
+    return status("unknown", `${summary} · drain state unknown`, [
+      "The snapshot did not report whether the engine is draining",
+      ...facts,
+    ]);
   },
   router: (obs) =>
     withSystem(obs, (s) => {
@@ -472,23 +524,23 @@ const derive: Record<NodeId, (obs: Observations) => NodeStatus> = {
       `${list.length - spill} primary, ${spill} spillover`,
       `${inFlight} request${inFlight === 1 ? "" : "s"} in flight`,
     ];
-    let out: NodeStatus;
-    if (list.length === 0) out = status("attention", "No backends reported", facts);
-    else if (available < list.length)
-      out = status("attention", `${available} of ${plural(list.length, "backend")} available`, facts);
-    else out = status("ok", `${available} of ${plural(list.length, "backend")} available`, facts);
-    return { ...out, observedAt: src.observedAt, stale: src.stale };
+    if (list.length === 0) return status("attention", "No backends reported", facts);
+    if (available < list.length)
+      return status("attention", `${available} of ${plural(list.length, "backend")} available`, facts);
+    return status("ok", `${available} of ${plural(list.length, "backend")} available`, facts);
   },
-  backend: (obs) =>
-    withSystem(obs, (s) => {
-      const inf = s.readiness.inference;
-      const kinds = obs.backends.data
-        ? [...new Set(obs.backends.data.backends.map((b) => `${b.kind} (${b.location})`))].join(", ") || "none"
-        : "unknown";
-      const facts = [`Configured adapters: ${kinds}`, "Adapters are configuration; this view does not qualify hardware"];
-      if (inf.available) return status("ok", `Serving ${inf.model_id ?? "a model"}`, facts);
-      return status("attention", `Not serving: ${inf.reason ?? inf.state ?? "no model loaded"}`, facts);
-    }),
+  backend: (obs) => {
+    // Readiness (system summary) and adapters (backend list) are separate
+    // reads: each fact says where it stands, and provenance keeps both times.
+    const facts = [adapterFact(obs.backends), "Adapters are configuration; this view does not qualify hardware"];
+    if (!obs.system.data) {
+      const n = notObserved(obs.system, "readiness");
+      return status("unknown", n.summary, [...facts, ...n.facts]);
+    }
+    const inf = obs.system.data.readiness.inference;
+    if (inf.available) return status("ok", `Serving ${inf.model_id ?? "a model"}`, facts);
+    return status("attention", `Not serving: ${inf.reason ?? inf.state ?? "no model loaded"}`, facts);
+  },
   keystore: () => status("info", "Keys stored as hashes; tokens shown once", ["Key lists and revocation are in API keys"]),
   quota: () => status("info", "Per-key usage, 5-hour and weekly windows", ["Usage by key is in Monitoring"]),
   billing: (obs) =>
@@ -506,8 +558,8 @@ const derive: Record<NodeId, (obs: Observations) => NodeStatus> = {
         : status("off", "Client event log off (client_events_enabled=false)"),
     ),
   webhooks: (obs) => {
-    if (!obs.system.data) return notObserved(obs.system, "the webhook setting");
-    const enabled = obs.system.data.switches.webhooks_enabled;
+    // The delivery setting (system summary) and the dead-letter state (alerts)
+    // are separate reads with their own provenance.
     const al = obs.alerts;
     const dead = al.data?.alerts.find((a) => a.kind === "webhook_dead_letters") ?? null;
     const deadFact = !al.data
@@ -517,12 +569,16 @@ const derive: Record<NodeId, (obs: Observations) => NodeStatus> = {
       : dead
         ? dead.message
         : "No dead-lettered deliveries";
-    const at = al.data ? al.observedAt : obs.system.observedAt;
-    const stale = obs.system.stale || al.stale;
-    if (!enabled) return status("off", "Delivery off (webhooks_enabled=false)", [deadFact], at, stale);
-    if (!al.data) return status("unknown", "Delivery on · dead letters not observed", [deadFact], at, stale);
-    if (dead) return status("attention", dead.message, ["Delivery on"], at, stale);
-    return status("ok", "Delivery on · none dead-lettered", [], at, stale);
+    if (!obs.system.data) {
+      const n = notObserved(obs.system, "the webhook setting");
+      return status("unknown", n.summary, [deadFact, ...n.facts]);
+    }
+    if (!obs.system.data.switches.webhooks_enabled) {
+      return status("off", "Delivery off (webhooks_enabled=false)", [deadFact]);
+    }
+    if (!al.data) return status("unknown", "Delivery on · dead letters not observed", [deadFact]);
+    if (dead) return status("attention", dead.message, ["Delivery on"]);
+    return status("ok", "Delivery on · none dead-lettered");
   },
   audit: () =>
     status("unknown", "Chain not checked here", [
@@ -536,12 +592,10 @@ const derive: Record<NodeId, (obs: Observations) => NodeStatus> = {
       : e.state === "measured"
         ? [`Energy: ${e.watts ?? "?"} W (${e.source ?? "unknown source"})`]
         : [`Energy: not measured${e.reason ? ` (${e.reason})` : ""}`];
-    const at = m.snapshot?.ts ?? null;
-    if (m.status === "live" && m.fresh) return status("ok", "Live stream connected", energy, at);
-    if (m.status === "polling" && m.fresh) return status("ok", "Polling /metrics (stream unavailable)", energy, at);
-    if (m.status === "down")
-      return status("unknown", "Not observed: stream and polling failed", energy, at, m.snapshot !== null);
-    return status("unknown", "Connecting…", energy, at, m.snapshot !== null);
+    if (m.status === "live" && m.fresh) return status("ok", "Live stream connected", energy);
+    if (m.status === "polling" && m.fresh) return status("ok", "Polling /metrics (stream unavailable)", energy);
+    if (m.status === "down") return status("unknown", "Not observed: stream and polling failed", energy);
+    return status("unknown", "Connecting…", energy);
   },
   log_buffer: () => status("info", "Request and error logs, metadata only", ["Never prompts or completions"]),
   model_registry: (obs) => {
@@ -553,7 +607,7 @@ const derive: Record<NodeId, (obs: Observations) => NodeStatus> = {
     const busy = list.filter((m) => m.status === "downloading" || m.status === "verifying").length;
     const facts = [`${busy} downloading or verifying`, `${errors} in error`];
     const summary = list.length === 0 ? "No models registered" : `${plural(list.length, "model")} · ${loaded} loaded`;
-    return status("info", summary, facts, src.observedAt, src.stale);
+    return status("info", summary, facts);
   },
   model_service: (obs) =>
     withSystem(obs, (s) => {
@@ -565,15 +619,48 @@ const derive: Record<NodeId, (obs: Observations) => NodeStatus> = {
     }),
   store: (obs) =>
     withSystem(obs, (s) => {
-      const db = s.readiness.checks.database ?? "not reported";
-      const mig = s.readiness.checks.migrations ?? "not reported";
-      const summary = `SQLite · database ${db} · migrations ${mig}`;
-      const facts = ["Single SQLite file; no replication or high availability"];
-      return db === "ok" && mig === "applied" ? status("ok", summary, facts) : status("attention", summary, facts);
+      // Missing or unrecognized checks are unknown; only a reported failure
+      // (a database error, pending migrations) needs attention.
+      const checks = [
+        { name: "database", ...readinessCheck(s.readiness.checks.database, "ok", (v) => v.startsWith("error")) },
+        { name: "migrations", ...readinessCheck(s.readiness.checks.migrations, "applied", (v) => v === "pending") },
+      ];
+      const summary = `SQLite · ${checks.map((c) => `${c.name} ${c.text}`).join(" · ")}`;
+      const facts = checks.flatMap((c) => {
+        if (c.state === "failed") {
+          return [c.name === "database" ? `The database check failed: ${c.text}` : `Migrations are ${c.text}: the engine is not ready`];
+        }
+        if (c.state === "missing") return [`The ${c.name} check was not reported, so its state is unknown`];
+        if (c.state === "unrecognized") return [`The ${c.name} check reported ${c.text}, so its state is unknown`];
+        return [];
+      });
+      facts.push("Single SQLite file; no replication or high availability");
+      if (checks.some((c) => c.state === "failed")) return status("attention", summary, facts);
+      if (checks.some((c) => c.state !== "ok")) return status("unknown", summary, facts);
+      return status("ok", summary, facts);
     }),
 };
 
-/** Every node, in contract order, with its status derived from `obs`. */
+/** The freshness of one source, from the observations. */
+export function provenanceOf(obs: Observations, source: SourceId): Provenance {
+  if (source === "metrics") {
+    const m = obs.metrics;
+    if (m.snapshot) return { source, state: m.fresh ? "current" : "stale", at: m.snapshot.ts };
+    return { source, state: m.status === "down" ? "failed" : "loading", at: null };
+  }
+  const src: Source<unknown> = obs[source];
+  if (src.data !== null) return { source, state: src.stale ? "stale" : "current", at: src.observedAt };
+  return { source, state: src.status === "loading" ? "loading" : "failed", at: null };
+}
+
+/**
+ * Every node, in contract order, with its status derived from `obs`. The
+ * provenance of every source a node uses is attached here, in one place, so
+ * no derivation can stamp one source's facts with another source's time.
+ */
 export function deriveNodes(obs: Observations): ArchNode[] {
-  return NODE_CONTRACTS.map((c) => ({ ...c, status: derive[c.id](obs) }));
+  return NODE_CONTRACTS.map((c) => {
+    const provenance = c.sources.map((s) => provenanceOf(obs, s));
+    return { ...c, status: { ...derive[c.id](obs), provenance, stale: provenance.some((p) => p.state === "stale") } };
+  });
 }
