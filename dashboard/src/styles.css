@@ -1159,3 +1159,150 @@ fieldset.field legend {
   font-size: 14px;
   color: var(--color-fg);
 }
+
+/* --- Architecture (A3c) ------------------------------------------------------
+ * Status is always an icon plus text; tone colours only reinforce it. The
+ * diagram is shown where its text stays legible (≥ 1200px); below that the
+ * text list (always rendered) is the presentation, so no layout scrolls
+ * sideways and the hidden diagram adds no focus stops. No animation. */
+.arch-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+  list-style: none;
+  padding: 0;
+  margin: var(--space-3) 0;
+}
+.arch-status {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  color: var(--color-fg);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.arch-status svg {
+  flex: none;
+  margin-top: 1px;
+}
+.arch-status.tone-ok svg {
+  color: var(--color-accent);
+}
+.arch-status.tone-attention svg {
+  color: var(--color-warn);
+}
+.arch-status.tone-off svg,
+.arch-status.tone-unknown svg {
+  color: var(--color-fg-muted);
+}
+.arch-status.tone-info svg {
+  color: var(--color-info);
+}
+.arch-stale {
+  color: var(--color-warn);
+}
+.arch-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.arch-edge {
+  fill: none;
+  stroke: var(--color-border-strong);
+  stroke-width: 2;
+}
+.arch-edge.side {
+  stroke-dasharray: 6 5;
+}
+.arch-arrowhead {
+  fill: var(--color-border-strong);
+}
+.arch-node {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  width: 100%;
+  height: 100%;
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  font: inherit;
+  color: var(--color-fg);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  overflow: hidden;
+}
+.arch-node.lane-path {
+  border-color: var(--color-border-strong);
+}
+.arch-node:hover {
+  background: var(--color-muted);
+}
+.arch-node[aria-pressed="true"] {
+  border: 2px solid var(--color-accent);
+}
+.arch-node:focus-visible {
+  outline: 3px solid var(--color-accent);
+  outline-offset: -3px;
+}
+.arch-node-label {
+  font-weight: 600;
+  font-size: 16px;
+}
+.arch-node .arch-status {
+  font-size: 15px;
+}
+.arch-node .arch-status > span {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+.arch-text h3 {
+  font-size: 15px;
+  margin: var(--space-4) 0 var(--space-2);
+}
+.arch-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+  gap: var(--space-3);
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.arch-list-item {
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  min-width: 0;
+}
+.arch-list-item h4 {
+  margin: 0 0 var(--space-1);
+  font-size: 14px;
+}
+.arch-facts p {
+  margin: var(--space-2) 0 0;
+  overflow-wrap: anywhere;
+}
+.arch-desc {
+  margin-top: 0;
+}
+.arch-fact-list {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-5);
+  font-size: 13px;
+  color: var(--color-fg-muted);
+}
+.arch-open {
+  margin-top: var(--space-3);
+}
+.wired-arch {
+  color: inherit;
+}
+@media (max-width: 1199px) {
+  .arch-diagram-card {
+    display: none;
+  }
+}

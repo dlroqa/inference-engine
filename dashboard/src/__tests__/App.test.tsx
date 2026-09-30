@@ -249,7 +249,7 @@ describe("App routing", () => {
   });
 
   it("explains an unknown page instead of rendering nothing", async () => {
-    window.location.hash = "#/architecture";
+    window.location.hash = "#/no-such-view";
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Page not available" })).toBeInTheDocument();
   });

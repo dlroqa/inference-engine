@@ -12,6 +12,7 @@ import {
   replaceBlock,
 } from "../lib/wiringDocs";
 import { LOCAL_CONTROLS, WIRING } from "../lib/wiring";
+import { NODE_CONTRACTS } from "../lib/architecture";
 
 // docs/dashboard.md at the repository root, resolved from this file (never from
 // the process's working directory).
@@ -42,17 +43,18 @@ describe("wiring docs renderer", () => {
 
   it("lists every wired and local control once, sorted by id", () => {
     const out = renderWiringTable();
-    const ids = [...out.matchAll(/^\| [^|]+ \| `([a-z0-9.-]+)` \|/gm)].map((m) => m[1]);
+    const ids = [...out.matchAll(/^\| [^|]+ \| `([a-z0-9._-]+)` \|/gm)].map((m) => m[1]);
     const wired = [...WIRING.map((w) => w.id)].sort();
     const local = [...LOCAL_CONTROLS.map((c) => c.id)].sort();
-    expect(ids).toEqual([...wired, ...local]);
+    const nodes = NODE_CONTRACTS.map((n) => n.id);
+    expect(ids).toEqual([...wired, ...local, ...nodes]);
     expect(out).not.toContain("docs/docs/");
     expect(out).toContain("`GET /admin/models/{model_id}`");
     expect(out.endsWith("\n")).toBe(true);
     // Every row has the same number of columns as its header.
     for (const line of out.split("\n").filter((l) => l.startsWith("| "))) {
       const cols = line.replace(/\\\|/g, "").split("|").length - 2;
-      expect([8, 4]).toContain(cols);
+      expect([8, 4, 7]).toContain(cols);
     }
   });
 

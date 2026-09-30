@@ -12,8 +12,11 @@ it.
 | `remote_vllm` | vLLM OpenAI-compatible server | external HTTP endpoint | `[remote]` |
 | `remote_sglang` | SGLang OpenAI-compatible server | external HTTP endpoint | `[remote]` |
 
-Health-aware routing across several live backends is covered below; virtual
-auto-models and routing *policies* are later Block 10 sub-slices.
+Health-aware routing across several live backends, prefix affinity, virtual
+auto-models with route/cascade policies, measured workload routing and
+external-provider spillover are all covered below. The support matrix in
+[Architecture](architecture.md#support-matrix) separates what is implemented
+from what CI has actually verified.
 
 ## Remote backends: vLLM & SGLang (Block 10, sub-slices 1–2)
 
@@ -396,15 +399,20 @@ so cross-backend failover on generation failure is deliberately out of scope;
 only admission-time spillover (saturation / unavailability) and the same-endpoint
 pre-stream retry (sub-slice 1) apply.
 
-### Not yet (later sub-slices)
+### Not supported or deferred
 
-- Structured output (grammar / JSON-schema): the remote backends report
-  `supports_structured_output = false`, so the edge rejects structured requests
-  rather than returning unconstrained text, even though these servers can guide
-  decoding.
-- **Triton** — deferred by design until a real multi-model workload justifies it.
-- Prefix/KV-cache affinity, routing/cascade policies, virtual auto-models, and
-  external-provider spillover.
+- Structured output (grammar / JSON-schema) on **remote** backends: they report
+  `supports_structured_output = false`, so a structured request is never placed
+  on them (it is rejected, or served by a local llama.cpp backend that supports
+  it) rather than returning unconstrained text, even though these servers can
+  guide decoding.
+- **Triton**: deferred by design until a real multi-model workload justifies it.
+- Failover after generation has started (see spillover above): only
+  admission-time placement and the same-endpoint pre-stream retry apply.
+
+(Prefix affinity, route/cascade policies, virtual auto-models and
+external-provider spillover, once listed here, are implemented; see their
+sections above.)
 
 ### Verifying against a real server
 

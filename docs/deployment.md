@@ -190,6 +190,21 @@ inference.example.com {
    model and check `/readyz` is `200`, open `/dashboard`, and send a small
    generation.
 
+### Upgrading to a release that includes `1f3bbe0` (A3b) or later
+
+- **Webhook endpoints with non-ASCII hosts stop receiving deliveries.** Such an
+  endpoint (registered before hosts had to be ASCII) is never sent to: each
+  delivery is dead-lettered at once with "endpoint host is not ASCII; re-register
+  it in the xn-- (punycode) form". Stored endpoints are not rewritten. Before or
+  right after upgrading, list endpoints (`GET /admin/billing/webhooks/endpoints`,
+  or the dashboard's Clients view) and, for each non-ASCII host: register the
+  `xn--` form of the same URL, configure the receiver with the **new** signing
+  secret shown once at registration, then delete the old endpoint. Dead
+  deliveries do **not** move to the new endpoint (a replay re-sends to the
+  delivery's own endpoint). See [Webhooks](webhooks.md#security-notes).
+- Webhook deliveries no longer follow redirects: a receiver that answers 3xx
+  now fails the attempt. Point endpoints at their final URL.
+
 ## Rollback
 
 1. **Stop** the new image: `docker compose -f deploy/compose.yaml stop`.

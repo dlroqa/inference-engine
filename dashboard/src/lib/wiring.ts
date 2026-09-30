@@ -663,6 +663,17 @@ export const LOCAL_CONTROLS: LocalControl[] = [
     what: "Opens the repository documentation on GitHub in a new tab. Nothing is sent to the engine.",
   },
   {
+    id: "local.architecture-node",
+    label: "Architecture node",
+    what: "Selects a node (or closes its details) and updates the page address (#/architecture?focus=<node>) without adding a history entry. The details come from data this view has already read.",
+  },
+  {
+    id: "local.architecture-open",
+    label: "Open the node's view",
+    what: "Opens the dashboard view that holds this node's controls. The Architecture view itself changes nothing.",
+    followUp: "That view then loads its own data from the engine.",
+  },
+  {
     id: "local.dialog-cancel",
     label: "Cancel",
     what: "Closes this confirmation. Nothing is sent and nothing changes.",

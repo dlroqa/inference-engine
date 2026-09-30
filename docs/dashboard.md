@@ -206,6 +206,18 @@ endpoint and delivery controls. Every write is recorded in the engine's audit lo
 - Endpoint hosts must be ASCII and in `egress_allowlist`, and redirects are
   never followed (see [Webhooks](webhooks.md)).
 
+## Architecture view
+
+`#/architecture` shows the request path (API edges → Gateway → Scheduler →
+Router → Backend pool → Backend) and the side systems, each with a live status
+as an icon plus text, and links each node to the view that holds its controls.
+It is read-only and adds no endpoint. Status words, freshness, count scope,
+session safety, deep links (`?focus=<node>`) and the support matrix are in
+[Architecture](architecture.md); each node's contract is the generated
+Architecture nodes table below. In the signed-in dashboard, the subsystems in a
+"How this works" popover link to their nodes, except inside confirmation
+dialogs.
+
 ## Live metrics states
 
 The Overview's stat cards and Scheduler card read the live metrics stream
@@ -308,9 +320,10 @@ paths against throwaway repositories.
 
 To update, copy the generated block into this page and commit it.
 
-**Contents.** Rows are sorted by control ID. Access is the route inventory's gate.
-Kill switches are the configuration switches that must be on for the control to
-work (read-only in the dashboard).
+**Contents.** Control rows are sorted by control ID. Access is the route
+inventory's gate. Kill switches are the configuration switches that must be on
+for the control to work (read-only in the dashboard). The Architecture nodes
+table follows the diagram's order (request path first).
 
 <!-- wiring-table:start -->
 _Generated from `dashboard/src/lib/wiring.ts` and `routes.generated.json`; do not edit by hand._

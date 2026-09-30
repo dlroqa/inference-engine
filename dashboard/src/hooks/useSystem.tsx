@@ -21,6 +21,8 @@ export interface SystemView {
   info: SystemInfo | null;
   /** True when `info` is from an earlier fetch and the latest refresh failed. */
   stale: boolean;
+  /** Epoch seconds when `info` was received (null before the first success). */
+  observedAt: number | null;
   error: string | null;
   refresh: () => void;
   /** Records that the engine refused an action because `name` is off. */
@@ -35,6 +37,7 @@ interface State {
   status: Exclude<SystemStatus, "absent">;
   info: SystemInfo | null;
   stale: boolean;
+  observedAt: number | null;
   error: string | null;
   /** Switches the engine has refused since the last successful fetch. */
   denied: ReadonlySet<SwitchName>;
@@ -49,6 +52,7 @@ const ABSENT: SystemView = {
   status: "absent",
   info: null,
   stale: false,
+  observedAt: null,
   error: null,
   refresh: () => {},
   reportDenied: () => {},
@@ -72,6 +76,7 @@ export function SystemProvider({ children }: { children: ReactNode }): JSX.Eleme
     status: "loading",
     info: null,
     stale: false,
+    observedAt: null,
     error: null,
     denied: new Set(),
   });
@@ -91,7 +96,7 @@ export function SystemProvider({ children }: { children: ReactNode }): JSX.Eleme
     api.system().then(
       (info) => {
         if (!alive.current || mine !== generation.current) return;
-        setState({ status: "ready", info, stale: false, error: null, denied: new Set() });
+        setState({ status: "ready", info, stale: false, observedAt: Date.now() / 1000, error: null, denied: new Set() });
       },
       (e: unknown) => {
         if (!alive.current || mine !== generation.current) return;
@@ -137,6 +142,7 @@ export function SystemProvider({ children }: { children: ReactNode }): JSX.Eleme
       status: state.status,
       info: state.info,
       stale: state.stale,
+      observedAt: state.observedAt,
       error: state.error,
       refresh,
       reportDenied,

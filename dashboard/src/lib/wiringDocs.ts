@@ -6,6 +6,7 @@
 // and, only when explicitly asked (UPDATE_WIRING_DOCS=1, run in GitHub
 // Actions), rewrites it.
 
+import { DESTINATION_LABELS, NODE_CONTRACTS, SOURCE_LABELS } from "./architecture";
 import { SWITCH_LABELS } from "./switches";
 import { LOCAL_CONTROLS, SUBSYSTEMS, WIRING, routeFor, type DocRef } from "./wiring";
 
@@ -34,7 +35,7 @@ function row(cells: string[]): string {
 /** The generated block (without markers), ending in a newline. */
 export function renderWiringTable(): string {
   const lines: string[] = [
-    "_Generated from `dashboard/src/lib/wiring.ts` and `routes.generated.json`; do not edit by hand._",
+    "_Generated from `dashboard/src/lib/wiring.ts`, `dashboard/src/lib/architecture.ts` and `routes.generated.json`; do not edit by hand._",
     "",
     "**Controls that call the engine**",
     "",
@@ -66,6 +67,27 @@ export function renderWiringTable(): string {
   );
   for (const c of byId(LOCAL_CONTROLS)) {
     lines.push(row([cell(c.label), `\`${c.id}\``, cell(c.what), c.followUp ? cell(c.followUp) : "—"]));
+  }
+  lines.push(
+    "",
+    "**Architecture nodes** (the `#/architecture` view; contracts from `dashboard/src/lib/architecture.ts`, in diagram order)",
+    "",
+    row(["Node", "ID", "Implemented in", "Relationship", "Sources and fields", "When not observed", "Opens"]),
+    row(["---", "---", "---", "---", "---", "---", "---"]),
+  );
+  for (const n of NODE_CONTRACTS) {
+    const sources = n.sources.length > 0 ? n.sources.map((x) => SOURCE_LABELS[x]).join("; ") : "none";
+    lines.push(
+      row([
+        cell(n.label),
+        `\`${n.id}\``,
+        cell(n.modules.map((m) => `\`${m}\``).join(", ")),
+        cell(n.relation),
+        cell(`${sources}: ${n.fields}`),
+        cell(n.unavailable),
+        n.destination ? cell(DESTINATION_LABELS[n.destination]) : cell(`none: ${n.noDestinationReason ?? ""}`),
+      ]),
+    );
   }
   return `${lines.join("\n")}\n`;
 }
