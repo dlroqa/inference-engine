@@ -72,7 +72,9 @@ const backend = (over: Partial<BackendRow> = {}): BackendRow => ({
   ...over,
 });
 
-const scheduler = (over: Partial<SchedulerPanel> = {}): SchedulerPanel => ({
+const scheduler = (over: Omit<Partial<SchedulerPanel>, "draining"> & { draining?: unknown } = {}): SchedulerPanel =>
+  ({
+  draining: false,
   max_concurrency: 4,
   max_queue_depth: 16,
   queue_timeout_s: 30,
@@ -91,7 +93,7 @@ const scheduler = (over: Partial<SchedulerPanel> = {}): SchedulerPanel => ({
   wait_ms_max: 80,
   wait_ms_last: 5,
   ...over,
-});
+  }) as SchedulerPanel;
 
 const snapshot = (sch: SchedulerPanel | null = scheduler()): MetricsSnapshot =>
   ({
@@ -240,10 +242,98 @@ describe("status derivation", () => {
       tone: "unknown",
       summary: "Not reported by this engine",
     });
-    expect(node(obs({ system: ready(sysInfo({ draining: true })) }), "scheduler")).toMatchObject({
-      tone: "attention",
-      summary: "Draining · 2/4 in use · 3 queued",
-    });
+  });
+
+  // R1: drain state comes from the same live snapshot as the counters.
+  const live = (over: Omit<Partial<SchedulerPanel>, "draining"> & { draining?: unknown }, fresh = true) =>
+    ({ snapshot: snapshot(scheduler(over)), status: fresh ? "live" : "down", fresh }) as Observations["metrics"];
+
+  it("reports draining from the live snapshot even when the system summary says otherwise", () => {
+    const o = obs({ system: ready(sysInfo({ draining: false })), metrics: live({ draining: true }) });
+    expect(node(o, "scheduler")).toMatchObject({ tone: "attention", summary: "Draining · 2/4 in use · 3 queued" });
+  });
+
+  it("follows the live snapshot when an older system summary still says draining", () => {
+    const o = obs({ system: ready(sysInfo({ draining: true })), metrics: live({ draining: false }) });
+    expect(node(o, "scheduler")).toMatchObject({ tone: "ok", summary: "2/4 in use · 3 queued" });
+  });
+
+  it("does not need the system summary to report the scheduler", () => {
+    for (const system of [loading<SystemInfo>(), failed<SystemInfo>()]) {
+      expect(node(obs({ system, metrics: live({ draining: true }) }), "scheduler").tone).toBe("attention");
+      expect(node(obs({ system, metrics: live({ draining: false }) }), "scheduler").tone).toBe("ok");
+    }
+  });
+
+  it("treats a missing or malformed drain field as unknown, not as accepting requests", () => {
+    for (const draining of [undefined, "no", 0, null]) {
+      const s = node(obs({ metrics: live({ draining }) }), "scheduler");
+      expect(s.tone, String(draining)).toBe("unknown");
+      expect(s.summary).toBe("2/4 in use · 3 queued · drain state unknown");
+    }
+  });
+
+  it("keeps a lost snapshot's drain state, marked stale", () => {
+    const s = node(obs({ metrics: live({ draining: true }, false) }), "scheduler");
+    expect(s).toMatchObject({ tone: "attention", stale: true });
+  });
+
+  // R2: facts from different sources keep their own freshness.
+  it("marks retained adapter facts stale when the backend list fails, keeping readiness", () => {
+    const o = obs({ backends: failed({ backends: [backend()], ready: true, count: 1 }) });
+    const b = node(o, "backend");
+    expect(b).toMatchObject({ tone: "ok", summary: "Serving tiny", stale: true });
+    expect(b.facts[0]).toBe("Configured adapters: llamacpp (local) (from an earlier read; the latest failed)");
+  });
+
+  it("says adapters are not observed when the backend list never loaded", () => {
+    expect(node(obs({ backends: failed() }), "backend").facts[0]).toBe(
+      "Configured adapters: not observed (GET /admin/backends could not be read)",
+    );
+    expect(node(obs({ backends: loading() }), "backend").facts[0]).toBe("Configured adapters: loading…");
+    expect(node(obs({ backends: ready({ backends: [], ready: false, count: 0 }) }), "backend").facts[0]).toBe(
+      "Configured adapters: none reported",
+    );
+  });
+
+  it("marks the backend stale when retained readiness is stale, even with a fresh backend list", () => {
+    expect(node(obs({ system: failed(sysInfo()) }), "backend")).toMatchObject({ tone: "ok", stale: true });
+    expect(node(obs(), "backend").stale).toBe(false);
+  });
+
+  it("keeps webhook dead-letter facts when the delivery setting is not observed", () => {
+    const dead: Alert = { severity: "warning", kind: "webhook_dead_letters", message: "2 webhook deliveries are dead-lettered", target_type: "webhook_deliveries", target_id: null };
+    const w = node(obs({ system: failed(), alerts: ready({ alerts: [dead] }) }), "webhooks");
+    expect(w.tone).toBe("unknown");
+    expect(w.facts).toContain("2 webhook deliveries are dead-lettered");
+  });
+
+  // R3: missing readiness checks are unknown, not failures.
+  const withChecks = (checks: Record<string, string>) => {
+    const s = sysInfo();
+    s.readiness.checks = checks;
+    return obs({ system: ready(s) });
+  };
+
+  it.each([
+    [{ database: "ok", migrations: "applied" }, "ok", "SQLite · database ok · migrations applied"],
+    [{}, "unknown", "SQLite · database not reported · migrations not reported"],
+    [{ database: "ok" }, "unknown", "SQLite · database ok · migrations not reported"],
+    [{ migrations: "applied" }, "unknown", "SQLite · database not reported · migrations applied"],
+    [{ database: "error: OperationalError", migrations: "applied" }, "attention", "SQLite · database error: OperationalError · migrations applied"],
+    [{ database: "ok", migrations: "pending" }, "attention", "SQLite · database ok · migrations pending"],
+    [{ database: "error: OperationalError" }, "attention", "SQLite · database error: OperationalError · migrations not reported"],
+    [{ database: "fine", migrations: "applied" }, "unknown", "SQLite · database fine (unrecognized) · migrations applied"],
+  ])("classifies store checks %j as %s", (checks, tone, summary) => {
+    const s = node(withChecks(checks), "store");
+    expect(s.tone).toBe(tone);
+    expect(s.summary).toBe(summary);
+  });
+
+  it("explains which store check is missing next to a known failure", () => {
+    const s = node(withChecks({ database: "error: OperationalError" }), "store");
+    expect(s.facts).toContain("The database check failed: error: OperationalError");
+    expect(s.facts).toContain("The migrations check was not reported, so its state is unknown");
   });
 
   it("does not present a lost metrics connection as current", () => {
