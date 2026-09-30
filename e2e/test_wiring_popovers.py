@@ -264,9 +264,17 @@ def test_keyboard_reaches_scroll_content_and_docs_link(page: Page, engine: Engin
         "el => el.scrollTop > 0 && el.scrollTop + el.clientHeight >= el.scrollHeight - 1",
         arg=pop.element_handle(),
     )
-    # Tab reaches the docs link, which stays inside the visible panel.
-    page.keyboard.press("Tab")
+    # Tab passes the subsystem links ("open in Architecture", A3c) without
+    # leaving the panel, and reaches the docs link, which stays inside the
+    # visible panel.
     link = pop.get_by_role("link", name="README: model lifecycle (opens in a new tab)")
+    for _ in range(12):
+        page.keyboard.press("Tab")
+        if link.evaluate("el => el === document.activeElement"):
+            break
+        assert pop.evaluate("el => el.contains(document.activeElement)"), "Tab left the panel"
+        name = page.evaluate("() => document.activeElement.textContent")
+        assert "(open in Architecture)" in name, f"unexpected stop before the docs link: {name}"
     expect(link).to_be_focused()
     expect(link).to_have_attribute("href", f"{DOCS_BASE}README.md#model-lifecycle-block-6")
     expect(link).to_have_attribute("target", "_blank")

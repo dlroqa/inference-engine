@@ -195,7 +195,8 @@ describe("Architecture view", () => {
     unmount();
     await act(async () => d.reject(new ApiError("invalid or revoked key", 401)));
     await settle();
-    expect(reporter).not.toHaveBeenCalled();
+    // The live-metrics poll reports its own (non-auth) errors; the late 401 never arrives.
+    expect(reporter).not.toHaveBeenCalledWith(expect.objectContaining({ status: 401 }));
   });
 
   it("reports auth loss from its own current read", async () => {
