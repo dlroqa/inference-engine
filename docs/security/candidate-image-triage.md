@@ -4,7 +4,18 @@ Status: **initial triage, 2026-09-27; revised 2026-09-28 after review;
 reachability evidence added and corrected 2026-09-29** (see §3a, §3b, §4a, §6).
 This is not a vulnerability-free claim and not production-release approval.
 
-**Current state (2026-09-29):** no urgent blocker has been identified in the
+**Current state (2026-10-20): the Critical-only release gate fails.** A fresh
+non-publishing scan of an unchanged image (same `python:3.12-slim@sha256:2f17fc04…`
+base, CPython 3.12.14) with the 2026-10-20 scanner database matches one
+**Critical**, CVE-2026-19445 in the CPython interpreter (fixed in 3.12.15), plus
+more Highs than in September (§4b). This is a **release blocker** until the image
+is rebuilt on a fixed CPython and re-qualified (F5). No exception was added and
+the gate is unchanged. No urgent exposure has been identified in the engine's own
+code for this advisory (it affects TLS servers using `sni_callback`; the engine
+does not terminate TLS), but third-party use is unassessed. F6's retention after
+a failing gate is now exercised by that real run.
+
+**Earlier state (2026-09-29):** no urgent blocker has been identified in the
 assessed findings; unresolved investigations may change that decision (§4a).
 Current dispositions are in §3a, and which of them the user has accepted is in
 §3b (none yet). The §3 table and §4 are the dated 2026-09-28 record, and §3a
@@ -421,6 +432,36 @@ decision. The decision and any risk acceptance are the user's.
   that the follow-ups are complete. The passing gate is a policy result (no
   unexcepted Critical), not an exploitability assessment.
 
+## 4b. Re-scan, 2026-10-20 (dated scanner record, not a vulnerability count)
+
+| Field | Value |
+| --- | --- |
+| Run | Release dry run [39514015939](https://github.com/dlroqa/inference-engine/actions/runs/39514015939) attempt 1, `pull_request` on PR #50; checkout `13994fb` (merge of `b02fc06` into `main` `3cda5aa`). The PR changes no dependency or image input |
+| Image | manifest `sha256:3b472045…103a`, config `sha256:f1efd5ef…05df` (the image the E2E ran: 53 PASS / 0 FAIL) |
+| Scanner | grype 0.118.0, DB schema v6.1.10 built 2026-10-20T00:32:16Z |
+| Matches | Critical 1 · High 70 · Medium 79 · Low 24 · Negligible 47 (Sept 29: 0 / 50 / 64 / 12 / 45) |
+| Unique advisories | Critical 1 · High 21 · Medium 44 · Low 11 · Negligible 26 (103 in all; matches count each affected package) |
+| Gate | **fails** (one unexcepted Critical); publishing skipped as on every dry run |
+| Evidence | `candidate-scan-evidence` artifact 12306767881, kept after the failing gate: SBOM, full grype JSON, identity, `SHA256SUMS` (downloaded, all OK; identity names `13994fb` / `b02fc06` and the config digest above). Expires 2026-11-03. The September dry-run artifacts have expired |
+
+**CVE-2026-19445 (Critical, G1 CPython 3.12.14; fixed in 3.10.22, 3.11.17,
+3.12.15, 3.13.16, 3.14.8).** A remote TLS client can crash a TLS *server*, or
+make it call through a freed pointer, when the server's `sni_callback` assigns a
+different context to `SSLSocket.context` and nothing else keeps the original
+`SSLContext` alive. TLS clients are not affected.
+
+- Static check of `engine/`, `scripts/`, `deploy/` and the Dockerfile on `main`
+  `3cda5aa`: no `ssl`/`SSLContext`/`sni_callback` use. The engine serves plain
+  HTTP and documents that it does not terminate TLS (`docs/deployment.md`).
+- **Unassessed:** third-party packages in the image (uvicorn, httpx, grpcio, pip
+  and others), and any deployment that runs the engine with its own TLS contrary
+  to the guidance.
+- Proposed status (not accepted): not reachable through the engine's own code.
+  This does not change the gate: it still fails, and the fix path is F5.
+
+The other new matches since September were not triaged individually here; they
+need the F5 re-scan comparison on the rebuilt image.
+
 ## 5. Follow-ups
 
 | ID | Next bounded work | Proposed owner (not yet accepted) | Status | Depends on | Required evidence / review point |
@@ -429,9 +470,9 @@ decision. The decision and any risk acceptance are the user's.
 | F2 | Evaluate removing pip from the runtime layer after `pip check`, or hash-locking a patched pip | Claude after authorization; user decides | not started | user authorization | Separate image change; package inventory, re-scan, Release E2E; next base refresh |
 | F3 | Bounded Actions investigation: third-party use of `imaplib`/`poplib`/`http.cookies`/`zipfile`/`stringprep`; llama-cpp-python disk-cache defaults; SQLite Session exposure (G12) and the two SQLite Negligibles | Claude after authorization; user reviews | **partially investigated** (§3a, PR #47 merged as `c2e2278`, audit 36523922216). Open: base64/WebSocket, model-download IDNA (webhook IDNA closed in source by #48), compiled extensions, unexercised request paths; G3/G12 proposals await the user | none | Explicit reachability evidence plus remaining unknowns; before release review |
 | F4a | Native/CPython reachability audit of the affected zlib (`gzwrite`/`gz_vacate`, `crc32_combine64`) and glibc functions in the image's shared objects | Claude after authorization; user reviews | **partially investigated** (§3a, PR #47 merged as `c2e2278`, audit 36523922216). Open: runtime-resolved/intra-library calls, stripped or static copies, `libstdc++` iconv, binary-to-source identity; G4 proposal awaits the user | none (does not wait for a package fix) | Source/package-specific evidence; before release review |
-| F4b | Monitor for a fixed Debian zlib package (bug #1146895) and the glibc/util-linux items | **unassigned**: user/operator proposed, not accepted | **open; monitoring not scheduled** (no cron, reminder or account automation exists or was created). Proposed cadence: a weekly tracker check (last rechecked 2026-09-29: trixie still *vulnerable*), plus a re-dispatch of the image audit at each base refresh. **Next review decision** (proposed for 2026-10-06): the owner rechecks the tracker and either records "still vulnerable" or starts F5-style rebuild qualification. **Evidence location:** a dated entry in §6 of this file (tracker state and link), plus any audit run under `docs/security/evidence/`. It is not closed by an internal disposition. Contacting Debian needs explicit authorization | Debian | Weekly while the zlib High is unfixed |
-| F5 | When a newer CPython 3.12 or `python:3.12-slim` digest exists, verify each G1 advisory against its release notes, re-scan and compare | user/operator (proposed); Claude can prepare | waiting on upstream | a new release/digest | Advisory-by-advisory fix list, scan diff, compatibility + Release gates |
-| F6 | Retain SBOM + full grype JSON as a bounded-retention artifact on non-publishing Release runs | Claude after authorization; user decides | **integrated**: #46 merged 2026-09-29 as `84b6817` (merge commit; parent `6c183e9`); main CI [36612186495](https://github.com/dlroqa/inference-engine/actions/runs/36612186495) green (push, attempt 1, 11/11 jobs). PR qualification on `main`: CI 36567830306 and Release 36567830756 (checkout `3dc8a8a`; publish skipped; 53 PASS/0 FAIL; artifact 11032663606 checksums verified). Earlier: dry run 36514562548; combined F1+F6 stack 36523517754. **Limitation:** retention after a *failing* Critical gate is configured and structurally tested but has not been exercised by an actual failing-gate run. Nothing is deployed by this | user authorization | Scoped workflow PR (minimal permissions, publication guard unchanged) + a dry run proving retention |
+| F4b | Monitor for a fixed Debian zlib package (bug #1146895) and the glibc/util-linux items | **unassigned**: user/operator proposed, not accepted | **open; monitoring not scheduled** (no cron, reminder or account automation exists or was created). Proposed cadence: a weekly tracker check (last rechecked 2026-09-29: trixie still *vulnerable*), plus a re-dispatch of the image audit at each base refresh. **Next review decision** (proposed for 2026-10-06): the owner rechecks the tracker and either records "still vulnerable" or starts F5-style rebuild qualification. **That date passed with no recorded review** (as of 2026-10-20); the item stays open and unscheduled. **Evidence location:** a dated entry in §6 of this file (tracker state and link), plus any audit run under `docs/security/evidence/`. It is not closed by an internal disposition. Contacting Debian needs explicit authorization | Debian | Weekly while the zlib High is unfixed |
+| F5 | When a newer CPython 3.12 or `python:3.12-slim` digest exists, verify each G1 advisory against its release notes, re-scan and compare | user/operator (proposed); Claude can prepare | **actionable and release-blocking** (2026-10-20): CVE-2026-19445 (Critical) is fixed in CPython 3.12.15. Whether a `python:3.12-slim` digest with 3.12.15 exists has not been verified. A rebuild is a separately authorized image change | a fixed base digest | Advisory-by-advisory fix list, scan diff against §4b, compatibility + Release gates (Critical gate passing on the rebuilt image) |
+| F6 | Retain SBOM + full grype JSON as a bounded-retention artifact on non-publishing Release runs | Claude after authorization; user decides | **integrated**: #46 merged 2026-09-29 as `84b6817` (merge commit; parent `6c183e9`); main CI [36612186495](https://github.com/dlroqa/inference-engine/actions/runs/36612186495) green (push, attempt 1, 11/11 jobs). PR qualification on `main`: CI 36567830306 and Release 36567830756 (checkout `3dc8a8a`; publish skipped; 53 PASS/0 FAIL; artifact 11032663606 checksums verified). Earlier: dry run 36514562548; combined F1+F6 stack 36523517754. **Failing-gate retention exercised** (2026-10-20) by a real, non-synthetic gate failure: Release 39514015939 failed its Critical gate, and the evidence steps still recorded and kept `candidate-scan-evidence` (artifact 12306767881, checksums verified, §4b). Nothing is deployed by this | user authorization | Scoped workflow PR (minimal permissions, publication guard unchanged) + a dry run proving retention |
 
 ## 6. Revision log
 
@@ -485,6 +526,13 @@ decision. The decision and any risk acceptance are the user's.
   next review decision and evidence location; monitoring is still not
   scheduled. Findings, dispositions, run identities and the gate are unchanged;
   no disposition has been accepted.
+
+- 2026-10-20 (re-scan during the A5 closure, PR #50): §4b added. The Critical
+  gate now fails on CVE-2026-19445 (CPython 3.12.14) with the 2026-10-20 DB on
+  an unchanged image: a release blocker until F5. Proposed (not accepted): not
+  reachable through the engine's own code. F5 is actionable; F6's failing-gate
+  retention is exercised; the proposed F4b review date passed unrecorded. No
+  exception, suppression or gate change; no disposition accepted.
 
 ## Appendix: every advisory in the fresh scan
 
