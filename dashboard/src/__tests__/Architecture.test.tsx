@@ -146,6 +146,15 @@ describe("Architecture view", () => {
     expect(listItem("Client events")).toHaveTextContent(/No operator control/);
   });
 
+  it("shows empty sources as empty, not unknown (A5)", async () => {
+    vi.mocked(api.backends).mockResolvedValue(pool([]));
+    vi.mocked(api.listModels).mockResolvedValue({ models: [] });
+    render(<Harness />);
+    await waitFor(() => expect(listItem("Model registry")).toHaveTextContent("Configuration: No models registered"));
+    expect(listItem("Backend pool")).toHaveTextContent("Needs attention: No backends reported");
+    expect(listItem("Backend")).toHaveTextContent("Configured adapters: none reported");
+  });
+
   it("shows loading, then the value, without counting what was not read", async () => {
     const d = deferred<BackendsPage>();
     vi.mocked(api.backends).mockReturnValue(d.promise);

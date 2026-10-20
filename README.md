@@ -6,16 +6,26 @@ ordered **vertical slices** (Blocks 0–12) per
 Each block must be deployable, testable, documented, and useful before the next
 begins.
 
-> **Current status: Block 11 — Commercial controls (sub-slice 1: Stripe billing lifecycle; sub-slice 2: outbound Standard Webhooks; sub-slice 4: client account API; sub-slice 5: client event stream; sub-slice 6: clients / live-monitoring UI). Block 10 remote scale-out complete (sub-slices 1–7: adapters, registry, affinity, auto-models, cost metrics, spillover, gRPC).**
+> **Current status (on `main`, unreleased; latest release v0.1.1):** the v0.2.0
+> wired operator UI (Part A of the v0.2.0 plan) is merged: every control explains
+> its backend call, plus System, Backends & routing, billing and webhook
+> administration, and an Architecture view. Blocks 0–11 are shipped. Block 12
+> (advanced capabilities, each behind its own RFC): dual-engine routing slices
+> 12.0–12.3 are on `main`, with measured workload routing off by default and its
+> enablement waiting on target-hardware benchmarks; 12.4–12.5 are deferred.
 > Shipped so far: local GGUF inference (Block 1); **OpenAI** `/v1/chat/completions`
 > + **Anthropic** `/v1/messages` with streaming, sampling controls, and
 > capability-gated structured output (Blocks 2, 8); a secure gateway — API keys,
 > request/rate/concurrency limits, and a compute-unit quota (Block 3); operability
 > telemetry + an operator dashboard (Blocks 4–5); model lifecycle with
 > SHA-256-recorded downloads, checked against an expected hash when one is given (Block 6); controlled concurrency with admission
-> control (Block 7); and a Docker deployment path with graceful drain, readiness
-> gating, backup/restore (9a), and a security hardening baseline — trusted-network/IP policy, egress + feature kill switches, and a tamper-evident audit log (9b); and **remote vLLM + SGLang backends** — proxy generation to an external OpenAI-compatible server (one shared adapter core) with explicit model mapping, secure credentials, timeouts, and safe pre-stream-only failover, plus a **backend registry** that routes each request to the least-busy healthy backend across a local+remote pool with a status API (Block 10, sub-slices 1–3). **Not yet:** additional payment providers (Block 11.3, deferred until a business
-> need is confirmed) and advanced safety tooling (Block 12).
+> control (Block 7); a Docker deployment path with graceful drain, readiness
+> gating, backup/restore (9a), and a security hardening baseline — trusted-network/IP policy, egress + feature kill switches, and a tamper-evident audit log (9b); **remote vLLM + SGLang backends** behind one shared adapter core, a health-aware **backend registry** across a local+remote pool, prefix affinity, virtual auto-models with route/cascade policies, per-route cost metrics, external-provider spillover, and a gRPC edge (Block 10); and Stripe billing, outbound Standard Webhooks, the client account API and event stream, and the clients/monitoring UI (Block 11).
+> **Not yet:** additional payment providers (Block 11.3, deferred until a business
+> need is confirmed), the remaining Block 12 items, and the native six-target
+> source install (Part B). Remote adapters are tested in CI against llama.cpp's
+> OpenAI-compatible server, not on GPUs; see the
+> [support matrix](docs/architecture.md#support-matrix).
 
 **Deploy a release:** the supported server deployment is the prebuilt CPU image
 `ghcr.io/dlroqa/inference-engine@sha256:<digest>` (Linux x86-64 with AVX2) with
@@ -148,9 +158,9 @@ serves `remote_model`. Connect/read timeouts are bounded. A transient failure
 **before the first token** is retried up to `remote_max_prestream_retries`; once
 any token has reached the client an upstream error ends the stream honestly —
 never a silent re-route. Set `allow_remote_backends = false` to refuse outbound
-inference. Structured output on remote, **Triton** (deferred until a real multi-model
-workload justifies it), and virtual auto-models are later Block 10 sub-slices. See
-[docs/backends.md](docs/backends.md).
+inference. Structured output on remote backends and **Triton** (deferred until a
+real multi-model workload justifies it) are not supported; virtual auto-models and
+routing policies are described below. See [docs/backends.md](docs/backends.md).
 
 **Multiple backends & routing (sub-slices 3–4):** add `[[remote_workers]]` to run
 several backends (local + remote) at once; the engine routes each request to the
@@ -345,10 +355,10 @@ Example:
 
 ```bash
 curl -s http://127.0.0.1:8000/healthz
-# {"status":"ok","version":"0.1.0"}
+# {"status":"ok","version":"0.1.1"}
 
 curl -s http://127.0.0.1:8000/readyz
-# {"status":"ready","version":"0.1.0","checks":{"database":"ok","migrations":"applied"},
+# {"status":"ready","version":"0.1.1","checks":{"database":"ok","migrations":"applied"},
 #  "inference":{"available":true,"model_id":"my-model","state":"ready"}}
 ```
 
@@ -455,7 +465,7 @@ summary.
 ## Operator dashboard (Block 5)
 
 A small React/Vite single-page app — the local operator UI — is served by the
-engine at **`/dashboard`** (the root path redirects there). Nine views, all driven
+engine at **`/dashboard`** (the root path redirects there). Ten views, all driven
 by the typed admin API and the Block 4 WebSocket feeds:
 
 - **Overview** — health, loaded model + state, uptime, request/token counters
@@ -464,7 +474,8 @@ by the typed admin API and the Block 4 WebSocket feeds:
   metrics stream reconnects automatically and falls back to REST polling of
   `/metrics`; the connection state is always shown.
 - **Models** — the model **registry**: download from Hugging Face (repo + file) or
-  a direct URL, or import a local GGUF; each add is **SHA-256 verified** with
+  a direct URL, or import a local GGUF; each add **records its SHA-256** (a
+  download is checked against an expected hash only when one is given), with
   resumable, cancellable downloads and a live progress bar. Rows show probed GGUF
   metadata (arch · quant · size), a **host-compatibility** badge, and safe
   **load / unload / delete / set-active** actions.
@@ -476,9 +487,12 @@ by the typed admin API and the Block 4 WebSocket feeds:
   unhealthy backends), an **error-taxonomy** breakdown, per-**key attribution**
   (requests/tokens/CU/errors over a 5h or weekly window), and the live feed with a
   one-click **cross-link into Logs** by request id.
-- **Clients** (Block 11.6) — commercial clients with status and aggregated usage;
-  a row opens a detail panel with the client's keys, webhook endpoints, and recent
-  deliveries.
+- **Clients** (Block 11.6; administration on `main` for v0.2.0) — commercial clients with
+  status and aggregated usage, and a **Plans** tab. Create clients and plans
+  (allowed models: all, only these, or none; every save is confirmed), a client
+  key shown once, usage reconciliation, webhook endpoints (add with a secret shown
+  once, disable/enable, rotate with the grace period shown, delete) and deliveries
+  (status filter, replay). Every write is audited.
 - **Security** (Block 11.6) — the tamper-evident operator/security **audit log**
   with an on-demand hash-chain **integrity check**.
 - **System** — build (version, commit, build time), readiness with each check and
@@ -492,6 +506,11 @@ by the typed admin API and the Block 4 WebSocket feeds:
   run** that sends only the model name and required features (never a prompt, so
   prefix affinity is not simulated; nothing is reserved or generated). Routing is
   configured in `config.toml`; the view is read-only.
+- **Architecture** — the request path (API edges → gateway → scheduler → router →
+  backend pool → backend) and the side systems, each with a live status as icon
+  plus text, its sources with their own observation times, and a link to the view
+  that holds its controls. Read-only; deep links `#/architecture?focus=<node>`. See
+  [docs/architecture.md](docs/architecture.md).
 
 Every control explains its backend call through a "How this works" hint. The
 generated **UI → subsystem → endpoint** table, the model details drawer, and the

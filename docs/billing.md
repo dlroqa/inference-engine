@@ -106,9 +106,15 @@ gateway enforces against.
   (on cancellation) is terminal and sets `revoked_at`, so the Block 3 verify path
   rejects the token too.
 
-## Deferred (later Block 11 sub-slices)
+## Related, and deferred
 
-Outbound usage events / Standard Webhooks (11.2), additional providers (11.3),
-the client-scoped `/client/*` contract + OpenAPI (11.4), client SSE (11.5), and
-the Clients/Live-Monitoring UI (11.6). See
+The other Block 11 sub-slices are shipped: outbound Standard Webhooks (11.2,
+[Webhooks](webhooks.md)), the client-scoped `/client/*` contract and OpenAPI
+(11.4, [Client API](client-api.md)), client SSE (11.5,
+[Client events](client-events.md)), and the Clients / live-monitoring UI (11.6,
+[Monitoring](monitoring.md); billing and webhook administration in the dashboard
+is on `main` for v0.2.0, unreleased: [Dashboard](dashboard.md#clients-billing-and-webhook-administration)).
+
+**Deferred:** additional payment providers (11.3), until a concrete business need
+is confirmed. Stripe is the only provider. See
 [`BLOCK_11_COMMERCIAL_CONTROLS_INSTRUCTIONS.md`](../BLOCK_11_COMMERCIAL_CONTROLS_INSTRUCTIONS.md).
