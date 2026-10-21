@@ -10,6 +10,17 @@ release notes and refuses to publish without it (see `docs/releasing.md`).
 
 ### Security
 
+- The image's Python base is repinned to `python:3.12-slim@sha256:2259debd…`
+  (CPython 3.12.15, Debian 13 trixie; previously `2f17fc04…`, CPython 3.12.14)
+  for CVE-2026-19445, a Critical use-after-free in `ssl` server-side
+  `sni_callback` context switching, which failed the release gate. Per the 3.12.15
+  release notes it also fixes CVE-2026-19553, CVE-2026-82049, CVE-2026-15310,
+  CVE-2026-19672, CVE-2026-15806, CVE-2026-17084 and CVE-2026-87910. Python minor
+  version, distribution and dependency locks are unchanged. The release
+  candidate job now records the interpreter the image ships and fails unless it
+  is CPython 3.12. Other scanner findings remain; see
+  `docs/security/candidate-image-triage.md`.
+
 - Operator surfaces (`/admin/*`, `/metrics`, `/logs`, `/diagnostics`, `/ws/*`)
   now reject keys owned by a billing client with `403 operator_role_required`,
   and evaluate presented credentials before the loopback exception: invalid or

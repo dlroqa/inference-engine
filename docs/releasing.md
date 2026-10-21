@@ -86,7 +86,9 @@ Nothing is rebuilt after testing: every later step references the same digest.
 
 - **Base images** — `node:22-slim` and `python:3.12-slim` pinned by `@sha256:` in
   the `Dockerfile`. To bump, resolve the new index digest and update both `FROM`
-  lines for Python together.
+  lines for Python together. The candidate job prints the interpreter the image
+  actually ships (`python -VV`, OS release) and fails unless it is CPython 3.12,
+  the minor version the locks below are compiled for.
 - **Runtime Python dependencies** — `requirements/release-cpu.txt`, hash-locked,
   including the `llama-cpp-python` CPU wheel (the `manylinux2014` build from the
   CPU wheel index; the index's plain `linux_x86_64` wheels for some versions link
@@ -149,7 +151,7 @@ digests, run URL and attempt, grype version and vulnerability-database identity)
 The same identity and checksums are printed in the run summary, so a downloaded
 copy can be checked against it. The steps are configured to keep the files
 when the Critical gate fails as well; unit tests check that configuration,
-but no failing-gate run has exercised it yet.
+and the failing gate of dry run 39514015939 (2026-10-20) exercised it.
 They are not kept when the run was cancelled or the scan itself did not
 complete. Retrieve them with
 `gh run download <run-id> -n candidate-scan-evidence`. The repository is public,

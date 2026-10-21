@@ -162,6 +162,13 @@ jobs:
           # Non-root engine user.
           test "$(docker image inspect -f '{{.Config.User}}' "$CANDIDATE")" = "engine"
           test "$(run id -u)" = "10001"
+          # The interpreter the base digest actually ships (the scan matches on
+          # it), and the minor version the locks are compiled for.
+          PYVER=$(run python -c 'import platform; print(platform.python_version())')
+          OS=$(run sh -c '. /etc/os-release && echo "$PRETTY_NAME"')
+          echo "interpreter: $(run python -VV) on $OS"
+          case "$PYVER" in 3.12.*) ;; *) echo "::error::interpreter $PYVER is not 3.12"; exit 1;; esac
+          echo "Candidate interpreter: CPython \`$PYVER\` on $OS" >> "$GITHUB_STEP_SUMMARY"
           # CLI build info = tag version + commit + build date.
           INFO=$(run inference-engine version)
           echo "version: $INFO"
@@ -288,7 +295,7 @@ jobs:
         # F6 (docs/security/candidate-image-triage.md): a non-publishing run keeps
         # its SBOM and full grype report for triage. It is configured to run even
         # when the gate fails, as that is when the report matters most (checked by
-        # tests; not yet exercised by a failing run). Publishing runs attach
+        # tests; exercised by failing-gate run 39514015939). Publishing runs attach
         # the same files to the GitHub release instead (publish job).
         if: ${{ !cancelled() && needs.validate.outputs.publish != 'true' && steps.scan.outcome == 'success' }}
         run: |
