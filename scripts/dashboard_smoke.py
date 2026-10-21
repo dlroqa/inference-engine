@@ -261,6 +261,45 @@ def validate_routes(body: Any, *, model: str | None) -> list[str]:
     return problems
 
 
+# The lists the billing administration (A3b) and Architecture (A3c) views read.
+# Each body is {"<key>": [objects]}; only the shape is checked, never printed.
+ADMIN_LISTS = (
+    ("plans list", "/admin/billing/plans", "plans"),
+    ("clients list", "/admin/billing/clients", "clients"),
+    ("webhook endpoints list", "/admin/billing/webhooks/endpoints", "endpoints"),
+    ("webhook deliveries list", "/admin/billing/webhooks/deliveries?limit=5", "deliveries"),
+    ("alerts", "/admin/alerts", "alerts"),
+    ("model registry", "/admin/models", "models"),
+)
+
+
+def validate_list(body: Any, key: str) -> list[str]:
+    """Problems with a ``{"<key>": [objects]}`` list body."""
+    if not isinstance(body, dict) or key not in body:
+        return [f"no {key!r} list"]
+    rows = body[key]
+    if not isinstance(rows, list):
+        return [f"{key!r} is not a list"]
+    if not all(isinstance(r, dict) for r in rows):
+        return [f"a {key!r} entry is not an object"]
+    return []
+
+
+def validate_scheduler(overview: Any) -> list[str]:
+    """The scheduler snapshot the Architecture view reads, drain state included."""
+    metrics = overview.get("metrics") if isinstance(overview, dict) else None
+    sch = metrics.get("scheduler") if isinstance(metrics, dict) else None
+    if not isinstance(sch, dict):
+        return ["overview metrics carry no scheduler snapshot"]
+    problems = []
+    if not isinstance(sch.get("draining"), bool):
+        problems.append("scheduler snapshot has no boolean draining")
+    for key in ("in_use", "max_concurrency", "queue_depth"):
+        if not _is_count(sch.get(key)):
+            problems.append(f"scheduler {key} is not a count")
+    return problems
+
+
 def validate_plan(body: Any, *, model: str, require_choice: bool) -> list[str]:
     """Problems with a ``POST /admin/route/plan`` body for ``model``."""
     if not isinstance(body, dict) or set(body) != PLAN_KEYS:
@@ -431,6 +470,15 @@ class Smoke:
                 status == 403 and code == "diagnostics_disabled",
                 f"status={status}",
             )
+
+        # 8. Billing administration (A3b) and Architecture (A3c) reads.
+        problems = validate_scheduler(ov1)
+        self.check("scheduler snapshot (drain state)", not problems, "; ".join(problems))
+        for name, path, key in ADMIN_LISTS:
+            status, body = self._req("GET", path)
+            problems = validate_list(body, key) if status == 200 else []
+            detail = "; ".join(problems) or f"status={status}"
+            self.check(name, status == 200 and not problems, detail)
 
         print()
         if self.failures:

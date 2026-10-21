@@ -193,3 +193,44 @@ def test_smoke_expects_a_refusal_when_diagnostics_are_off(tmp_path: Path, capsys
     out = capsys.readouterr().out
     assert rc == 0, out
     assert "[PASS] diagnostics refused (disabled)" in out
+
+
+# --- A3b/A3c: billing administration and Architecture reads -------------------
+
+
+def test_list_and_scheduler_validators_accept_the_real_contracts(tmp_path: Path) -> None:
+    with TestClient(_loaded_app(tmp_path), client=LOOPBACK) as c:
+        overview = c.get("/admin/overview").json()
+        bodies = {key: c.get(path).json() for _, path, key in smoke.ADMIN_LISTS}
+    assert smoke.validate_scheduler(overview) == []
+    for key, body in bodies.items():
+        assert smoke.validate_list(body, key) == [], key
+
+
+def test_list_and_scheduler_validators_reject_malformed_bodies() -> None:
+    assert smoke.validate_list([], "plans") == ["no 'plans' list"]
+    assert smoke.validate_list({"plans": {}}, "plans") == ["'plans' is not a list"]
+    assert smoke.validate_list({"plans": [1]}, "plans") == ["a 'plans' entry is not an object"]
+    assert smoke.validate_scheduler({"metrics": {"scheduler": None}}) == [
+        "overview metrics carry no scheduler snapshot"
+    ]
+    sch = {"in_use": 0, "max_concurrency": 1, "queue_depth": 0}
+    assert smoke.validate_scheduler({"metrics": {"scheduler": sch}}) == [
+        "scheduler snapshot has no boolean draining"
+    ]
+    bad = {**sch, "draining": False, "in_use": -1}
+    assert smoke.validate_scheduler({"metrics": {"scheduler": bad}}) == [
+        "scheduler in_use is not a count"
+    ]
+
+
+def test_real_model_mode_checks_the_admin_and_architecture_reads(
+    tmp_path: Path, capsys: Any
+) -> None:
+    with running_app(_loaded_app(tmp_path)) as base:
+        rc = smoke.Smoke(base, None).run(skip_generation=False)
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "[PASS] scheduler snapshot (drain state)" in out
+    for name, _, _ in smoke.ADMIN_LISTS:
+        assert f"[PASS] {name}" in out, out

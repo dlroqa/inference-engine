@@ -24,7 +24,7 @@ COPY engine/ /app/engine/
 RUN npm run build
 
 # --- 2. Wheel build ---------------------------------------------------------
-FROM python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9 AS build
+FROM python:3.12-slim@sha256:2259debdc6af85626058a15a7bf44ad6a68b8c98c9ae82a02cf5cdb92f096d47 AS build
 ENV PIP_RETRIES=5 PIP_DEFAULT_TIMEOUT=60
 WORKDIR /src
 # Wheel-build tooling (pip, build, setuptools, wheel + deps) is hash-locked like
@@ -42,7 +42,7 @@ RUN python -m build --no-isolation --wheel --outdir /dist \
          --expect-version "$(python scripts/release.py check-version)"
 
 # --- 3. Runtime -------------------------------------------------------------
-FROM python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9 AS runtime
+FROM python:3.12-slim@sha256:2259debdc6af85626058a15a7bf44ad6a68b8c98c9ae82a02cf5cdb92f096d47 AS runtime
 ARG IE_VERSION=""
 ARG IE_BUILD_SHA=""
 ARG IE_BUILD_DATE=""

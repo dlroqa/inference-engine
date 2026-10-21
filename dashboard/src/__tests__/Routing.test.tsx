@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Routing } from "../views/Routing";
@@ -167,6 +167,28 @@ describe("Backends & Routing view", () => {
     expect(await screen.findByText("No backends are configured in the pool.")).toBeInTheDocument();
     expect(await screen.findByRole("alert")).toHaveTextContent("engine restarting");
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+
+  it("shows loading for both panels until their reads finish (A5)", async () => {
+    const pending = (): Promise<never> => new Promise<never>(() => {});
+    vi.spyOn(api, "system").mockResolvedValue(system());
+    vi.spyOn(api, "backends").mockReturnValue(pending());
+    vi.spyOn(api, "routes").mockReturnValue(pending());
+    renderRouting();
+    await waitFor(() => expect(screen.getAllByRole("status", { name: "Loading" }).length).toBeGreaterThanOrEqual(2));
+    expect(screen.queryByText("No backends are configured in the pool.")).toBeNull();
+    expect(screen.queryByText("No routed requests yet.")).toBeNull();
+  });
+
+  it("recovers a failed panel with Retry (A5)", async () => {
+    vi.spyOn(api, "system").mockResolvedValue(system());
+    vi.spyOn(api, "backends").mockResolvedValue({ backends: [], ready: false, count: 0 });
+    vi.spyOn(api, "routes")
+      .mockRejectedValueOnce(new ApiError("engine restarting", 503))
+      .mockResolvedValue({ routes: [], sheds: {}, totals: { requests: 0, errors: 0, cancelled: 0, cost: 0, sheds: 0 } });
+    renderRouting();
+    await userEvent.click(within(await screen.findByRole("alert")).getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("No routed requests yet.")).toBeInTheDocument();
   });
 
   it("shows the configured routing summary from /admin/system", async () => {

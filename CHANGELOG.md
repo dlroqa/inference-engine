@@ -10,6 +10,17 @@ release notes and refuses to publish without it (see `docs/releasing.md`).
 
 ### Security
 
+- The image's Python base is repinned to `python:3.12-slim@sha256:2259debd…`
+  (CPython 3.12.15, Debian 13 trixie; previously `2f17fc04…`, CPython 3.12.14)
+  for CVE-2026-19445, a Critical use-after-free in `ssl` server-side
+  `sni_callback` context switching, which failed the release gate. Per the 3.12.15
+  release notes it also fixes CVE-2026-19553, CVE-2026-82049, CVE-2026-15310,
+  CVE-2026-19672, CVE-2026-15806, CVE-2026-17084 and CVE-2026-87910. Python minor
+  version, distribution and dependency locks are unchanged. The release
+  candidate job now records the interpreter the image ships and fails unless it
+  is CPython 3.12. Other scanner findings remain; see
+  `docs/security/candidate-image-triage.md`.
+
 - Operator surfaces (`/admin/*`, `/metrics`, `/logs`, `/diagnostics`, `/ws/*`)
   now reject keys owned by a billing client with `403 operator_role_required`,
   and evaluate presented credentials before the loopback exception: invalid or
@@ -131,6 +142,18 @@ release notes and refuses to publish without it (see `docs/releasing.md`).
 - The model-source redaction now also removes userinfo containing quotes or
   parentheses, masks credential values containing them, and masks credentials
   inside a nested redirect URL passed as a query value.
+- Outbound webhook delivery no longer follows redirects. The egress allowlist
+  is checked against the registered URL only, so a receiver that answered with
+  a redirect could make the engine send a request (with the webhook headers) to
+  an unchecked host, and the delivery was recorded as succeeded. A 3xx is now a
+  failed attempt (retried, then dead-lettered).
+- Webhook endpoint hosts must be ASCII: registration refuses a non-ASCII host
+  (`400 endpoint_host_not_ascii`; use the `xn--` form), and delivery refuses
+  one stored earlier before any connection or IDNA conversion. Its deliveries
+  are dead-lettered at once with an error that names neither host nor URL.
+- Billing and webhook administration writes (plans, clients, client keys,
+  endpoint create/disable/enable/rotate/delete, delivery replay) are recorded
+  in the audit log with ids, labels and hosts only.
 
 ### Added
 
@@ -174,11 +197,33 @@ release notes and refuses to publish without it (see `docs/releasing.md`).
   the client's button).
 - `docs/dashboard.md` gains a UI → subsystem → endpoint table generated from
   the wiring registry. CI checks it for drift and prints the regenerated diff.
+- Dashboard billing and webhook administration in **Clients**: a Plans tab
+  (allowed models as all, only these, or none; every save is confirmed, and
+  nothing is saved while the plan list is loading or failed), create client, a
+  client key shown once, reconcile usage, webhook endpoints (add with the
+  signing secret shown once, disable/enable, rotate with the grace period shown,
+  delete) and deliveries (status filter, replay). Rotating a secret also returns
+  `grace_s` and `previous_secret_expires_at`.
+- Dashboard **Architecture** view (`#/architecture`): the request path and side
+  systems with live status as icon plus text, each source with its own
+  observation time, and links to the views that hold the controls. Deep links
+  `?focus=<node>`; "How this works" hints link to the matching node. Read-only;
+  no new endpoint. `docs/architecture.md` describes it and adds a support matrix
+  of what is implemented, what CI verifies, and what is not qualified.
+- The scheduler snapshot's `draining` field is part of the dashboard contract.
 
 ### Fixed
 
 - `POST /admin/route/plan` rejects an unknown `required_features` name with
   `400 invalid_request_error` instead of failing with an internal error.
+
+### Upgrade notes
+
+- Webhook endpoints registered with a non-ASCII host stop receiving deliveries.
+  Register the `xn--` form of the URL, configure the receiver with its new
+  signing secret, then delete the old endpoint; dead deliveries do not move to
+  it. Receivers that answer with a redirect must be pointed at their final URL.
+  See `docs/deployment.md`.
 
 ## [0.1.1] - 2026-09-25
 

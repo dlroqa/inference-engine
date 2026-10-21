@@ -356,3 +356,78 @@ describe("deliveries", () => {
     await waitFor(() => expect(api.replayDelivery).toHaveBeenCalledWith("d1"));
   });
 });
+
+// A5: every billing-administration panel in its loading, error, empty and
+// populated states (populated is covered by the suites above). Retry recovers.
+describe("billing panel states", () => {
+  const never = (): Promise<never> => new Promise<never>(() => {});
+
+  async function openPlansTab() {
+    render(<Clients onNavigate={vi.fn()} />);
+    await screen.findByText("a@example.com");
+    await userEvent.click(screen.getByRole("tab", { name: "Plans" }));
+  }
+
+  it("plans: loading", async () => {
+    vi.mocked(api.listPlans).mockReturnValueOnce(never());
+    await openPlansTab();
+    expect((await screen.findAllByRole("status", { name: "Loading" })).length).toBeGreaterThan(0);
+    expect(screen.queryByText("No plans yet. Create one to assign limits.")).toBeNull();
+  });
+
+  it("plans: empty", async () => {
+    vi.mocked(api.listPlans).mockResolvedValue({ plans: [] });
+    await openPlansTab();
+    expect(await screen.findByText("No plans yet. Create one to assign limits.")).toBeInTheDocument();
+  });
+
+  it("plans: an error with Retry that recovers", async () => {
+    vi.mocked(api.listPlans).mockRejectedValueOnce(new ApiError("plans unavailable", 503));
+    await openPlansTab();
+    const alert = await screen.findByText(/plans unavailable/);
+    await userEvent.click(within(alert.closest('[role="alert"]') as HTMLElement).getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("Pro")).toBeInTheDocument();
+  });
+
+  it("webhook endpoints: loading, and deliveries wait for them", async () => {
+    vi.mocked(api.listWebhookEndpoints).mockReturnValue(never());
+    render(<Clients focusClientId="c1" onNavigate={vi.fn()} />);
+    expect(await screen.findByRole("heading", { name: "Webhook endpoints" })).toBeInTheDocument();
+    expect(screen.getAllByRole("status", { name: "Loading" }).length).toBeGreaterThan(0);
+    expect(api.listDeliveries).not.toHaveBeenCalled();
+  });
+
+  it("webhook endpoints: empty", async () => {
+    vi.mocked(api.listWebhookEndpoints).mockResolvedValue({ endpoints: [] });
+    render(<Clients focusClientId="c1" onNavigate={vi.fn()} />);
+    expect(await screen.findByText("No webhook endpoints.")).toBeInTheDocument();
+  });
+
+  it("webhook endpoints: an error with Retry that recovers", async () => {
+    vi.mocked(api.listWebhookEndpoints).mockRejectedValueOnce(new ApiError("endpoints unavailable", 503));
+    render(<Clients focusClientId="c1" onNavigate={vi.fn()} />);
+    const alert = (await screen.findByText(/endpoints unavailable/)).closest('[role="alert"]') as HTMLElement;
+    await userEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("https://hooks.example.com/a")).toBeInTheDocument();
+  });
+
+  it("deliveries: loading, then empty for a status filter and unfiltered", async () => {
+    vi.mocked(api.listDeliveries).mockReturnValueOnce(never());
+    await openClient();
+    expect(screen.getAllByRole("status", { name: "Loading" }).length).toBeGreaterThan(0);
+    // The filter sits outside the loading boundary; changing it re-reads.
+    vi.mocked(api.listDeliveries).mockResolvedValue({ deliveries: [] });
+    await userEvent.selectOptions(screen.getByLabelText("Status"), "dead");
+    expect(await screen.findByText("No dead deliveries.")).toBeInTheDocument();
+    await userEvent.selectOptions(screen.getByLabelText("Status"), "");
+    expect(await screen.findByText("No deliveries.")).toBeInTheDocument();
+  });
+
+  it("deliveries: an error with Retry that recovers", async () => {
+    vi.mocked(api.listDeliveries).mockRejectedValueOnce(new ApiError("deliveries unavailable", 503));
+    await openClient();
+    const alert = (await screen.findByText(/deliveries unavailable/)).closest('[role="alert"]') as HTMLElement;
+    await userEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("subscription.activated")).toBeInTheDocument();
+  });
+});

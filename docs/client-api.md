@@ -36,10 +36,15 @@ endpoints always require a real client key.
 All responses are typed models, so the published OpenAPI is precise. The spec also
 declares a `bearerAuth` HTTP security scheme documenting how requests authenticate.
 
-## Deferred (later Block 11 sub-slices)
+## Related, and not provided
 
-This slice is read-only. Client-initiated **mutations** (managing their own webhook
-endpoints, changing plans) are out of scope; the client-scoped **SSE** stream with
-`Last-Event-ID` recovery and CORS is [11.5], and the Clients/Live-Monitoring **UI**
-is [11.6]. See
-[`BLOCK_11_COMMERCIAL_CONTROLS_INSTRUCTIONS.md`](../BLOCK_11_COMMERCIAL_CONTROLS_INSTRUCTIONS.md).
+- The client-scoped **event stream** (SSE with `Last-Event-ID` recovery) is
+  [`GET /client/events[/stream]`](client-events.md) (Block 11.5).
+- Operators manage clients, plans, client keys and webhook endpoints from the
+  dashboard's **Clients** view (Block 11.6; administration on `main` for v0.2.0,
+  unreleased); see
+  [Billing](billing.md) and [Webhooks](webhooks.md).
+- **Not provided:** client-initiated mutations. Clients cannot manage their own
+  webhook endpoints or change plans through this API; it is read-only.
+
+Block history: [`BLOCK_11_COMMERCIAL_CONTROLS_INSTRUCTIONS.md`](../BLOCK_11_COMMERCIAL_CONTROLS_INSTRUCTIONS.md).
